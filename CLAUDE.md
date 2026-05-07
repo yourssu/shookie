@@ -37,6 +37,7 @@ soongmini/
 5. `soongmini-agent/src/agent/agents/coordinator/tools.ts`에 위임 도구 추가
 6. 코디네이터 instructions.ts 섹션 7 도메인 카탈로그 업데이트
 7. `instructions.test.ts`에 서브 에이전트 등장 테스트 추가
+8. `.github/workflows/deploy.yml`에 새 환경변수 `-e` 항목 추가 (시크릿이 필요한 경우 GitHub Secrets에도 등록)
 
 ## 명령어
 
