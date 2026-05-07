@@ -21,6 +21,7 @@ const envSchema = z.object({
   // GitHub (optional)
   GITHUB: z.string().default(""),
   GITHUB_OWNER: z.string().default("yourssu"),
+  GITHUB_REPOS: z.string().default(""),
 
   // Agent
   MAX_TOOL_ITERATIONS: z.coerce.number().default(8),
