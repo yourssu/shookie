@@ -16,19 +16,20 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /home/ubuntu/glencoe
+            cd /home/ubuntu/soongmini
             git pull origin main
-            docker stop glenpractice-bot || true
-            docker rm glenpractice-bot || true
-            docker rmi glenpractice-bot || true
-            docker build -t glenpractice-bot .
+            docker stop soongmini-bot || true
+            docker rm soongmini-bot || true
+            docker rmi soongmini-bot || true
+            docker build -t soongmini-bot .
             docker run -d \
-              --name glenpractice-bot \
+              --name soongmini-bot \
               --restart always \
               -e SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }} \
               -e SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
               -e LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
               -e LLM_BASE_URL=${{ secrets.LLM_BASE_URL }} \
+              -e LLM_MODEL=${{ secrets.LLM_MODEL }} \
               -e POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
               -e POSTHOG_PROJECT_ID=${{ secrets.POSTHOG_PROJECT_ID }} \
-              glenpractice-bot
+              soongmini-bot

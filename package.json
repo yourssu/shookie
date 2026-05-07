@@ -1,0 +1,10 @@
+{
+  "name": "soongmini",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@4.5.3",
+  "workspaces": [
+    "soongmini-agent",
+    "database"
+  ]
+}
