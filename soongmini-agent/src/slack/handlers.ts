@@ -56,6 +56,13 @@ async function handleConversation(
 
     const responseText = result.text || "응답을 생성하지 못했습니다.";
 
+    logger.debug("generateLegacy result keys:", Object.keys(result));
+    logger.debug("result.usage:", JSON.stringify(result.usage));
+    logger.debug("result.steps count:", result.steps?.length);
+    if (result.steps?.length) {
+      logger.debug("result.steps[0] keys:", Object.keys(result.steps[0]));
+    }
+
     const toolNames = (result.steps ?? [])
       .flatMap((step) => (step.toolCalls ?? []).map((tc) => tc.toolName));
 
