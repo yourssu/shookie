@@ -17,7 +17,8 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ubuntu/soongmini
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             docker stop soongmini-bot || true
             docker rm soongmini-bot || true
             docker rmi soongmini-bot || true
