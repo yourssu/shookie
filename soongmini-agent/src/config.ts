@@ -18,6 +18,10 @@ const envSchema = z.object({
   POSTHOG_API_KEY: z.string().default(""),
   POSTHOG_PROJECT_ID: z.string().default(""),
 
+  // GitHub (optional)
+  GITHUB: z.string().default(""),
+  GITHUB_OWNER: z.string().default("yourssu"),
+
   // Agent
   MAX_TOOL_ITERATIONS: z.coerce.number().default(8),
 

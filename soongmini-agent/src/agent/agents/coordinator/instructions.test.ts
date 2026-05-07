@@ -40,6 +40,10 @@ describe("coordinator agent instructions", () => {
     expect(instructions).toContain("PostHog Analyst");
   });
 
+  it("lists GitHub Explorer in domain catalog", () => {
+    expect(instructions).toContain("GitHub Explorer");
+  });
+
   it("includes current timestamp", () => {
     expect(instructions).toMatch(/\d{4}-\d{2}-\d{2}/);
   });
