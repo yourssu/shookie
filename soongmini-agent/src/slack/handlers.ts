@@ -87,6 +87,13 @@ async function handleConversation(
     });
   } catch (error) {
     logger.error("Error processing message:", error);
+    if (error instanceof Error) {
+      logger.error("Error message:", error.message);
+      logger.error("Error stack:", error.stack);
+      if ("cause" in error) {
+        logger.error("Error cause:", JSON.stringify(error.cause, null, 2));
+      }
+    }
     await app.client.chat.postMessage({
       channel,
       thread_ts: threadTs,
