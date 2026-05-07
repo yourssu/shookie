@@ -5,8 +5,8 @@ export const repoParamSchema = z.object({
 });
 
 export const pathParamSchema = z.object({
-  repo: z.string().describe("리포지토리 이름"),
-  path: z.string().describe("파일 또는 디렉토리 경로 (예: src/index.ts)"),
+  repo: z.string().describe("리포지토리 이름만 입력 (예: soongpt-web). 파일 경로나 디렉토리 경로는 절대 입력하지 마세요"),
+  path: z.string().describe("파일 또는 디렉토리의 경로 (예: src/index.ts). 반드시 입력해야 합니다"),
   branch: z.string().optional().describe("브랜치 이름 (기본: default branch)"),
 });
 
