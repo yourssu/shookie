@@ -6,8 +6,7 @@ WORKDIR /app
 RUN corepack enable
 
 # Copy workspace root files
-COPY package.json yarn.lock .yarnrc.yml ./
-COPY .yarn/ .yarn/
+COPY package.json yarn.lock .yarnrc.yml tsconfig.base.json ./
 
 # Copy package files
 COPY soongmini-agent/package.json soongmini-agent/package.json
