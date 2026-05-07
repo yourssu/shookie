@@ -55,12 +55,28 @@ async function handleConversation(
     });
 
     const responseText = result.text || "응답을 생성하지 못했습니다.";
+
+    const toolNames = (result.steps ?? [])
+      .flatMap((step) => (step.toolCalls ?? []).map((tc) => tc.toolName));
+
+    const usage = result.usage ?? { promptTokens: 0, completionTokens: 0 };
+    const cost = (usage.promptTokens * 0.15 + usage.completionTokens * 0.6) / 1_000_000;
+
+    const debugFooter = [
+      "\n---",
+      `🔧 사용 도구: ${toolNames.length > 0 ? [...new Set(toolNames)].join(", ") : "없음"}`,
+      `💰 토큰: 입력 ${usage.promptTokens.toLocaleString()} / 출력 ${usage.completionTokens.toLocaleString()}`,
+      `💵 비용: $${cost.toFixed(4)}`,
+    ].join("\n");
+
+    const finalText = responseText + debugFooter;
+
     store.add(sessionId, { role: "assistant", content: responseText });
 
     await app.client.chat.postMessage({
       channel,
       thread_ts: threadTs,
-      text: responseText,
+      text: finalText,
     });
   } catch (error) {
     logger.error("Error processing message:", error);
