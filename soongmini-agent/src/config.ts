@@ -11,8 +11,8 @@ const envSchema = z.object({
 
   // LLM (OpenAI-compatible)
   LLM_API_KEY: z.string().min(1),
-  LLM_BASE_URL: z.string().default("https://api.openai.com/v1"),
-  LLM_MODEL: z.string().default("solar-pro"),
+  LLM_BASE_URL: z.string().default("https://api.upstage.ai/v1"),
+  LLM_MODEL: z.string().default("solar-pro3"),
 
   // PostHog (optional)
   POSTHOG_API_KEY: z.string().default(""),
