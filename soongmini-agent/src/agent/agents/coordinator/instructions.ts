@@ -69,6 +69,8 @@ export function buildCoordinatorInstructions(): string {
 - 인사말, 메타 질문 ("뭐 할 수 있어?", "사용법 알려줘")
 - 단일 사실 확인 (이미 sub-agent에게 받은 결과를 재활용할 때)
 
+★ 주의: "조회할 수 있는 리포지토리 알려줘", "최근 PR 있어?", "이슈 몇 개야?" 같은 질문은 메타 질문이 아니라 실제 데이터 조회다. 반드시 sub-agent에 위임할 것.
+
 ---
 
 # 6. Meta Query 처리
