@@ -4,6 +4,7 @@ import type { Agent } from "@mastra/core/agent";
 
 export function createCoordinatorTools(subAgents: {
   posthog?: Agent;
+  github?: Agent;
 }) {
   const tools: Record<string, ReturnType<typeof createTool>> = {};
 
@@ -22,6 +23,26 @@ export function createCoordinatorTools(subAgents: {
       }),
       execute: async (input) => {
         const result = await posthogAgent.generateLegacy(input.task);
+        return { result: result.text };
+      },
+    });
+  }
+
+  if (subAgents.github) {
+    const githubAgent = subAgents.github;
+    tools.github_agent = createTool({
+      id: "github-agent",
+      description:
+        "GitHub 리포지토리 탐색을 담당하는 서브 에이전트에게 작업을 위임합니다. " +
+        "코드 구조, PR, 이슈, 커밋, 브랜치, 코드 검색 등 GitHub 관련 질문에 사용합니다.",
+      inputSchema: z.object({
+        task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),
+      }),
+      outputSchema: z.object({
+        result: z.string(),
+      }),
+      execute: async (input) => {
+        const result = await githubAgent.generateLegacy(input.task);
         return { result: result.text };
       },
     });
