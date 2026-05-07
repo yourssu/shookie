@@ -19,7 +19,7 @@ export function createGitHubTools(client: GitHubClient) {
   return {
     listRepos: createTool({
       id: "list-repos",
-      description: "조직(yourssu)의 리포지토리 목록을 조회합니다.",
+      description: "접근 가능한 리포지토리 목록을 조회합니다.",
       inputSchema: z.object({}),
       outputSchema: resultSchema,
       execute: async () => {
@@ -99,7 +99,7 @@ export function createGitHubTools(client: GitHubClient) {
 
     searchCode: createTool({
       id: "search-code",
-      description: "조직 내 코드를 검색합니다. 특정 리포지토리로 제한할 수도 있습니다.",
+      description: "리포지토리 내 코드를 검색합니다.",
       inputSchema: searchCodeSchema,
       outputSchema: resultSchema,
       execute: async (input) => {

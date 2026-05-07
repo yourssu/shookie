@@ -59,6 +59,7 @@ export function buildCoordinatorInstructions(): string {
 - 코드 (어떤 언어든)
 - 도메인 데이터 해석 (지표 분석, 트렌드 설명 등)
 - 외부 시스템 조회 (PostHog 이벤트, 인사이트, 대시보드 등)
+- GitHub 데이터 조회 (리포지토리, PR, 이슈, 커밋, 코드 등)
 - 도메인 정책·규칙 인용
 
 위임 시 원칙:

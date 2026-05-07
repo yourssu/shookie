@@ -1,14 +1,14 @@
 import { Octokit } from "@octokit/rest";
 import { logger } from "../../logger.js";
 
+const ALLOWED_REPOS = ["soongpt-web", "soongpt-backend"];
+
 function truncate(text: string, maxLen = 6000): string {
   if (text.length > maxLen) {
     return text.slice(0, maxLen) + "\n... (결과가 너무 길어 잘렸습니다)";
   }
   return text;
 }
-
-const ALLOWED_REPOS = ["soongpt-web", "soongpt-backend"];
 
 export class GitHubClient {
   private octokit: Octokit;

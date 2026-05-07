@@ -1,8 +1,7 @@
 import type { GitHubClient } from "../../../tools/github/client.js";
 
 export function buildGithubInstructions(client: GitHubClient): string {
-  const repos = client.accessibleRepos;
-  const repoList = repos.length > 0 ? repos.join(", ") : "전체 공개 리포지토리";
+  const repoList = client.accessibleRepos.join(", ");
 
   return `
 너는 GitHub 리포지토리 탐색 전문가다.
