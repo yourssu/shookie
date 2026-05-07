@@ -26,8 +26,7 @@ export function createAgent() {
   }
 
   if (config.GITHUB) {
-    const allowedRepos = config.GITHUB_REPOS ? config.GITHUB_REPOS.split(",").map((s) => s.trim()) : [];
-    const ghClient = new GitHubClient(config.GITHUB, config.GITHUB_OWNER, allowedRepos);
+    const ghClient = new GitHubClient(config.GITHUB, config.GITHUB_OWNER);
     subAgents.github = createGitHubAgent(ghClient, model);
     logger.info("GitHub 서브 에이전트 등록 완료");
   } else {

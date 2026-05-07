@@ -8,45 +8,29 @@ function truncate(text: string, maxLen = 6000): string {
   return text;
 }
 
+const ALLOWED_REPOS = ["soongpt-web", "soongpt-backend"];
+
 export class GitHubClient {
   private octokit: Octokit;
   private owner: string;
-  private allowedRepos: string[];
 
-  constructor(token: string, owner: string, allowedRepos: string[] = []) {
+  constructor(token: string, owner: string) {
     this.octokit = new Octokit({ auth: token });
     this.owner = owner;
-    this.allowedRepos = allowedRepos;
   }
 
   get accessibleRepos(): string[] {
-    return this.allowedRepos;
+    return ALLOWED_REPOS;
   }
 
   async listRepos(): Promise<string> {
     try {
-      if (this.allowedRepos.length > 0) {
-        const results = await Promise.all(
-          this.allowedRepos.map((repo) =>
-            this.octokit.repos.get({ owner: this.owner, repo }).then((r) => r.data)
-          )
-        );
-        const repos = results.map((r) => ({
-          name: r.name,
-          description: r.description,
-          language: r.language,
-          stars: r.stargazers_count,
-          updated_at: r.updated_at,
-          default_branch: r.default_branch,
-        }));
-        return truncate(JSON.stringify(repos, null, 2));
-      }
-      const { data } = await this.octokit.repos.listForOrg({
-        org: this.owner,
-        per_page: 50,
-        sort: "updated",
-      });
-      const repos = data.map((r) => ({
+      const results = await Promise.all(
+        ALLOWED_REPOS.map((repo) =>
+          this.octokit.repos.get({ owner: this.owner, repo }).then((r) => r.data)
+        )
+      );
+      const repos = results.map((r) => ({
         name: r.name,
         description: r.description,
         language: r.language,
