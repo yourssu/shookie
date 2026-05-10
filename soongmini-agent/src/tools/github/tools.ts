@@ -39,7 +39,11 @@ export function createGitHubTools(client: GitHubClient) {
 
     getRepoTree: createTool({
       id: "get-repo-tree",
-      description: "리포지토리의 디렉토리 구조를 탐색합니다. path를 생략하면 루트 디렉토리를 보여줍니다.",
+      description:
+        "리포지토리의 디렉토리 구조를 탐색합니다. " +
+        "repo는 리포지토리 이름(soongpt-web 또는 soongpt-backend)이고, " +
+        "path는 리포지토리 내부 경로입니다. " +
+        "예: {repo: 'soongpt-backend', path: 'src/main/kotlin'}",
       inputSchema: pathParamSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
@@ -49,7 +53,11 @@ export function createGitHubTools(client: GitHubClient) {
 
     getFileContent: createTool({
       id: "get-file-content",
-      description: "특정 파일의 내용을 읽어옵니다.",
+      description:
+        "특정 파일의 내용을 읽어옵니다. " +
+        "repo는 리포지토리 이름(soongpt-web 또는 soongpt-backend)이고, " +
+        "path는 파일의 리포지토리 내부 경로입니다. 반드시 repo와 path를 분리해서 입력하세요. " +
+        "예: {repo: 'soongpt-backend', path: 'src/main/kotlin/com/yourssu/LabTimetableMapper.kt'}",
       inputSchema: pathParamSchema,
       outputSchema: resultSchema,
       execute: async (input) => {

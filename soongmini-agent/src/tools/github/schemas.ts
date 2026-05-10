@@ -5,8 +5,18 @@ export const repoParamSchema = z.object({
 });
 
 export const pathParamSchema = z.object({
-  repo: z.string().describe("리포지토리 이름만 입력 (예: soongpt-web). 파일 경로나 디렉토리 경로는 절대 입력하지 마세요"),
-  path: z.string().describe("파일 또는 디렉토리의 경로 (예: src/index.ts). 반드시 입력해야 합니다"),
+  repo: z
+    .string()
+    .describe(
+      "리포지토리 이름. 반드시 'soongpt-web' 또는 'soongpt-backend' 중 하나여야 합니다. " +
+        "절대 파일 경로나 디렉토리 경로를 넣지 마세요. 예: soongpt-web (O), src/index.ts (X)"
+    ),
+  path: z
+    .string()
+    .describe(
+      "리포지토리 내 파일 또는 디렉토리의 경로. repo 아래의 상대경로입니다. " +
+        "예: src/index.ts, src/main/kotlin/, package.json"
+    ),
   branch: z.string().optional().describe("브랜치 이름 (기본: default branch)"),
 });
 
