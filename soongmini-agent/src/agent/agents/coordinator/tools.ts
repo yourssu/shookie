@@ -1,6 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import type { Agent } from "@mastra/core/agent";
+import { logger } from "../../../logger.js";
 
 export function createCoordinatorTools(subAgents: {
   posthog?: Agent;
@@ -23,6 +24,19 @@ export function createCoordinatorTools(subAgents: {
       }),
       execute: async (input) => {
         const result = await posthogAgent.generateLegacy(input.task);
+        logger.debug("[posthog-agent] text length:", result.text?.length ?? 0);
+        logger.debug("[posthog-agent] finishReason:", result.finishReason);
+        logger.debug("[posthog-agent] usage:", JSON.stringify(result.usage));
+        logger.debug("[posthog-agent] steps:", result.steps?.length);
+        for (const [i, step] of (result.steps ?? []).entries()) {
+          for (const tc of step.toolCalls ?? []) {
+            logger.debug(`[posthog-agent] step[${i}] toolCall: ${tc.toolName}`, JSON.stringify(tc.args));
+          }
+          for (const tr of step.toolResults ?? []) {
+            const r = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
+            logger.debug(`[posthog-agent] step[${i}] toolResult:`, r.slice(0, 500));
+          }
+        }
         return { result: result.text };
       },
     });
@@ -44,6 +58,19 @@ export function createCoordinatorTools(subAgents: {
       }),
       execute: async (input) => {
         const result = await githubAgent.generateLegacy(input.task);
+        logger.debug("[github-agent] text length:", result.text?.length ?? 0);
+        logger.debug("[github-agent] finishReason:", result.finishReason);
+        logger.debug("[github-agent] usage:", JSON.stringify(result.usage));
+        logger.debug("[github-agent] steps:", result.steps?.length);
+        for (const [i, step] of (result.steps ?? []).entries()) {
+          for (const tc of step.toolCalls ?? []) {
+            logger.debug(`[github-agent] step[${i}] toolCall: ${tc.toolName}`, JSON.stringify(tc.args));
+          }
+          for (const tr of step.toolResults ?? []) {
+            const r = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
+            logger.debug(`[github-agent] step[${i}] toolResult:`, r.slice(0, 500));
+          }
+        }
         return { result: result.text };
       },
     });
