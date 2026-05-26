@@ -11,8 +11,8 @@ const envSchema = z.object({
 
   // LLM (OpenAI-compatible)
   LLM_API_KEY: z.string().min(1),
-  LLM_BASE_URL: z.string().default("https://api.upstage.ai/v1"),
-  LLM_MODEL: z.string().default("solar-pro3"),
+  LLM_BASE_URL: z.string().default("https://api.deepseek.com"),
+  LLM_MODEL: z.string().default("deepseek-v4-pro"),
 
   // PostHog (optional)
   POSTHOG_API_KEY: z.string().default(""),
