@@ -25,6 +25,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@ai-sdk/deepseek@npm:^2.0.35":
+  version: 2.0.35
+  resolution: "@ai-sdk/deepseek@npm:2.0.35"
+  dependencies:
+    "@ai-sdk/provider": "npm:3.0.10"
+    "@ai-sdk/provider-utils": "npm:4.0.27"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/6d82e591b52f8d15e66dc30bc1cc527e27bd3470da9bb6fc73a257fd37ee9f869cdea9bf8fb0b68e89b7a8661cf72109d97b6c1bba527a62775eb53071e93514
+  languageName: node
+  linkType: hard
+
 "@ai-sdk/gateway@npm:3.0.110":
   version: 3.0.110
   resolution: "@ai-sdk/gateway@npm:3.0.110"
@@ -99,6 +111,19 @@ __metadata:
   peerDependencies:
     zod: ^3.25.76 || ^4.1.8
   checksum: 10c0/f9618ba33724aa211e04a4026a05d4e3c3f7448f50918a432eeb11cd476b27c25f67cdf69554a554e544dd8bc6a34c90dd2807a5154346715eb9c33712dff621
+  languageName: node
+  linkType: hard
+
+"@ai-sdk/provider-utils@npm:4.0.27":
+  version: 4.0.27
+  resolution: "@ai-sdk/provider-utils@npm:4.0.27"
+  dependencies:
+    "@ai-sdk/provider": "npm:3.0.10"
+    "@standard-schema/spec": "npm:^1.1.0"
+    eventsource-parser: "npm:^3.0.8"
+  peerDependencies:
+    zod: ^3.25.76 || ^4.1.8
+  checksum: 10c0/2202dedcbe8f58883ef37425111392c6b5b5c2f85dfbbd11b13173e9d349da3d977ba610586c4b5412720e07b09f63ba0e88dbc6e21f043441a67f6d51225020
   languageName: node
   linkType: hard
 
@@ -3643,6 +3668,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "soongmini-agent@workspace:soongmini-agent"
   dependencies:
+    "@ai-sdk/deepseek": "npm:^2.0.35"
     "@ai-sdk/openai": "npm:^1.3.0"
     "@mastra/core": "npm:^1.32.0"
     "@octokit/rest": "npm:^22.0.1"

@@ -1,4 +1,4 @@
-import { createOpenAI } from "@ai-sdk/openai";
+import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createCoordinatorAgent } from "./agents/coordinator/index.js";
 import { createPostHogAgent } from "./agents/posthog/index.js";
 import { createGitHubAgent } from "./agents/github/index.js";
@@ -9,7 +9,7 @@ import { logger } from "../logger.js";
 import type { Agent } from "@mastra/core/agent";
 
 export function createAgent() {
-  const provider = createOpenAI({
+  const provider = createDeepSeek({
     apiKey: config.LLM_API_KEY,
     baseURL: config.LLM_BASE_URL,
   });
