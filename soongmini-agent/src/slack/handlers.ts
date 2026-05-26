@@ -79,7 +79,7 @@ async function handleConversation(
       .flatMap((step) => (step.toolCalls ?? []).map((tc) => tc.toolName));
 
     const usage = result.usage ?? { promptTokens: 0, completionTokens: 0 };
-    const cost = (usage.promptTokens * 0.15 + usage.completionTokens * 0.6) / 1_000_000;
+    const cost = (usage.promptTokens * 0.435 + usage.completionTokens * 0.87) / 1_000_000;
 
     const debugFooter = [
       "\n---",
