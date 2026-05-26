@@ -23,17 +23,17 @@ export function createCoordinatorTools(subAgents: {
         result: z.string(),
       }),
       execute: async (input) => {
-        const result = await posthogAgent.generateLegacy(input.task);
+        const result = await posthogAgent.generate([{ role: "user", content: input.task }]);
         logger.debug("[posthog-agent] text length:", result.text?.length ?? 0);
         logger.debug("[posthog-agent] finishReason:", result.finishReason);
-        logger.debug("[posthog-agent] usage:", JSON.stringify(result.usage));
+        logger.debug("[posthog-agent] usage:", JSON.stringify(await result.usage));
         logger.debug("[posthog-agent] steps:", result.steps?.length);
         for (const [i, step] of (result.steps ?? []).entries()) {
           for (const tc of step.toolCalls ?? []) {
-            logger.debug(`[posthog-agent] step[${i}] toolCall: ${tc.toolName}`, JSON.stringify(tc.args));
+            logger.debug(`[posthog-agent] step[${i}] toolCall: ${tc.payload.toolName}`, JSON.stringify(tc.payload.args));
           }
           for (const tr of step.toolResults ?? []) {
-            const r = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
+            const r = typeof tr.payload.result === "string" ? tr.payload.result : JSON.stringify(tr.payload.result);
             logger.debug(`[posthog-agent] step[${i}] toolResult:`, r.slice(0, 500));
           }
         }
@@ -57,17 +57,17 @@ export function createCoordinatorTools(subAgents: {
         result: z.string(),
       }),
       execute: async (input) => {
-        const result = await githubAgent.generateLegacy(input.task);
+        const result = await githubAgent.generate([{ role: "user", content: input.task }]);
         logger.debug("[github-agent] text length:", result.text?.length ?? 0);
         logger.debug("[github-agent] finishReason:", result.finishReason);
-        logger.debug("[github-agent] usage:", JSON.stringify(result.usage));
+        logger.debug("[github-agent] usage:", JSON.stringify(await result.usage));
         logger.debug("[github-agent] steps:", result.steps?.length);
         for (const [i, step] of (result.steps ?? []).entries()) {
           for (const tc of step.toolCalls ?? []) {
-            logger.debug(`[github-agent] step[${i}] toolCall: ${tc.toolName}`, JSON.stringify(tc.args));
+            logger.debug(`[github-agent] step[${i}] toolCall: ${tc.payload.toolName}`, JSON.stringify(tc.payload.args));
           }
           for (const tr of step.toolResults ?? []) {
-            const r = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
+            const r = typeof tr.payload.result === "string" ? tr.payload.result : JSON.stringify(tr.payload.result);
             logger.debug(`[github-agent] step[${i}] toolResult:`, r.slice(0, 500));
           }
         }
