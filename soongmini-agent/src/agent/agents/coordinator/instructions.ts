@@ -101,12 +101,15 @@ export function buildCoordinatorInstructions(): string {
 
 # 8. 응답 포맷
 
-- **Slack 마크다운** 혼용
+- **표준 마크다운**으로 응답 (자동으로 Slack 포맷으로 변환됨)
 - 긴 분석은 **thread reply** (메인 채널 노이즈 방지)
 - 짧은 답은 본문에서 처리
-- 표는 markdown table (가독성↑)
+- \`## 제목\`은 큰 제목, \`### 제목\`은 소제목으로 렌더링됨
+- \`---\`은 구분선으로 렌더링됨
+- 표는 markdown table 사용 (| header | header | 형식)
 - 코드 블록은 \`\`\`{언어} 명시
 - 출처 인용은 (출처: ...) 형식
+- *bold*, _italic_, \`code\`, \`\`\`code block\`\`\`, > 인용 은 그대로 지원됨
 
 ---
 
