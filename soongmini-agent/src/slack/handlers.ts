@@ -56,11 +56,23 @@ async function handleConversation(
 
     const responseText = result.text || "응답을 생성하지 못했습니다.";
 
-    logger.debug("generateLegacy result keys:", Object.keys(result));
     logger.debug("result.usage:", JSON.stringify(result.usage));
     logger.debug("result.steps count:", result.steps?.length);
-    if (result.steps?.length) {
-      logger.debug("result.steps[0] keys:", Object.keys(result.steps[0]));
+    logger.debug("result.text length:", result.text?.length ?? 0);
+    logger.debug("result.finishReason:", result.finishReason);
+
+    for (const [i, step] of (result.steps ?? []).entries()) {
+      logger.debug(`--- step[${i}] ---`);
+      logger.debug(`step[${i}] text length:`, step.text?.length ?? 0);
+      logger.debug(`step[${i}] finishReason:`, step.finishReason);
+
+      for (const [j, tc] of (step.toolCalls ?? []).entries()) {
+        logger.debug(`step[${i}] toolCall[${j}]: ${tc.toolName}`, JSON.stringify(tc.args));
+      }
+      for (const [j, tr] of (step.toolResults ?? []).entries()) {
+        const resultStr = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
+        logger.debug(`step[${i}] toolResult[${j}]: ${resultStr.slice(0, 500)}`);
+      }
     }
 
     const toolNames = (result.steps ?? [])
