@@ -2,6 +2,7 @@ import type { App } from "@slack/bolt";
 import type { Agent } from "@mastra/core/agent";
 import { InMemoryConversationStore, type Message } from "../services/memory/in-memory.js";
 import { buildSessionId, extractText } from "./thread-context.js";
+import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
 import { logger } from "../logger.js";
 
 const store = new InMemoryConversationStore();
@@ -89,20 +90,20 @@ async function handleConversation(
     const cost = (inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000;
 
     const debugFooter = [
-      "\n---",
       `🔧 사용 도구: ${toolNames.length > 0 ? [...new Set(toolNames)].join(", ") : "없음"}`,
       `💰 토큰: 입력 ${inputTokens.toLocaleString()} / 출력 ${outputTokens.toLocaleString()}`,
       `💵 비용: $${cost.toFixed(4)}`,
     ].join("\n");
 
-    const finalText = responseText + debugFooter;
+    const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, debugFooter);
 
     store.add(sessionId, { role: "assistant", content: responseText });
 
     await app.client.chat.postMessage({
       channel,
       thread_ts: threadTs,
-      text: finalText,
+      text: fallbackText,
+      blocks,
     });
   } catch (error) {
     logger.error("Error processing message:", error);
