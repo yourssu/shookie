@@ -45,14 +45,18 @@ async function handleConversation(
   const sessionId = buildSessionId(channel, threadTs);
 
   try {
+    logger.info(`📩 메시지 수신: "${userText.slice(0, 100)}"`);
+
     store.add(sessionId, { role: "user", content: userText });
 
     const history = store.buildMessages(sessionId);
     const prompt = history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
+    logger.info("🤖 응답 생성 시작...");
     const result = await agent.generate([{ role: "user", content: prompt }], {
       maxSteps: 8,
     });
+    logger.info("🤖 응답 생성 완료");
 
     const responseText = result.text || "응답을 생성하지 못했습니다.";
 
@@ -61,6 +65,7 @@ async function handleConversation(
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
 
+    logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
     logger.debug("result.usage:", JSON.stringify(usage));
     logger.debug("result.steps count:", steps.length);
     logger.debug("result.text length:", result.text?.length ?? 0);
