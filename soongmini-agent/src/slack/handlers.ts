@@ -50,41 +50,43 @@ async function handleConversation(
     const history = store.buildMessages(sessionId);
     const prompt = history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
-    const result = await agent.generateLegacy(prompt, {
+    const result = await agent.generate([{ role: "user", content: prompt }], {
       maxSteps: 8,
     });
 
     const responseText = result.text || "응답을 생성하지 못했습니다.";
 
-    logger.debug("result.usage:", JSON.stringify(result.usage));
-    logger.debug("result.steps count:", result.steps?.length);
+    const usage = await result.usage;
+    const steps = result.steps ?? [];
+    const inputTokens = usage?.inputTokens ?? 0;
+    const outputTokens = usage?.outputTokens ?? 0;
+
+    logger.debug("result.usage:", JSON.stringify(usage));
+    logger.debug("result.steps count:", steps.length);
     logger.debug("result.text length:", result.text?.length ?? 0);
     logger.debug("result.finishReason:", result.finishReason);
 
-    for (const [i, step] of (result.steps ?? []).entries()) {
+    for (const [i, step] of steps.entries()) {
       logger.debug(`--- step[${i}] ---`);
       logger.debug(`step[${i}] text length:`, step.text?.length ?? 0);
-      logger.debug(`step[${i}] finishReason:`, step.finishReason);
 
-      for (const [j, tc] of (step.toolCalls ?? []).entries()) {
-        logger.debug(`step[${i}] toolCall[${j}]: ${tc.toolName}`, JSON.stringify(tc.args));
+      for (const tc of step.toolCalls ?? []) {
+        logger.debug(`step[${i}] toolCall: ${tc.payload.toolName}`, JSON.stringify(tc.payload.args));
       }
-      for (const [j, tr] of (step.toolResults ?? []).entries()) {
-        const resultStr = typeof tr.result === "string" ? tr.result : JSON.stringify(tr.result);
-        logger.debug(`step[${i}] toolResult[${j}]: ${resultStr.slice(0, 500)}`);
+      for (const tr of step.toolResults ?? []) {
+        const r = typeof tr.payload.result === "string" ? tr.payload.result : JSON.stringify(tr.payload.result);
+        logger.debug(`step[${i}] toolResult:`, r.slice(0, 500));
       }
     }
 
-    const toolNames = (result.steps ?? [])
-      .flatMap((step) => (step.toolCalls ?? []).map((tc) => tc.toolName));
-
-    const usage = result.usage ?? { promptTokens: 0, completionTokens: 0 };
-    const cost = (usage.promptTokens * 0.435 + usage.completionTokens * 0.87) / 1_000_000;
+    const toolNames = steps
+      .flatMap((step) => (step.toolCalls ?? []).map((tc) => tc.payload.toolName));
+    const cost = (inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000;
 
     const debugFooter = [
       "\n---",
       `🔧 사용 도구: ${toolNames.length > 0 ? [...new Set(toolNames)].join(", ") : "없음"}`,
-      `💰 토큰: 입력 ${usage.promptTokens.toLocaleString()} / 출력 ${usage.completionTokens.toLocaleString()}`,
+      `💰 토큰: 입력 ${inputTokens.toLocaleString()} / 출력 ${outputTokens.toLocaleString()}`,
       `💵 비용: $${cost.toFixed(4)}`,
     ].join("\n");
 
