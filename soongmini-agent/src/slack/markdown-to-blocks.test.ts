@@ -149,8 +149,20 @@ describe("convertMarkdownToBlocks", () => {
     expect(section).toBeDefined();
     if (section && section.type === "section" && "text" in section) {
       const text = section.text as { type: string; text: string };
-      expect(text.text).toContain("**bold**");
+      expect(text.text).toContain("*bold*");
       expect(text.text).toContain(":white_check_mark:");
+      expect(text.text).not.toContain("**bold**");
+    }
+  });
+
+  it("converts **bold** to Slack *bold* in paragraphs and tables", () => {
+    const markdown = "**SSUTime-Prod** 분석 결과입니다.";
+    const { blocks } = convertMarkdownToBlocks(markdown, "footer");
+    const section = blocks.find((b) => b.type === "section");
+    if (section && section.type === "section" && "text" in section) {
+      const text = section.text as { type: string; text: string };
+      expect(text.text).toContain("*SSUTime-Prod*");
+      expect(text.text).not.toContain("**SSUTime-Prod**");
     }
   });
 });

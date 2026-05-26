@@ -158,7 +158,7 @@ function parsedBlocksToSlackBlocks(parsed: ParsedBlock[]): KnownBlock[] {
         break;
       }
       case "table": {
-        const mrkdwn = tableToMrkdwn(block.headerRow, block.rows);
+        const mrkdwn = toSlackMrkdwn(tableToMrkdwn(block.headerRow, block.rows));
         for (const chunk of splitLongText(mrkdwn)) {
           blocks.push({
             type: "section",
@@ -171,7 +171,7 @@ function parsedBlocksToSlackBlocks(parsed: ParsedBlock[]): KnownBlock[] {
         for (const chunk of splitLongText(block.text)) {
           blocks.push({
             type: "section",
-            text: { type: "mrkdwn", text: chunk },
+            text: { type: "mrkdwn", text: toSlackMrkdwn(chunk) },
           });
         }
         break;
@@ -259,4 +259,9 @@ function buildFallbackText(responseText: string, debugFooter: string): string {
 
 function stripMarkdownBold(text: string): string {
   return text.replace(/\*+/g, "");
+}
+
+function toSlackMrkdwn(text: string): string {
+  // Convert standard markdown **bold** to Slack mrkdwn *bold*
+  return text.replace(/\*\*(.+?)\*\*/g, "*$1*");
 }
