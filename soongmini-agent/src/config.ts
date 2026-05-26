@@ -16,7 +16,6 @@ const envSchema = z.object({
 
   // PostHog (optional)
   POSTHOG_API_KEY: z.string().default(""),
-  POSTHOG_PROJECT_ID: z.string().default(""),
 
   // GitHub (optional)
   GITHUB: z.string().default(""),

@@ -2,6 +2,18 @@ import { logger } from "../../logger.js";
 
 const POSTHOG_API_BASE = "https://app.posthog.com/api";
 
+export interface PostHogProject {
+  name: string;
+  projectId: string;
+  description: string;
+}
+
+// PostHog 프로젝트 목록 - 새 프로젝트 추가 시 이곳에 추가
+export const POSTHOG_PROJECTS: PostHogProject[] = [
+  { name: "SSUTime-Prod", projectId: "440922", description: "슈타임 프로덕션" },
+  { name: "soongpt-prod", projectId: "308417", description: "숭피티 프로덕션" },
+];
+
 function truncate(text: string, maxLen = 4000): string {
   if (text.length > maxLen) {
     return text.slice(0, maxLen) + "\n... (결과가 너무 길어 잘렸습니다)";
@@ -118,5 +130,44 @@ export class PostHogClient {
       logger.error("PostHog API request failed:", e);
       return "PostHog API 요청 중 오류가 발생했습니다.";
     }
+  }
+}
+
+export class PostHogClientManager {
+  private clients: Map<string, PostHogClient> = new Map();
+  private projects: PostHogProject[];
+  private defaultName: string;
+
+  constructor(apiKey: string, projects: PostHogProject[]) {
+    this.projects = projects;
+    this.defaultName = projects[0].name;
+    for (const p of projects) {
+      this.clients.set(p.name, new PostHogClient(apiKey, p.projectId));
+    }
+  }
+
+  getClient(projectName?: string): PostHogClient {
+    const name = projectName ?? this.defaultName;
+    const client = this.clients.get(name);
+    if (!client) {
+      throw new Error(
+        `알 수 없는 PostHog 프로젝트: "${name}". 사용 가능: ${this.getProjectNames().join(", ")}`
+      );
+    }
+    return client;
+  }
+
+  getProjectNames(): string[] {
+    return this.projects.map((p) => p.name);
+  }
+
+  getProjectCatalog(): string {
+    return this.projects
+      .map((p) => `- **${p.name}**: ${p.description}`)
+      .join("\n");
+  }
+
+  getDefaultName(): string {
+    return this.defaultName;
   }
 }

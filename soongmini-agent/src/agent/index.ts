@@ -2,7 +2,7 @@ import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createCoordinatorAgent } from "./agents/coordinator/index.js";
 import { createPostHogAgent } from "./agents/posthog/index.js";
 import { createGitHubAgent } from "./agents/github/index.js";
-import { PostHogClient } from "../tools/posthog/client.js";
+import { PostHogClientManager, POSTHOG_PROJECTS } from "../tools/posthog/client.js";
 import { GitHubClient } from "../tools/github/client.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -17,12 +17,12 @@ export function createAgent() {
 
   const subAgents: { posthog?: Agent; github?: Agent } = {};
 
-  if (config.POSTHOG_API_KEY && config.POSTHOG_PROJECT_ID) {
-    const phClient = new PostHogClient(config.POSTHOG_API_KEY, config.POSTHOG_PROJECT_ID);
-    subAgents.posthog = createPostHogAgent(phClient, model);
-    logger.info("PostHog 서브 에이전트 등록 완료");
+  if (POSTHOG_PROJECTS.length > 0 && config.POSTHOG_API_KEY) {
+    const phManager = new PostHogClientManager(config.POSTHOG_API_KEY, POSTHOG_PROJECTS);
+    subAgents.posthog = createPostHogAgent(phManager, model);
+    logger.info(`PostHog 서브 에이전트 등록 완료 (프로젝트: ${phManager.getProjectNames().join(", ")})`);
   } else {
-    logger.info("PostHog API 키가 없어 서브 에이전트를 등록하지 않습니다");
+    logger.info("PostHog 설정이 없어 서브 에이전트를 등록하지 않습니다");
   }
 
   if (config.GITHUB) {
