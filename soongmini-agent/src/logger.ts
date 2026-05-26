@@ -24,7 +24,7 @@ function formatMessage(level: LogLevel, msg: string): string {
 
 export const logger = {
   debug: (msg: string, ...args: unknown[]) => {
-    if (shouldLog("debug")) console.debug(formatMessage("debug", msg), ...args);
+    if (shouldLog("debug")) console.log(formatMessage("debug", msg), ...args);
   },
   info: (msg: string, ...args: unknown[]) => {
     if (shouldLog("info")) console.info(formatMessage("info", msg), ...args);
