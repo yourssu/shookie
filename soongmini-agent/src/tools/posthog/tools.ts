@@ -1,6 +1,6 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import { PostHogClient } from "./client.js";
+import { PostHogClientManager } from "./client.js";
 import {
   queryEventsSchema,
   queryInsightsSchema,
@@ -8,10 +8,11 @@ import {
   getDashboardSchema,
   listPersonsSchema,
   simpleLimitSchema,
+  noInputSchema,
   resultSchema,
 } from "./schemas.js";
 
-export function createPostHogTools(client: PostHogClient) {
+export function createPostHogTools(manager: PostHogClientManager) {
   return {
     queryEvents: createTool({
       id: "query-events",
@@ -19,6 +20,7 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: queryEventsSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.queryEvents(input) };
       },
     }),
@@ -28,24 +30,27 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: queryInsightsSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.queryInsights(input.insight_id) };
       },
     }),
     listFeatureFlags: createTool({
       id: "list-feature-flags",
       description: "PostHog 기능 플래그 목록을 조회합니다.",
-      inputSchema: z.object({}),
+      inputSchema: noInputSchema,
       outputSchema: resultSchema,
-      execute: async () => {
+      execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.listFeatureFlags() };
       },
     }),
     listDashboards: createTool({
       id: "list-dashboards",
       description: "PostHog 대시보드 목록을 조회합니다.",
-      inputSchema: z.object({}),
+      inputSchema: noInputSchema,
       outputSchema: resultSchema,
-      execute: async () => {
+      execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.listDashboards() };
       },
     }),
@@ -55,6 +60,7 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: getDashboardSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.getDashboard(input.dashboard_id) };
       },
     }),
@@ -64,6 +70,7 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: queryHogQLSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.queryHogQL(input.query) };
       },
     }),
@@ -73,6 +80,7 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: listPersonsSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return {
           result: await client.listPersons({
             distinctId: input.distinct_id,
@@ -88,6 +96,7 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: simpleLimitSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.listCohorts(input.limit) };
       },
     }),
@@ -97,6 +106,7 @@ export function createPostHogTools(client: PostHogClient) {
       inputSchema: simpleLimitSchema,
       outputSchema: resultSchema,
       execute: async (input) => {
+        const client = manager.getClient(input.project);
         return { result: await client.listExperiments(input.limit) };
       },
     }),
