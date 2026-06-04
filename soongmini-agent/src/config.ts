@@ -24,6 +24,9 @@ const envSchema = z.object({
   // Agent
   MAX_TOOL_ITERATIONS: z.coerce.number().default(8),
 
+  // Database
+  DATABASE_URL: z.string().default("postgresql://postgres:postgres@localhost:5432/soongmini"),
+
   // Logging
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });

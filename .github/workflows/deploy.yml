@@ -20,15 +20,6 @@ jobs:
             git pull origin main
             docker stop soongmini-bot || true
             docker rm soongmini-bot || true
-            docker rmi soongmini-bot || true
-            docker build -t soongmini-bot -f soongmini-agent/Dockerfile .
-            docker run -d \
-              --name soongmini-bot \
-              --restart always \
-              -e SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }} \
-              -e SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
-              -e LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
-              -e POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
-              -e GITHUB=${{ secrets.GITHUB }} \
-              -e LOG_LEVEL=debug \
-              soongmini-bot
+            docker compose down || true
+            docker compose build
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} docker compose up -d
