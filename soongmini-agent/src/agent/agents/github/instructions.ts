@@ -1,7 +1,20 @@
 import type { GitHubClient } from "../../../tools/github/client.js";
+import { getAllGitHubKnowledge } from "../../../knowledge/github/index.js";
 
 export function buildGithubInstructions(client: GitHubClient): string {
   const repoList = client.accessibleRepos.join(", ");
+  const knowledgeMap = getAllGitHubKnowledge();
+
+  const knowledgeSections: string[] = [];
+  for (const [repoName, instructions] of knowledgeMap) {
+    if (client.accessibleRepos.includes(repoName)) {
+      knowledgeSections.push(`### ${repoName}\n${instructions}`);
+    }
+  }
+
+  const knowledgeBlock = knowledgeSections.length > 0
+    ? `\n## 레포별 도메인 지식\n\n다음은 각 리포지토리에 대한 도메인 지식이다. 해당 리포지토리의 코드를 탐색할 때 이 지식을 활용하여 더 정확한 분석과 설명을 제공한다.\n\n${knowledgeSections.join("\n\n")}`
+    : "";
 
   return `
 너는 GitHub 리포지토리 탐색 전문가다.
@@ -16,6 +29,7 @@ export function buildGithubInstructions(client: GitHubClient): string {
 - 접근 가능한 리포지토리: ${repoList}
 - 사용자가 리포지토리를 지정하지 않으면 접근 가능한 리포지토리를 기준으로 응답한다
 - 접근 권한이 없는 리포지토리는 조회할 수 없다. 목록에 없는 리포지토리를 요청하면 권한이 없다고 안내한다
+${knowledgeBlock}
 
 ## 도구 사용 가이드
 - 디렉토리 구조 탐색: getRepoTree로 폴더 목록 확인 → getFileContent로 파일 내용 읽기
