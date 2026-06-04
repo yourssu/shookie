@@ -27,7 +27,7 @@ agent/coordinator — 코디네이터 에이전트 (질문 분석 → 서브 에
     ↓
 slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
     ↓
-Slack 스레드에 답글
+Slack 스레드에 답글 + 호출 기록 DB 저장
 ```
 
 - **멀티 에이전트 패턴**: 코디네이터가 도메인별 서브 에이전트에 위임
@@ -35,6 +35,7 @@ Slack 스레드에 답글
 - **스레드 단위 대화**: Slack 스레드(`channel:thread_ts`) = 하나의 대화 컨텍스트 (최대 30메시지)
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
 - **Slack Block Kit 포맷팅**: LLM 응답 Markdown을 헤더, 구분선, 테이블, mrkdwn 등 Block Kit으로 자동 변환
+- **호출 로깅**: 모든 에이전트 호출(사용자, 질문, 응답, 토큰 사용량)을 PostgreSQL에 영구 저장
 
 ## 서브 에이전트
 
@@ -102,7 +103,13 @@ soongmini/
 │   │   ├── logger.ts                # 로거
 │   │   └── index.ts                 # 엔트리포인트
 │   └── Dockerfile
-├── database/                        # 스키마 마이그레이션 (Phase 3)
+├── database/                        # PostgreSQL 연결 풀, 호출 로깅, 마이그레이션
+│   ├── src/
+│   │   ├── pool.ts                  # pg 연결 풀 (lazy singleton)
+│   │   ├── log-agent-call.ts        # 에이전트 호출 기록 저장
+│   │   └── index.ts
+│   └── migrations/001_init.sql      # agent_calls 테이블 스키마
+├── docker-compose.yml               # bot + PostgreSQL 컨테이너 정의
 ├── package.json                     # workspace root
 └── tsconfig.base.json
 ```
@@ -129,6 +136,7 @@ yarn install
 # 선택: POSTHOG_API_KEY, GITHUB
 
 # 빌드
+yarn workspace database build
 yarn workspace soongmini-agent build
 
 # 실행
@@ -140,7 +148,7 @@ yarn workspace soongmini-agent test
 
 ## 배포
 
-`main` 브랜치에 push하면 GitHub Actions가 자동으로 EC2에 배포합니다.
+`main` 브랜치에 push하면 GitHub Actions가 자동으로 EC2에 배포합니다. Docker Compose로 봇과 PostgreSQL이 함께 실행됩니다.
 
 | GitHub Secret | 설명 |
 |---|---|
@@ -150,15 +158,18 @@ yarn workspace soongmini-agent test
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth Token |
 | `SLACK_APP_TOKEN` | Slack App-Level Token (Socket Mode) |
 | `LLM_API_KEY` | LLM API 키 |
+| `LLM_BASE_URL` | LLM API 엔드포인트 (기본: DeepSeek) |
 | `POSTHOG_API_KEY` | PostHog Personal API Key |
 | `GITHUB` | GitHub Personal Access Token |
+| `POSTGRES_PASSWORD` | PostgreSQL 비밀번호 |
 
 ## 기술 스택
 
 - **TypeScript ESM** (Node.js 20+) + @slack/bolt (Socket Mode)
 - **Mastra** (에이전트 프레임워크)
 - **LLM** DeepSeek (`@ai-sdk/deepseek`, OpenAI 호환 API)
+- **PostgreSQL** (`pg`) — 에이전트 호출 로깅
 - **Zod** (환경변수 및 도구 스키마 검증)
 - **Yarn 4** (monorepo, corepack)
-- **Docker** + GitHub Actions CI/CD → EC2
+- **Docker Compose** (bot + PostgreSQL) + GitHub Actions CI/CD → EC2
 - **Vitest** (테스트)
