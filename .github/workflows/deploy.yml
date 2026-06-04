@@ -22,4 +22,11 @@ jobs:
             docker rm soongmini-bot || true
             docker compose down || true
             docker compose build
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} docker compose up -d
+            SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }} \
+            SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
+            LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
+            POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
+            GITHUB=${{ secrets.GITHUB }} \
+            LOG_LEVEL=debug \
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
+            docker compose up -d
