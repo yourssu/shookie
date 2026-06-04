@@ -3,9 +3,15 @@ import type { Agent } from "@mastra/core/agent";
 import { InMemoryConversationStore, type Message } from "../services/memory/in-memory.js";
 import { buildSessionId, extractText } from "./thread-context.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
+import { config } from "../config.js";
 import { logger } from "../logger.js";
 
 const store = new InMemoryConversationStore();
+
+const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
+  posthog_agent: "🔍 PostHog 데이터 분석 중...",
+  github_agent: "🐙 GitHub 리포지토리 탐색 중...",
+};
 
 export function registerHandlers(app: App, agent: Agent): void {
   app.event("app_mention", async ({ event, client }) => {
@@ -53,24 +59,55 @@ async function handleConversation(
     const history = store.buildMessages(sessionId);
     const prompt = history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
-    logger.info("🤖 응답 생성 시작...");
-    const result = await agent.generate([{ role: "user", content: prompt }], {
-      maxSteps: 8,
+    logger.info("🤖 응답 스트리밍 시작...");
+    const streamResult = await agent.stream([{ role: "user", content: prompt }], {
+      maxSteps: config.MAX_TOOL_ITERATIONS,
     });
-    logger.info("🤖 응답 생성 완료");
 
-    const responseText = result.text || "응답을 생성하지 못했습니다.";
+    const toolNamesSeen: string[] = [];
+    const sentProgressMessages = new Set<string>();
 
-    const usage = await result.usage;
-    const steps = result.steps ?? [];
+    const reader = streamResult.fullStream.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (value.type === "tool-call") {
+          const toolName = (value as { payload: { toolName: string } }).payload.toolName;
+          if (!toolNamesSeen.includes(toolName)) {
+            toolNamesSeen.push(toolName);
+          }
+
+          const progressMsg = TOOL_PROGRESS_MESSAGES[toolName];
+          if (progressMsg && !sentProgressMessages.has(toolName)) {
+            sentProgressMessages.add(toolName);
+            await app.client.chat.postMessage({
+              channel,
+              thread_ts: threadTs,
+              text: progressMsg,
+            });
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    logger.info("🤖 응답 스트리밍 완료");
+
+    const responseText = (await streamResult.text) || "응답을 생성하지 못했습니다.";
+
+    const usage = await streamResult.usage;
+    const steps = await streamResult.steps;
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
 
     logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
     logger.debug("result.usage:", JSON.stringify(usage));
     logger.debug("result.steps count:", steps.length);
-    logger.debug("result.text length:", result.text?.length ?? 0);
-    logger.debug("result.finishReason:", result.finishReason);
+    logger.debug("result.text length:", responseText.length);
+    logger.debug("result.finishReason:", await streamResult.finishReason);
 
     for (const [i, step] of steps.entries()) {
       logger.debug(`--- step[${i}] ---`);
@@ -85,14 +122,10 @@ async function handleConversation(
       }
     }
 
-    const toolNames = steps
-      .flatMap((step) => (step.toolCalls ?? []).map((tc) => tc.payload.toolName));
-    const cost = (inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000;
-
     const debugFooter = [
-      `🔧 사용 도구: ${toolNames.length > 0 ? [...new Set(toolNames)].join(", ") : "없음"}`,
+      `🔧 사용 도구: ${toolNamesSeen.length > 0 ? [...new Set(toolNamesSeen)].join(", ") : "없음"}`,
       `💰 토큰: 입력 ${inputTokens.toLocaleString()} / 출력 ${outputTokens.toLocaleString()}`,
-      `💵 비용: $${cost.toFixed(4)}`,
+      `💵 비용: $${((inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000).toFixed(4)}`,
     ].join("\n");
 
     const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, debugFooter);
