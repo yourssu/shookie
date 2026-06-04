@@ -20,6 +20,7 @@ COPY soongmini-agent/ soongmini-agent/
 COPY database/ database/
 
 # Build
+RUN yarn workspace database build
 RUN yarn workspace soongmini-agent build
 
 # Run

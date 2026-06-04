@@ -5,6 +5,7 @@ import { buildSessionId, extractText } from "./thread-context.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { logAgentCall } from "database";
 
 const store = new InMemoryConversationStore();
 
@@ -27,7 +28,7 @@ export function registerHandlers(app: App, agent: Agent): void {
       return;
     }
 
-    await handleConversation(app, agent, text, event.channel, event.thread_ts ?? event.ts);
+    await handleConversation(app, agent, text, event.channel, event.thread_ts ?? event.ts, event.user ?? "unknown");
   });
 
   app.event("message", async ({ event, client }) => {
@@ -37,8 +38,8 @@ export function registerHandlers(app: App, agent: Agent): void {
     const text = extractText((event as { text?: string }).text);
     if (!text) return;
 
-    const msgEvent = event as { channel: string; thread_ts?: string; ts: string };
-    await handleConversation(app, agent, text, msgEvent.channel, msgEvent.thread_ts ?? msgEvent.ts);
+    const msgEvent = event as { channel: string; thread_ts?: string; ts: string; user?: string };
+    await handleConversation(app, agent, text, msgEvent.channel, msgEvent.thread_ts ?? msgEvent.ts, msgEvent.user ?? "unknown");
   });
 }
 
@@ -48,6 +49,7 @@ async function handleConversation(
   userText: string,
   channel: string,
   threadTs: string,
+  userId: string,
 ): Promise<void> {
   const sessionId = buildSessionId(channel, threadTs);
 
@@ -137,6 +139,17 @@ async function handleConversation(
       thread_ts: threadTs,
       text: fallbackText,
       blocks,
+    });
+
+    await logAgentCall({
+      userId,
+      channel,
+      threadTs,
+      question: userText,
+      answer: responseText,
+      toolsUsed: [...new Set(toolNamesSeen)],
+      inputTokens,
+      outputTokens,
     });
   } catch (error) {
     logger.error("Error processing message:", error);
