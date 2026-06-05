@@ -3,7 +3,7 @@ services:
     image: postgres:16
     restart: always
     environment:
-      POSTGRES_DB: soongmini
+      POSTGRES_DB: shookie
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
@@ -18,7 +18,7 @@ services:
   bot:
     build:
       context: .
-      dockerfile: soongmini-agent/Dockerfile
+      dockerfile: shookie/Dockerfile
     depends_on:
       db:
         condition: service_healthy
@@ -32,7 +32,7 @@ services:
       POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}
       GITHUB: ${GITHUB:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/soongmini
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/shookie
 
 volumes:
   pgdata:

@@ -25,7 +25,7 @@ async function main() {
 
   // 5. 시작
   await app.start();
-  logger.info("숭민이가 시작되었습니다! 🚀");
+  logger.info("슈키가 시작되었습니다! 🚀");
 
   // 6. 종료 시 DB 연결 정리
   const shutdown = async () => {

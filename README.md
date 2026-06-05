@@ -1,4 +1,4 @@
-# 숭민이
+# 슈키 (shookie)
 
 유어슈(Yourssu) 사내 AI 어시스턴트 Slack 봇. 개발/비개발 구분 없이 자연어로 사내 데이터에 접근할 수 있는 LLM 에이전트.
 
@@ -6,7 +6,7 @@
 
 Slack에서 두 가지 방식으로 질문:
 
-- **@멘션**: 채널에서 `@숭민이 PostHog에 어떤 이벤트가 있어?`
+- **@멘션**: 채널에서 `@슈키 PostHog에 어떤 이벤트가 있어?`
 - **DM**: 봇과 1:1 대화
 
 코디네이터 에이전트가 질문을 분석해 적절한 서브 에이전트에 위임하고, 결과를 종합해 답변합니다.
@@ -81,8 +81,8 @@ GitHub 리포지토리 탐색 전문.
 ## 모노레포 구조
 
 ```
-soongmini/
-├── soongmini-agent/                 # 메인 슬랙 봇 패키지
+shookie/
+├── shookie/                         # 메인 슬랙 봇 패키지
 │   ├── src/
 │   │   ├── agent/
 │   │   │   ├── agents/
@@ -116,14 +116,14 @@ soongmini/
 
 ## 새 서브 에이전트 추가 방법
 
-1. `soongmini-agent/src/tools/<서비스>/`에 client.ts, schemas.ts, tools.ts 생성
-2. `soongmini-agent/src/agent/agents/<도메인>/`에 index.ts, instructions.ts, description.ts, tools.ts 생성
-3. `soongmini-agent/src/config.ts`에 환경변수 추가 (선택적)
-4. `soongmini-agent/src/agent/index.ts`의 `createAgent()`에서 조건부 등록
-5. `soongmini-agent/src/agent/agents/coordinator/tools.ts`에 위임 도구 추가
+1. `shookie/src/tools/<서비스>/`에 client.ts, schemas.ts, tools.ts 생성
+2. `shookie/src/agent/agents/<도메인>/`에 index.ts, instructions.ts, description.ts, tools.ts 생성
+3. `shookie/src/config.ts`에 환경변수 추가 (선택적)
+4. `shookie/src/agent/index.ts`의 `createAgent()`에서 조건부 등록
+5. `shookie/src/agent/agents/coordinator/tools.ts`에 위임 도구 추가
 6. 코디네이터 instructions.ts 섹션 7 도메인 카탈로그 업데이트
 7. `instructions.test.ts`에 서브 에이전트 등장 테스트 추가
-8. `.github/workflows/deploy.yml`에 새 환경변수 `-e` 항목 추가
+8. `.github/workflows/deploy.yml`에 새 환경변수 항목 추가
 
 ## 로컬 개발
 
@@ -131,19 +131,19 @@ soongmini/
 # 의존성 설치
 yarn install
 
-# .env 파일 설정 (soongmini-agent/.env)
+# .env 파일 설정 (shookie/.env)
 # 필수: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, LLM_API_KEY
 # 선택: POSTHOG_API_KEY, GITHUB
 
 # 빌드
 yarn workspace database build
-yarn workspace soongmini-agent build
+yarn workspace shookie build
 
 # 실행
-yarn workspace soongmini-agent start
+yarn workspace shookie start
 
 # 테스트
-yarn workspace soongmini-agent test
+yarn workspace shookie test
 ```
 
 ## 배포
