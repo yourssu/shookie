@@ -10,8 +10,8 @@ export function createCoordinatorAgent(subAgents: { posthog?: AgentType }, model
 
   return new Agent({
     id: "coordinator",
-    name: "슈키(shookie)",
-    instructions: () => buildCoordinatorInstructions(),
+    name: "숭민이",
+    instructions: buildCoordinatorInstructions(),
     description: coordinatorDescription,
     model,
     tools,

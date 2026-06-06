@@ -1,0 +1,34 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/soongmini
+            git pull origin main
+            docker stop soongmini-bot || true
+            docker rm soongmini-bot || true
+            docker rmi soongmini-bot || true
+            docker build -t soongmini-bot -f soongmini-agent/Dockerfile .
+            docker run -d \
+              --name soongmini-bot \
+              --restart always \
+              -e SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }} \
+              -e SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
+              -e LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
+              -e POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
+              -e GITHUB=${{ secrets.GITHUB }} \
+              -e LOG_LEVEL=debug \
+              soongmini-bot

@@ -1,0 +1,8 @@
+.env
+.git
+node_modules
+dist
+.venv
+personal_doc
+*.md
+!important.md
