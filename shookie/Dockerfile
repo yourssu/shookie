@@ -9,20 +9,20 @@ RUN corepack enable
 COPY package.json yarn.lock .yarnrc.yml tsconfig.base.json ./
 
 # Copy package files
-COPY soongmini-agent/package.json soongmini-agent/package.json
+COPY shookie/package.json shookie/package.json
 COPY database/package.json database/package.json
 
 # Install dependencies
 RUN yarn install --immutable
 
 # Copy source
-COPY soongmini-agent/ soongmini-agent/
+COPY shookie/ shookie/
 COPY database/ database/
 
 # Build
 RUN yarn workspace database build
-RUN yarn workspace soongmini-agent build
+RUN yarn workspace shookie build
 
 # Run
-WORKDIR /app/soongmini-agent
+WORKDIR /app/shookie
 CMD ["node", "dist/index.js"]

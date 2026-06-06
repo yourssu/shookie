@@ -22,7 +22,7 @@ describe("coordinator agent instructions", () => {
   });
 
   it("contains bot identity", () => {
-    expect(instructions).toContain("숭민이");
+    expect(instructions).toContain("슈키");
     expect(instructions).toContain("유어슈");
   });
 
