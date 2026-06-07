@@ -13,8 +13,8 @@
 
 ## 아키텍처
 
-- **멀티 에이전트 패턴 (sndy 스타일)**: 코디네이터 에이전트가 서브 에이전트에 위임
-- **코디네이터** (`shookie/src/agent/agents/coordinator/`): 9섹션 프롬프트 기반 조정자
+- **멀티 에이전트 패턴 (sndy 스타일)**: 메인 에이전트가 서브 에이전트에 위임
+- **메인 에이전트** (`shookie/src/agent/agents/main-shookie/`): 9섹션 프롬프트 기반 조정자
 - **서브 에이전트** (`shookie/src/agent/agents/<도메인>/`): 도메인별 전문 에이전트
 - **도구** (`shookie/src/tools/<서비스>/`): Mastra `createTool` 기반
 - **대화 단위**: Slack 스레드 (`channel:thread_ts`)
@@ -34,8 +34,8 @@ shookie/
 2. `shookie/src/agent/agents/<도메인>/`에 index.ts, instructions.ts, description.ts, tools.ts 생성
 3. `shookie/src/config.ts`에 환경변수 추가 (선택적)
 4. `shookie/src/agent/index.ts`의 `createAgent()`에서 조건부 등록
-5. `shookie/src/agent/agents/coordinator/tools.ts`에 위임 도구 추가
-6. 코디네이터 instructions.ts 섹션 7 도메인 카탈로그 업데이트
+5. `shookie/src/agent/agents/main-shookie/tools.ts`에 위임 도구 추가
+6. 메인 에이전트 instructions.ts 섹션 7 도메인 카탈로그 업데이트
 7. `instructions.test.ts`에 서브 에이전트 등장 테스트 추가
 8. `.github/workflows/deploy.yml`에 새 환경변수 항목 추가
 

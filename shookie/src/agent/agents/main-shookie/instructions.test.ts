@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildCoordinatorInstructions } from "./instructions.js";
+import { buildMainShookieInstructions } from "./instructions.js";
 
-describe("coordinator agent instructions", () => {
-  const instructions = buildCoordinatorInstructions();
+describe("main-shookie agent instructions", () => {
+  const instructions = buildMainShookieInstructions();
 
   it("contains all 9 sections", () => {
     const required = [

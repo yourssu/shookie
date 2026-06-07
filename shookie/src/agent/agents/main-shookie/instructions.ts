@@ -1,4 +1,4 @@
-export function buildCoordinatorInstructions(): string {
+export function buildMainShookieInstructions(): string {
   const now = new Date().toLocaleString("sv", { timeZone: "Asia/Seoul" });
 
   return `

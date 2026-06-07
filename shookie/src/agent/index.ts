@@ -1,5 +1,5 @@
 import { createDeepSeek } from "@ai-sdk/deepseek";
-import { createCoordinatorAgent } from "./agents/coordinator/index.js";
+import { createMainShookieAgent } from "./agents/main-shookie/index.js";
 import { createPostHogAgent } from "./agents/posthog/index.js";
 import { createGitHubAgent } from "./agents/github/index.js";
 import { PostHogClientManager, POSTHOG_PROJECTS } from "../tools/posthog/client.js";
@@ -33,8 +33,8 @@ export function createAgent() {
     logger.info("GitHub 토큰이 없어 서브 에이전트를 등록하지 않습니다");
   }
 
-  const coordinator = createCoordinatorAgent(subAgents, model);
-  logger.info("코디네이터 에이전트 생성 완료");
+  const mainShookie = createMainShookieAgent(subAgents, model);
+  logger.info("메인 에이전트 생성 완료");
 
-  return coordinator;
+  return mainShookie;
 }

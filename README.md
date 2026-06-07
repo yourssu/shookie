@@ -9,7 +9,7 @@ Slack에서 두 가지 방식으로 질문:
 - **@멘션**: 채널에서 `@슈키 PostHog에 어떤 이벤트가 있어?`
 - **DM**: 봇과 1:1 대화
 
-코디네이터 에이전트가 질문을 분석해 적절한 서브 에이전트에 위임하고, 결과를 종합해 답변합니다.
+메인 에이전트가 질문을 분석해 적절한 서브 에이전트에 위임하고, 결과를 종합해 답변합니다.
 
 ## 아키텍처
 
@@ -18,7 +18,7 @@ Slack에서 두 가지 방식으로 질문:
     ↓
 slack/handlers.ts — 이벤트 감지, 스레드 단위 세션 관리
     ↓
-agent/coordinator — 코디네이터 에이전트 (질문 분석 → 서브 에이전트 라우팅)
+agent/main-shookie — 메인 에이전트 (질문 분석 → 서브 에이전트 라우팅)
     ↓
 ┌─────────────────────┬──────────────────────┐
 │  PostHog Analyst     │  GitHub Explorer     │
@@ -30,7 +30,7 @@ slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
 Slack 스레드에 답글 + 호출 기록 DB 저장
 ```
 
-- **멀티 에이전트 패턴**: 코디네이터가 도메인별 서브 에이전트에 위임
+- **멀티 에이전트 패턴**: 메인 에이전트가 도메인별 서브 에이전트에 위임
 - **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리, DynamicArgument)
 - **스레드 단위 대화**: Slack 스레드(`channel:thread_ts`) = 하나의 대화 컨텍스트 (최대 30메시지)
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
@@ -86,7 +86,7 @@ shookie/
 │   ├── src/
 │   │   ├── agent/
 │   │   │   ├── agents/
-│   │   │   │   ├── coordinator/     # 코디네이터 에이전트 (9섹션 프롬프트)
+│   │   │   │   ├── main-shookie/    # 메인 에이전트 (9섹션 프롬프트)
 │   │   │   │   ├── posthog/         # PostHog 분석 에이전트
 │   │   │   │   └── github/          # GitHub 탐색 에이전트
 │   │   │   └── index.ts             # 에이전트 팩토리
@@ -120,8 +120,8 @@ shookie/
 2. `shookie/src/agent/agents/<도메인>/`에 index.ts, instructions.ts, description.ts, tools.ts 생성
 3. `shookie/src/config.ts`에 환경변수 추가 (선택적)
 4. `shookie/src/agent/index.ts`의 `createAgent()`에서 조건부 등록
-5. `shookie/src/agent/agents/coordinator/tools.ts`에 위임 도구 추가
-6. 코디네이터 instructions.ts 섹션 7 도메인 카탈로그 업데이트
+5. `shookie/src/agent/agents/main-shookie/tools.ts`에 위임 도구 추가
+6. 메인 에이전트 instructions.ts 섹션 7 도메인 카탈로그 업데이트
 7. `instructions.test.ts`에 서브 에이전트 등장 테스트 추가
 8. `.github/workflows/deploy.yml`에 새 환경변수 항목 추가
 

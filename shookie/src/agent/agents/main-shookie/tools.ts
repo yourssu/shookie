@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Agent } from "@mastra/core/agent";
 import { logger } from "../../../logger.js";
 
-export function createCoordinatorTools(subAgents: {
+export function createMainShookieTools(subAgents: {
   posthog?: Agent;
   github?: Agent;
 }) {
