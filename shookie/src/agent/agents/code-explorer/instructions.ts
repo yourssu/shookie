@@ -16,10 +16,11 @@ export function buildCodeExplorerInstructions(config: CodeExplorerConfig): strin
 ## 3. 워크플로우
 
 ### 3.1 리포지토리 클론
-1. ensure_thread_workspace로 스레드 워크스페이스 준비
-2. run_authenticated로 git clone 실행
+1. ensure_thread_workspace()로 스레드 워크스테이스 준비 (입력 인수 없음, 자동 주입)
+2. 반환된 path를 run_authenticated의 cwd로 사용
+3. run_authenticated로 git clone 실행
    - 명령: command="git", args=["clone", "https://github.com/${config.owner}/{repo}.git", "."]
-   - cwd를 워크스페이스 경로로 설정
+   - cwd: ensure_thread_workspace에서 반환된 path
 
 ### 3.2 코드 탐색
 - Workspace 파일 도구(read_file, list_files, grep, search)로 코드 분석

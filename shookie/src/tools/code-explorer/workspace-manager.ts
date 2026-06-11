@@ -4,6 +4,8 @@ import { resolve, join } from "path";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { logger } from "../../logger.js";
+import type { ToolExecutionContext } from "@mastra/core/tools";
+import type { RequestContext } from "@mastra/core/request-context";
 
 function threadDir(basePath: string, channel: string, threadTs: string): string {
   return resolve(basePath, `threads/${channel}_${threadTs}`);
@@ -67,6 +69,15 @@ export async function ensureThreadCapacity(
   await evictOldWorkspaces(basePath, maxGb);
 }
 
+function getContextIds(context?: ToolExecutionContext): { channel: string; threadTs: string } {
+  const channel = context?.requestContext?.get("channel") as string | undefined;
+  const threadTs = context?.requestContext?.get("threadTs") as string | undefined;
+  if (!channel || !threadTs) {
+    throw new Error("requestContext에 channel/threadTs가 없습니다. ensure_thread_workspace는 스레드 컨텍스트에서만 사용할 수 있습니다.");
+  }
+  return { channel, threadTs };
+}
+
 export function createWorkspaceManagerTools(
   workspaceBasePath: string,
   workspaceMaxGb: number,
@@ -74,20 +85,19 @@ export function createWorkspaceManagerTools(
   const ensureThreadWorkspace = createTool({
     id: "ensure-thread-workspace",
     description:
-      "현재 스레드의 워크스페이스 디렉토리를 준비합니다. 리포지토리 클론 전에 반드시 호출해야 합니다.",
-    inputSchema: z.object({
-      channel: z.string(),
-      threadTs: z.string(),
-    }),
+      "현재 스레드의 워크스페이스 디렉토리를 준비합니다. 리포지토리 클론 전에 반드시 호출해야 합니다. channel/threadTs는 자동으로 주입되므로 입력 인수는 필요 없습니다.",
+    inputSchema: z.object({}),
     outputSchema: z.object({
       path: z.string(),
       created: z.boolean(),
     }),
-    execute: async (input) => {
+    execute: async (_input, context) => {
+      const { channel, threadTs } = getContextIds(context);
+
       await mkdir(workspaceBasePath, { recursive: true });
       await evictOldWorkspaces(workspaceBasePath, workspaceMaxGb);
 
-      const dir = threadDir(workspaceBasePath, input.channel, input.threadTs);
+      const dir = threadDir(workspaceBasePath, channel, threadTs);
       const created = !existsSync(dir);
       if (created) {
         await mkdir(dir, { recursive: true });
@@ -99,16 +109,15 @@ export function createWorkspaceManagerTools(
   const finishThreadWorkspace = createTool({
     id: "finish-thread-workspace",
     description:
-      "현재 스레드의 워크스페이스를 정리합니다. 작업 완료 후 호출합니다.",
-    inputSchema: z.object({
-      channel: z.string(),
-      threadTs: z.string(),
-    }),
+      "현재 스레드의 워크스페이스를 정리합니다. 작업 완료 후 호출합니다. channel/threadTs는 자동으로 주입됩니다.",
+    inputSchema: z.object({}),
     outputSchema: z.object({
       cleaned: z.boolean(),
     }),
-    execute: async (input) => {
-      const dir = threadDir(workspaceBasePath, input.channel, input.threadTs);
+    execute: async (_input, context) => {
+      const { channel, threadTs } = getContextIds(context);
+
+      const dir = threadDir(workspaceBasePath, channel, threadTs);
       if (existsSync(dir)) {
         await rm(dir, { recursive: true, force: true });
         return { cleaned: true };
