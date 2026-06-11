@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { resolve, join } from "path";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import { logger } from "../../logger.js";
 
 function threadDir(basePath: string, channel: string, threadTs: string): string {
   return resolve(basePath, `threads/${channel}_${threadTs}`);
@@ -54,7 +55,16 @@ async function evictOldWorkspaces(basePath: string, maxGb: number): Promise<void
     const dirSize = await getTotalSize(d.path);
     await rm(d.path, { recursive: true, force: true });
     freed += dirSize;
+    logger.info(`워크스페이스 LRU 정리: ${d.name} (${(dirSize / 1024 / 1024).toFixed(1)}MB)`);
   }
+}
+
+export async function ensureThreadCapacity(
+  basePath: string,
+  maxGb: number,
+): Promise<void> {
+  await mkdir(basePath, { recursive: true });
+  await evictOldWorkspaces(basePath, maxGb);
 }
 
 export function createWorkspaceManagerTools(

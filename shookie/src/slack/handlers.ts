@@ -6,6 +6,7 @@ import { buildSessionId, extractText } from "./thread-context.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { ensureThreadCapacity } from "../tools/code-explorer/workspace-manager.js";
 import { logAgentCall } from "database";
 
 const store = new InMemoryConversationStore();
@@ -56,6 +57,8 @@ async function handleConversation(
 
   try {
     logger.info(`📩 메시지 수신: "${userText.slice(0, 100)}"`);
+
+    await ensureThreadCapacity(config.THREAD_WORKSPACE_BASE_PATH, config.THREAD_WORKSPACE_MAX_GB);
 
     store.add(sessionId, { role: "user", content: userText });
 
