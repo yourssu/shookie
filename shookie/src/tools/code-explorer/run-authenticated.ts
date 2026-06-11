@@ -5,6 +5,8 @@ import { z } from "zod";
 
 const MAX_OUTPUT_BYTES = 32 * 1024;
 
+const ALLOWED_COMMANDS = new Set(["git", "gh"]);
+
 const ALLOWED_ENV_KEYS = new Set(["PATH", "HOME"]);
 
 function buildEnv(gitHubToken: string): NodeJS.ProcessEnv {
@@ -82,23 +84,40 @@ export function createRunAuthenticatedTool(
       exitCode: z.number(),
     }),
     execute: async (input) => {
-      const env = buildEnv(gitHubToken);
-
-      const cwd = input.cwd ?? ".";
-      const resolvedCwd = await realpath(cwd.startsWith("/")
-        ? cwd
-        : `${workspaceBasePath}/${cwd}`);
-      const resolvedBase = await realpath(workspaceBasePath);
-
-      if (!resolvedCwd.startsWith(resolvedBase)) {
+      if (!ALLOWED_COMMANDS.has(input.command)) {
         return {
           stdout: "",
-          stderr: "오류: 워크스페이스 외부 경로에서는 명령을 실행할 수 없습니다.",
+          stderr: `"${input.command}"은(는) 허용되지 않는 명령입니다. git 또는 gh만 사용 가능합니다.`,
           exitCode: 1,
         };
       }
 
-      return execCommand(input.command, input.args, resolvedCwd, env);
+      const env = buildEnv(gitHubToken);
+
+      try {
+        const cwd = input.cwd ?? ".";
+        const resolvedBase = await realpath(workspaceBasePath);
+        const resolvedCwd = await realpath(cwd.startsWith("/")
+          ? cwd
+          : `${resolvedBase}/${cwd}`);
+
+        if (!resolvedCwd.startsWith(resolvedBase)) {
+          return {
+            stdout: "",
+            stderr: "오류: 워크스페이스 외부 경로에서는 명령을 실행할 수 없습니다.",
+            exitCode: 1,
+          };
+        }
+
+        return execCommand(input.command, input.args, resolvedCwd, env);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "경로 확인 중 오류가 발생했습니다.";
+        return {
+          stdout: "",
+          stderr: `오류: 워크스페이스 경로를 확인할 수 없습니다. ensure_thread_workspace를 먼저 호출했는지 확인하세요. (${message})`,
+          exitCode: 1,
+        };
+      }
     },
   });
 }

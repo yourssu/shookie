@@ -1,5 +1,6 @@
 import { Agent } from "@mastra/core/agent";
 import { Workspace, LocalFilesystem } from "@mastra/core/workspace";
+import { resolve } from "path";
 import { buildCodeExplorerInstructions } from "./instructions.js";
 import { codeExplorerDescription } from "./description.js";
 import { createCodeExplorerTools, type CodeExplorerConfig } from "./tools.js";
@@ -7,7 +8,7 @@ import { createCodeExplorerTools, type CodeExplorerConfig } from "./tools.js";
 export { type CodeExplorerConfig } from "./tools.js";
 
 function buildThreadPath(basePath: string, channel: string, threadTs: string): string {
-  return `${basePath}/threads/${channel}_${threadTs}`;
+  return resolve(basePath, "threads", `${channel}_${threadTs}`);
 }
 
 export function createCodeExplorerAgent(model: any, config: CodeExplorerConfig): Agent {
