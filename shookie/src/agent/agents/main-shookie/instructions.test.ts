@@ -40,8 +40,8 @@ describe("main-shookie agent instructions", () => {
     expect(instructions).toContain("PostHog Analyst");
   });
 
-  it("lists GitHub Explorer in domain catalog", () => {
-    expect(instructions).toContain("GitHub Explorer");
+  it("lists Code Explorer in domain catalog", () => {
+    expect(instructions).toContain("Code Explorer");
   });
 
   it("includes current timestamp", () => {

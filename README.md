@@ -21,8 +21,8 @@ slack/handlers.ts — 이벤트 감지, 스레드 단위 세션 관리
 agent/main-shookie — 메인 에이전트 (질문 분석 → 서브 에이전트 라우팅)
     ↓
 ┌─────────────────────┬──────────────────────┐
-│  PostHog Analyst     │  GitHub Explorer     │
-│  (9개 도구)          │  (12개 도구)         │
+│  PostHog Analyst     │  Code Explorer       │
+│  (9개 도구)          │  (git/gh CLI + 파일) │
 └─────────────────────┴──────────────────────┘
     ↓
 slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
@@ -31,7 +31,7 @@ Slack 스레드에 답글 + 호출 기록 DB 저장
 ```
 
 - **멀티 에이전트 패턴**: 메인 에이전트가 도메인별 서브 에이전트에 위임
-- **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리, DynamicArgument)
+- **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리, Workspace API)
 - **스레드 단위 대화**: Slack 스레드(`channel:thread_ts`) = 하나의 대화 컨텍스트 (최대 30메시지)
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
 - **Slack Block Kit 포맷팅**: LLM 응답 Markdown을 헤더, 구분선, 테이블, mrkdwn 등 Block Kit으로 자동 변환
@@ -57,26 +57,20 @@ PostHog 분석 데이터 조회 전문. 다중 프로젝트를 지원합니다.
 
 **지원 프로젝트**: SSUTime-Prod, soongpt-prod (사용자가 프로젝트를 지정하지 않으면 기본 프로젝트 사용, 컨텍스트로 자동 판단)
 
-### GitHub Explorer
+### Code Explorer
 
-GitHub 리포지토리 탐색 전문.
+GitHub 리포지토리 코드 탐색, 수정, PR 생성 전문. 스레드별 격리된 워크스페이스에서 동작합니다.
 
 | 도구 | 설명 |
 |---|---|
-| `listRepos` | 접근 가능한 리포지토리 목록 |
-| `getRepoInfo` | 리포지토리 상세 정보 |
-| `getRepoTree` | 디렉토리 구조 탐색 |
-| `getFileContent` | 파일 내용 조회 |
-| `getReadme` | README.md 조회 |
-| `listPullRequests` | PR 목록 |
-| `getPullRequest` | PR 상세 (변경 파일, 리뷰 포함) |
-| `listCommits` | 커밋 이력 |
-| `searchCode` | 코드 검색 |
-| `listIssues` | 이슈 목록 |
-| `getIssue` | 이슈 상세 |
-| `listBranches` | 브랜치 목록 |
+| `run_authenticated` | git/gh CLI 명령 실행 (GitHub PAT 인증) |
+| `ensure_thread_workspace` | 스레드 워크스페이스 준비 |
+| `finish_thread_workspace` | 스레드 워크스페이스 정리 |
+| Workspace 파일 도구 | `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, `search` 등 (Mastra Workspace 자동 제공) |
 
-**접근 가능한 리포지토리**: soongpt-web, soongpt-backend (yourssu 조직)
+**워크플로우**: 워크스페이스 준비 → git clone → 코드 탐색/수정 → git push → PR 생성 → 워크스페이스 정리
+
+**보안**: 명령어는 `git`/`gh`만 허용, 워크스페이스 외부 경로 접근 차단, 환경변수 최소 노출
 
 ## 모노레포 구조
 
@@ -88,11 +82,11 @@ shookie/
 │   │   │   ├── agents/
 │   │   │   │   ├── main-shookie/    # 메인 에이전트 (9섹션 프롬프트)
 │   │   │   │   ├── posthog/         # PostHog 분석 에이전트
-│   │   │   │   └── github/          # GitHub 탐색 에이전트
+│   │   │   │   └── code-explorer/   # 코드 탐색 에이전트
 │   │   │   └── index.ts             # 에이전트 팩토리
 │   │   ├── tools/
 │   │   │   ├── posthog/             # PostHog API 클라이언트 + 9개 도구
-│   │   │   └── github/              # GitHub API 클라이언트 + 12개 도구
+│   │   │   └── code-explorer/       # git/gh CLI 실행 + 워크스페이스 관리
 │   │   ├── slack/
 │   │   │   ├── handlers.ts          # @멘션/DM 이벤트 핸들러
 │   │   │   ├── thread-context.ts    # 스레드 세션 관리
@@ -133,7 +127,7 @@ yarn install
 
 # .env 파일 설정 (shookie/.env)
 # 필수: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, LLM_API_KEY
-# 선택: POSTHOG_API_KEY, GITHUB
+# 선택: POSTHOG_API_KEY, GITHUB (PAT, repo 권한 필요)
 
 # 빌드
 yarn workspace database build

@@ -28,6 +28,8 @@ jobs:
             LLM_BASE_URL=https://api.deepseek.com \
             POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
             GITHUB=${{ secrets.GITHUB }} \
+            THREAD_WORKSPACE_BASE_PATH=/tmp/shookie-workspaces \
+            THREAD_WORKSPACE_MAX_GB=5 \
             LOG_LEVEL=debug \
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
             docker compose up -d
