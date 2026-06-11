@@ -1,5 +1,6 @@
 import { spawn } from "child_process";
 import { realpath } from "fs/promises";
+import { resolve } from "path";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 
@@ -118,7 +119,7 @@ export function createRunAuthenticatedTool(
       exitCode: z.number(),
       truncated: z.boolean(),
     }),
-    execute: async (input) => {
+    execute: async (input, context) => {
       if (!ALLOWED_COMMANDS.has(input.command)) {
         return {
           stdout: "",
@@ -131,7 +132,12 @@ export function createRunAuthenticatedTool(
       const env = buildEnv(gitHubToken);
 
       try {
-        const cwd = input.cwd ?? ".";
+        const channel = context?.requestContext?.get("channel") as string | undefined;
+        const threadTs = context?.requestContext?.get("threadTs") as string | undefined;
+        const defaultCwd = (channel && threadTs)
+          ? resolve(workspaceBasePath, "threads", `${channel}_${threadTs}`)
+          : workspaceBasePath;
+        const cwd = input.cwd ?? defaultCwd;
         const resolvedBase = await realpath(workspaceBasePath);
         const resolvedCwd = await realpath(cwd.startsWith("/")
           ? cwd

@@ -64,7 +64,7 @@ export function createMainShookieTools(subAgents: {
         }
         const result = await codeExplorerAgent.generate(
           [{ role: "user", content: input.task }],
-          opts,
+          { ...opts, maxSteps: 20 },
         );
         logger.debug("[code-explorer-agent] text length:", result.text?.length ?? 0);
         logger.debug("[code-explorer-agent] finishReason:", result.finishReason);
