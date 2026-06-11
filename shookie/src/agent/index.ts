@@ -24,18 +24,16 @@ export function createAgent() {
     logger.info("PostHog 설정이 없어 서브 에이전트를 등록하지 않습니다");
   }
 
-  if (config.GITHUB_APP_ID && config.GITHUB_PRIVATE_KEY && config.GITHUB_INSTALLATION_ID) {
+  if (config.GITHUB) {
     subAgents.codeExplorer = createCodeExplorerAgent(model, {
-      appId: config.GITHUB_APP_ID,
-      privateKey: config.GITHUB_PRIVATE_KEY,
-      installationId: config.GITHUB_INSTALLATION_ID,
+      gitHubToken: config.GITHUB,
       owner: config.GITHUB_OWNER,
       workspaceBasePath: config.THREAD_WORKSPACE_BASE_PATH,
       workspaceMaxGb: config.THREAD_WORKSPACE_MAX_GB,
     });
     logger.info("Code Explorer 서브 에이전트 등록 완료");
   } else {
-    logger.info("GitHub App 설정이 없어 Code Explorer 서브 에이전트를 등록하지 않습니다");
+    logger.info("GitHub 토큰이 없어 Code Explorer 서브 에이전트를 등록하지 않습니다");
   }
 
   const mainShookie = createMainShookieAgent(subAgents, model);

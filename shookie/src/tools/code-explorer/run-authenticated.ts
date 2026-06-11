@@ -2,7 +2,6 @@ import { spawn } from "child_process";
 import { realpath } from "fs/promises";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import { getInstallationToken } from "./github-app-auth.js";
 
 const MAX_OUTPUT_BYTES = 32 * 1024;
 
@@ -65,9 +64,7 @@ function execCommand(
 }
 
 export function createRunAuthenticatedTool(
-  appId: string,
-  privateKey: string,
-  installationId: string,
+  gitHubToken: string,
   workspaceBasePath: string,
 ) {
   return createTool({
@@ -85,8 +82,7 @@ export function createRunAuthenticatedTool(
       exitCode: z.number(),
     }),
     execute: async (input) => {
-      const token = await getInstallationToken(appId, privateKey, installationId);
-      const env = buildEnv(token);
+      const env = buildEnv(gitHubToken);
 
       const cwd = input.cwd ?? ".";
       const resolvedCwd = await realpath(cwd.startsWith("/")

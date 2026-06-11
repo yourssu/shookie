@@ -17,14 +17,9 @@ const envSchema = z.object({
   // PostHog (optional)
   POSTHOG_API_KEY: z.string().default(""),
 
-  // GitHub (optional)
+  // GitHub (optional) — PAT, code-explorer에서 GH_TOKEN으로 사용
   GITHUB: z.string().default(""),
   GITHUB_OWNER: z.string().default("yourssu"),
-
-  // GitHub App — code-explorer용 (optional)
-  GITHUB_APP_ID: z.string().default(""),
-  GITHUB_PRIVATE_KEY: z.string().default(""),
-  GITHUB_INSTALLATION_ID: z.string().default(""),
 
   // Thread Workspace
   THREAD_WORKSPACE_BASE_PATH: z.string().default("/tmp/shookie-workspaces"),

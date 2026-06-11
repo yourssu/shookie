@@ -27,9 +27,7 @@ jobs:
             LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
             LLM_BASE_URL=https://api.deepseek.com \
             POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
-            GITHUB_APP_ID=${{ secrets.GITHUB_APP_ID }} \
-            GITHUB_PRIVATE_KEY=${{ secrets.GITHUB_PRIVATE_KEY }} \
-            GITHUB_INSTALLATION_ID=${{ secrets.GITHUB_INSTALLATION_ID }} \
+            GITHUB=${{ secrets.GITHUB }} \
             THREAD_WORKSPACE_BASE_PATH=/tmp/shookie-workspaces \
             THREAD_WORKSPACE_MAX_GB=5 \
             LOG_LEVEL=debug \

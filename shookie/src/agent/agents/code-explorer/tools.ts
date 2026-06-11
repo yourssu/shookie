@@ -2,9 +2,7 @@ import { createRunAuthenticatedTool } from "../../../tools/code-explorer/run-aut
 import { createWorkspaceManagerTools } from "../../../tools/code-explorer/workspace-manager.js";
 
 export interface CodeExplorerConfig {
-  appId: string;
-  privateKey: string;
-  installationId: string;
+  gitHubToken: string;
   owner: string;
   workspaceBasePath: string;
   workspaceMaxGb: number;
@@ -12,9 +10,7 @@ export interface CodeExplorerConfig {
 
 export function createCodeExplorerTools(config: CodeExplorerConfig) {
   const runAuthenticated = createRunAuthenticatedTool(
-    config.appId,
-    config.privateKey,
-    config.installationId,
+    config.gitHubToken,
     config.workspaceBasePath,
   );
 

@@ -11,7 +11,7 @@ export function buildCodeExplorerInstructions(config: CodeExplorerConfig): strin
 
 ## 2. 조직 정보
 - 조직명: ${config.owner}
-- GitHub App 인증을 사용하여 ${config.owner} 조직의 리포지토리에 접근한다
+- GitHub 인증을 사용하여 ${config.owner} 조직의 리포지토리에 접근한다
 
 ## 3. 워크플로우
 
