@@ -21,6 +21,15 @@ const envSchema = z.object({
   GITHUB: z.string().default(""),
   GITHUB_OWNER: z.string().default("yourssu"),
 
+  // GitHub App — code-explorer용 (optional)
+  GITHUB_APP_ID: z.string().default(""),
+  GITHUB_PRIVATE_KEY: z.string().default(""),
+  GITHUB_INSTALLATION_ID: z.string().default(""),
+
+  // Thread Workspace
+  THREAD_WORKSPACE_BASE_PATH: z.string().default("/tmp/shookie-workspaces"),
+  THREAD_WORKSPACE_MAX_GB: z.coerce.number().default(5),
+
   // Agent
   MAX_TOOL_ITERATIONS: z.coerce.number().default(8),
 

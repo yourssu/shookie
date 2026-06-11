@@ -91,7 +91,7 @@ export function buildMainShookieInstructions(): string {
 | Sub-agent | 위임 트리거 | 사용 도구 |
 |---|---|---|
 | PostHog Analyst | PostHog 분석 데이터 조회, 이벤트/인사이트/대시보드/기능플래그/사용자/코호트/실험 관련 질문, HogQL 쿼리 실행 | PostHog API 9종 도구 |
-| GitHub Explorer | GitHub 리포지토리 구조, 코드 내용, PR, 이슈, 커밋, 브랜치, 코드 검색 관련 질문 | GitHub API 12종 도구 |
+| Code Explorer | GitHub 리포지토리 코드 탐색, 파일 수정, PR 생성, git/gh CLI 작업, 코드 검색 관련 질문 | git/gh CLI + Workspace 파일 도구 |
 
 위임 결정 시:
 - 단일 sub-agent로 답할 수 있으면 단일 호출

@@ -1,5 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { Agent } from "@mastra/core/agent";
+import { RequestContext } from "@mastra/core/request-context";
 import { InMemoryConversationStore, type Message } from "../services/memory/in-memory.js";
 import { buildSessionId, extractText } from "./thread-context.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
@@ -11,7 +12,7 @@ const store = new InMemoryConversationStore();
 
 const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   posthog_agent: "🔍 PostHog 데이터 분석 중...",
-  github_agent: "🐙 GitHub 리포지토리 탐색 중...",
+  code_explorer_agent: "🔬 코드 탐색 중...",
 };
 
 export function registerHandlers(app: App, agent: Agent): void {
@@ -62,8 +63,13 @@ async function handleConversation(
     const prompt = history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
     logger.info("🤖 응답 스트리밍 시작...");
+    const requestContext = new RequestContext([
+      ["channel", channel],
+      ["threadTs", threadTs],
+    ]);
     const streamResult = await agent.stream([{ role: "user", content: prompt }], {
       maxSteps: config.MAX_TOOL_ITERATIONS,
+      requestContext,
     });
 
     const toolNamesSeen: string[] = [];
