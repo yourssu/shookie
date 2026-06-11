@@ -17,10 +17,21 @@ function buildEnv(gitHubToken: string): NodeJS.ProcessEnv {
   return env;
 }
 
+const GIT_PROGRESS_RE = /^((remote:\s*)?(Counting|Compressing|Enumerating|Receiving|Resolving|Delta|done\.))|\s*\d+%|[\s=*]+$/m;
+
+function stripProgressLines(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !GIT_PROGRESS_RE.test(line))
+    .join("\n")
+    .trim();
+}
+
 interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  truncated: boolean;
 }
 
 function execCommand(
@@ -32,19 +43,33 @@ function execCommand(
   return new Promise((resolve) => {
     const proc = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
 
-    const chunks: Buffer[] = [];
-    let stdoutBytes = 0;
+    const halfBudget = Math.floor(MAX_OUTPUT_BYTES / 2);
+    const head: Buffer[] = [];
+    let headBytes = 0;
+    const tail: Buffer[] = [];
+    let tailBytes = 0;
     let truncated = false;
 
     proc.stdout.on("data", (chunk: Buffer) => {
       if (!truncated) {
-        stdoutBytes += chunk.length;
-        if (stdoutBytes > MAX_OUTPUT_BYTES) {
+        if (headBytes + chunk.length <= halfBudget) {
+          head.push(chunk);
+          headBytes += chunk.length;
+        } else if (headBytes < halfBudget) {
+          const slice = chunk.subarray(0, halfBudget - headBytes);
+          head.push(slice);
+          headBytes += slice.length;
           truncated = true;
-          chunks.push(Buffer.from("\n... [출력이 32KB 제한을 초과하여 잘렸습니다]"));
         } else {
-          chunks.push(chunk);
+          truncated = true;
         }
+      }
+      // Always accumulate tail (ring buffer)
+      tail.push(chunk);
+      tailBytes += chunk.length;
+      while (tailBytes > halfBudget && tail.length > 1) {
+        const removed = tail.shift()!;
+        tailBytes -= removed.length;
       }
     });
 
@@ -52,15 +77,24 @@ function execCommand(
     proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
     proc.on("close", (code) => {
-      resolve({
-        stdout: Buffer.concat(chunks).toString("utf-8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf-8"),
-        exitCode: code ?? 1,
-      });
+      let stdout: string;
+      if (!truncated) {
+        stdout = Buffer.concat(head).toString("utf-8");
+      } else {
+        const headPart = Buffer.concat(head).toString("utf-8");
+        const tailPart = Buffer.concat(tail).toString("utf-8");
+        stdout = headPart + "\n\n... [출력이 32KB 제한을 초과하여 중간이 생략되었습니다] ...\n\n" + tailPart;
+      }
+
+      const isGitSuccess = code === 0;
+      const rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
+      const stderr = isGitSuccess ? stripProgressLines(rawStderr) : rawStderr;
+
+      resolve({ stdout, stderr, exitCode: code ?? 1, truncated });
     });
 
     proc.on("error", (err) => {
-      resolve({ stdout: "", stderr: err.message, exitCode: 1 });
+      resolve({ stdout: "", stderr: err.message, exitCode: 1, truncated: false });
     });
   });
 }
@@ -82,6 +116,7 @@ export function createRunAuthenticatedTool(
       stdout: z.string(),
       stderr: z.string(),
       exitCode: z.number(),
+      truncated: z.boolean(),
     }),
     execute: async (input) => {
       if (!ALLOWED_COMMANDS.has(input.command)) {
@@ -89,6 +124,7 @@ export function createRunAuthenticatedTool(
           stdout: "",
           stderr: `"${input.command}"은(는) 허용되지 않는 명령입니다. git 또는 gh만 사용 가능합니다.`,
           exitCode: 1,
+          truncated: false,
         };
       }
 
@@ -106,6 +142,7 @@ export function createRunAuthenticatedTool(
             stdout: "",
             stderr: "오류: 워크스페이스 외부 경로에서는 명령을 실행할 수 없습니다.",
             exitCode: 1,
+            truncated: false,
           };
         }
 
@@ -116,6 +153,7 @@ export function createRunAuthenticatedTool(
           stdout: "",
           stderr: `오류: 워크스페이스 경로를 확인할 수 없습니다. ensure_thread_workspace를 먼저 호출했는지 확인하세요. (${message})`,
           exitCode: 1,
+          truncated: false,
         };
       }
     },
