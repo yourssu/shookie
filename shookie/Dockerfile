@@ -15,6 +15,11 @@ RUN apt-get update && \
 # Enable corepack for yarn
 RUN corepack enable
 
+# Pre-configure git for bot commits
+RUN git config --global user.email "shookie-bot@yourssu.com" && \
+    git config --global user.name "Shookie Bot" && \
+    git config --global credential.helper '!gh auth git-credential'
+
 # Copy workspace root files
 COPY package.json yarn.lock .yarnrc.yml tsconfig.base.json ./
 
