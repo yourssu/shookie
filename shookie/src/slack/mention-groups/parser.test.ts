@@ -157,6 +157,12 @@ describe("mention group parser", () => {
     expect(result.emptyGroupHandles).toEqual(["empty"]);
   });
 
+  it("알 수 없는 handle은 입력된 대소문자와 구분 기호를 보존한다", () => {
+    const result = createMentionReplacementPlan("확인 @Group---TTT", catalog([]));
+
+    expect(result.unknownHandles).toEqual(["Group---TTT"]);
+  });
+
   it("대문자로 입력해도 소문자 그룹을 호출하고 라벨도 소문자로 정규화한다", () => {
     const result = createMentionReplacementPlan("확인 @Backend", catalog([backend]));
 

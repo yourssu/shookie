@@ -42,6 +42,8 @@ const RADAR_MENTION_GROUPS_MANAGEMENT_URL =
   "https://radar.yourssu.com/mention-groups";
 const RADAR_MENTION_GROUPS_MANAGEMENT_LINK =
   `<${RADAR_MENTION_GROUPS_MANAGEMENT_URL}|멘션 그룹 만들기·관리하기>`;
+const RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE =
+  `${RADAR_MENTION_GROUPS_MANAGEMENT_LINK} 페이지에서 새로운 그룹을 만들고 관리할 수 있습니다.`;
 
 const resumeContextSchema = z
   .object({
@@ -347,9 +349,9 @@ export class MentionGroupReplacementService {
     await this.notify(input, [
       "이 메시지의 멘션 그룹을 치환하려면 작성자 Slack 인증이 필요합니다.",
       `<${authorizationUrl}|Slack 인증하기>`,
-      RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
+      RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE,
       "인증이 끝나면 이 메시지를 자동으로 다시 처리합니다.",
-    ].join(" "));
+    ].join("\n"));
     return true;
   }
 
@@ -367,9 +369,8 @@ export class MentionGroupReplacementService {
     if (emptyGroupHandles.length > 0) {
       parts.push(`활성 멤버가 없는 멘션 그룹: ${formatHandles(emptyGroupHandles)}`);
     }
-    parts.push(RADAR_MENTION_GROUPS_MANAGEMENT_LINK);
-    parts.push("해당 handle은 원문에 그대로 두었습니다.");
-    await this.notify(input, parts.join(" "));
+    parts.push(RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE);
+    await this.notify(input, parts.join("\n"));
   }
 
   private async notifyUpdateFailure(
@@ -431,7 +432,7 @@ function isSafeResumeTarget(
 }
 
 function formatHandles(handles: string[]): string {
-  return handles.slice(0, 10).map((handle) => `\`@${handle}\``).join(", ");
+  return handles.slice(0, 10).map((handle) => `@${handle}`).join(", ");
 }
 
 function slackErrorCode(error: unknown): string | null {

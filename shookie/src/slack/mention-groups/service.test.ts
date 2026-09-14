@@ -40,6 +40,8 @@ const RADAR_MENTION_GROUPS_MANAGEMENT_URL =
   "https://radar.yourssu.com/mention-groups";
 const RADAR_MENTION_GROUPS_MANAGEMENT_LINK =
   `<${RADAR_MENTION_GROUPS_MANAGEMENT_URL}|멘션 그룹 만들기·관리하기>`;
+const RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE =
+  `${RADAR_MENTION_GROUPS_MANAGEMENT_LINK} 페이지에서 새로운 그룹을 만들고 관리할 수 있습니다.`;
 
 function dependencies(overrides: {
   getCatalog?: ReturnType<typeof vi.fn>;
@@ -176,9 +178,9 @@ describe("MentionGroupReplacementService", () => {
         text: [
           "이 메시지의 멘션 그룹을 치환하려면 작성자 Slack 인증이 필요합니다.",
           "<https://slack.example/oauth|Slack 인증하기>",
-          RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
+          RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE,
           "인증이 끝나면 이 메시지를 자동으로 다시 처리합니다.",
-        ].join(" "),
+        ].join("\n"),
       },
     );
 
@@ -301,11 +303,11 @@ describe("MentionGroupReplacementService", () => {
     expect(deps.slack.updateMessage).not.toHaveBeenCalled();
   });
 
-  it("알 수 없거나 비활성 그룹은 원문에 남기고 사용자 전용 안내만 보낸다", async () => {
+  it("알 수 없거나 비활성 그룹은 원문 표기를 보존하고 두 문장으로 안내한다", async () => {
     const deps = dependencies();
     const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
 
-    await service.handleEvent({ ...event, text: "@unknown" });
+    await service.handleEvent({ ...event, text: "@group---ttt" });
 
     expect(deps.oauth.getAccessToken).not.toHaveBeenCalled();
     expect(deps.slack.updateMessage).not.toHaveBeenCalled();
@@ -314,10 +316,9 @@ describe("MentionGroupReplacementService", () => {
         channelId: "C123",
         userId: "U999",
         text: [
-          "알 수 없거나 비활성화된 멘션 그룹: `@unknown`",
-          RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
-          "해당 handle은 원문에 그대로 두었습니다.",
-        ].join(" "),
+          "알 수 없거나 비활성화된 멘션 그룹: @group---ttt",
+          RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE,
+        ].join("\n"),
       },
     );
   });
@@ -358,11 +359,10 @@ describe("MentionGroupReplacementService", () => {
       userId: "U999",
       threadTs: "200.000",
       text: [
-        "알 수 없거나 비활성화된 멘션 그룹: `@unknown`",
-        "활성 멤버가 없는 멘션 그룹: `@empty`",
-        RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
-        "해당 handle은 원문에 그대로 두었습니다.",
-      ].join(" "),
+        "알 수 없거나 비활성화된 멘션 그룹: @unknown",
+        "활성 멤버가 없는 멘션 그룹: @empty",
+        RADAR_MENTION_GROUPS_MANAGEMENT_GUIDANCE,
+      ].join("\n"),
     });
   });
 

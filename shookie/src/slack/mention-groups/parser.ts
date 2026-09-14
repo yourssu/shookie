@@ -62,22 +62,26 @@ export function createMentionReplacementPlan(
 ): MentionReplacementPlan {
   const uniqueMemberIds = new Set<string>();
   const seenGroups = new Set<string>();
-  const unknownHandles = new Set<string>();
-  const emptyGroupHandles = new Set<string>();
+  const unknownHandles = new Map<string, string>();
+  const emptyGroupHandles = new Map<string, string>();
   const replacements: Array<MentionHandleOccurrence & { replacement: string }> = [];
   let matchedOccurrenceCount = 0;
 
   for (const occurrence of occurrences) {
     const group = catalog.byHandle.get(occurrence.handle);
     if (!group) {
-      unknownHandles.add(occurrence.handle);
+      if (!unknownHandles.has(occurrence.handle)) {
+        unknownHandles.set(occurrence.handle, occurrence.raw.slice(1));
+      }
       continue;
     }
 
     matchedOccurrenceCount += 1;
     seenGroups.add(group.handle);
     if (group.memberUserIds.length === 0) {
-      emptyGroupHandles.add(group.handle);
+      if (!emptyGroupHandles.has(group.handle)) {
+        emptyGroupHandles.set(group.handle, occurrence.raw.slice(1));
+      }
       continue;
     }
 
@@ -99,8 +103,8 @@ export function createMentionReplacementPlan(
       matchedOccurrenceCount,
       groupHandles: [...seenGroups],
       memberUserIds: [...uniqueMemberIds],
-      unknownHandles: [...unknownHandles],
-      emptyGroupHandles: [...emptyGroupHandles],
+      unknownHandles: [...unknownHandles.values()],
+      emptyGroupHandles: [...emptyGroupHandles.values()],
     };
   }
 
@@ -119,8 +123,8 @@ export function createMentionReplacementPlan(
     matchedOccurrenceCount,
     groupHandles: [...seenGroups],
     memberUserIds: [...uniqueMemberIds],
-    unknownHandles: [...unknownHandles],
-    emptyGroupHandles: [...emptyGroupHandles],
+    unknownHandles: [...unknownHandles.values()],
+    emptyGroupHandles: [...emptyGroupHandles.values()],
   };
 }
 
