@@ -144,6 +144,40 @@ describe("RadarMentionGroupsClient", () => {
     await expect(radar.getCatalog()).rejects.toMatchObject({ code: "network_error" });
   });
 
+  it("만료 뒤 빈 catalog와 다른 ID의 handle·별칭 재사용을 순서대로 반영한다", async () => {
+    let time = 0;
+    const recreated = {
+      id: "f0d30ac5-892e-4d98-af10-63878ef17856",
+      handle: "backend",
+      aliases: ["be"],
+      memberUserIds: ["U444"],
+    };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse())
+      .mockResolvedValueOnce(jsonResponse({ revision: 13, groups: [] }))
+      .mockResolvedValueOnce(jsonResponse({ revision: 14, groups: [recreated] }));
+    const radar = client(fetcher, () => time);
+
+    const beforeDeletion = await radar.getCatalog();
+    time = 1_001;
+    const empty = await radar.getCatalog();
+    time = 2_002;
+    const afterReuse = await radar.getCatalog();
+
+    expect(beforeDeletion.byHandle.get("be")?.memberUserIds).toEqual(["U0123456789"]);
+    expect(empty.groups).toEqual([]);
+    expect(empty.byHandle.has("backend")).toBe(false);
+    expect(afterReuse.byHandle.get("backend")).toMatchObject(recreated);
+    expect(afterReuse.byHandle.get("be")?.memberUserIds).toEqual(["U444"]);
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toMatchObject({
+      "If-None-Match": '"mention-groups-12"',
+    });
+    expect(fetcher.mock.calls[2]?.[1]?.headers).toMatchObject({
+      "If-None-Match": '"mention-groups-13"',
+    });
+  });
+
   it("schema, ETag, revision rollback과 동일 revision 변조를 거부한다", async () => {
     let time = 0;
     const fetcher = vi
