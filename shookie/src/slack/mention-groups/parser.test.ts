@@ -94,4 +94,26 @@ describe("mention group parser", () => {
 
     expect(result.text).toBe("확인 `@backend`(<@U111> <@U222>)");
   });
+
+  it("영구 삭제된 handle과 별칭은 원문에 남기고 새 ID로 재사용하면 새 멤버만 치환한다", () => {
+    const original = "호출 @backend @be";
+    const beforeDeletion = createMentionReplacementPlan(original, catalog([backend]));
+    const afterDeletion = createMentionReplacementPlan(original, catalog([]));
+    const recreated: ActiveMentionGroup = {
+      id: "f0d30ac5-892e-4d98-af10-63878ef17856",
+      handle: "backend",
+      aliases: ["be"],
+      memberUserIds: ["U444"],
+    };
+    const afterReuse = createMentionReplacementPlan(original, catalog([recreated]));
+
+    expect(beforeDeletion.text).toContain("<@U111> <@U222>");
+    expect(afterDeletion).toMatchObject({
+      text: original,
+      changed: false,
+      unknownHandles: ["backend", "be"],
+    });
+    expect(afterReuse.text).toBe("호출 `@backend`(<@U444>) `@be`");
+    expect(afterReuse.memberUserIds).toEqual(["U444"]);
+  });
 });

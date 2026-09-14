@@ -137,6 +137,48 @@ describe("MentionGroupReplacementService", () => {
     expect(deps.slack.updateMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("OAuth 대기 중 삭제·재생성된 그룹은 콜백 시점 catalog의 새 멤버로 처리한다", async () => {
+    const recreatedGroups: ActiveMentionGroup[] = [
+      {
+        id: "f0d30ac5-892e-4d98-af10-63878ef17856",
+        handle: "backend",
+        aliases: ["be"],
+        memberUserIds: ["U444"],
+      },
+    ];
+    const recreatedCatalog: MentionGroupCatalog = {
+      revision: 13,
+      etag: '"mention-groups-13"',
+      groups: recreatedGroups,
+      byHandle: buildMentionGroupIndex(recreatedGroups),
+    };
+    const getCatalog = vi
+      .fn()
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce(recreatedCatalog);
+    const getAccessToken = vi
+      .fn()
+      .mockRejectedValueOnce(new SlackUserOAuthRequiredError("missing"))
+      .mockResolvedValueOnce("xoxp-author");
+    const deps = dependencies({ getCatalog, getAccessToken });
+    const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
+
+    await service.handleEvent(event);
+    await service.resumeAfterAuthorization({
+      teamId: "T123",
+      userId: "U999",
+      context: { channelId: "C123", messageTs: "123.456", eventId: "Ev123" },
+    });
+
+    expect(getCatalog).toHaveBeenCalledTimes(2);
+    expect(deps.slack.updateMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "검토 부탁해요 `@backend`(<@U444>)" }),
+    );
+    expect(deps.slack.updateMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("U111") }),
+    );
+  });
+
   it("OAuth 대기 중 작성자가 수정했거나 메시지 주체가 바뀌면 덮어쓰지 않는다", async () => {
     const deps = dependencies({
       loadMessage: vi.fn().mockResolvedValue({

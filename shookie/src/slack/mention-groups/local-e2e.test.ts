@@ -132,6 +132,7 @@ interface RadarHarness {
   apiUrl: string;
   requests: RadarRequestRecord[];
   setCatalog(revision: number, groups: ActiveMentionGroup[]): void;
+  failNextRequestWith(status: number): void;
   close(): Promise<void>;
 }
 
@@ -365,6 +366,198 @@ describe("mention group local contract E2E", () => {
     });
     expect(slack.updates.at(-1)?.accessToken).toBe("xoxp-reauthorized");
   });
+
+  it("실제 HTTP 캐시 경로에서 영구 삭제·빈 catalog·handle 재사용과 재검증 실패를 처리한다", async () => {
+    const deleted = group(
+      "61b37086-28f7-44fd-9683-e1d8821cd51f",
+      "backend",
+      ["be"],
+      ["U111"],
+    );
+    const recreated = group(
+      "f0d30ac5-892e-4d98-af10-63878ef17856",
+      "backend",
+      ["be"],
+      ["U444", "U555"],
+    );
+    const radarServer = await startRadarServer(1, [deleted]);
+    let now = 0;
+    const radar = new RadarMentionGroupsClient({
+      apiUrl: radarServer.apiUrl,
+      apiKey: INTERNAL_KEY,
+      cacheTtlMs: 10,
+      requestTimeoutMs: 1_000,
+      now: () => now,
+    });
+    const oauth = new InMemoryOAuth();
+    const slack = new InMemorySlack();
+    const service = new MentionGroupReplacementService(radar, oauth, slack);
+    oauth.setToken("T123", "U900", "xoxp-author");
+
+    slack.putMessage({
+      channelId: "C123",
+      messageTs: "300.001",
+      userId: "U900",
+      text: "삭제 전 @be",
+    });
+    await service.handleEvent(
+      event({
+        eventId: "EvBeforeDelete",
+        channelId: "C123",
+        messageTs: "300.001",
+        userId: "U900",
+        text: "삭제 전 @be",
+        channelType: "channel",
+      }),
+    );
+    expect(slack.messages.get("C123:300.001")?.text).toBe("삭제 전 `@be`(<@U111>)");
+
+    radarServer.setCatalog(2, []);
+    now = 11;
+    slack.putMessage({
+      channelId: "C123",
+      messageTs: "301.001",
+      userId: "U900",
+      text: "삭제 후 @backend @be",
+    });
+    await service.handleEvent(
+      event({
+        eventId: "EvEmptyCatalog",
+        channelId: "C123",
+        messageTs: "301.001",
+        userId: "U900",
+        text: "삭제 후 @backend @be",
+        channelType: "channel",
+      }),
+    );
+
+    expect(slack.messages.get("C123:301.001")?.text).toBe("삭제 후 @backend @be");
+    expect(slack.messages.get("C123:300.001")?.text).toBe("삭제 전 `@be`(<@U111>)");
+    expect(slack.updates).toHaveLength(1);
+    expect(slack.ephemerals.at(-1)?.text).toContain("`@backend`, `@be`");
+
+    radarServer.setCatalog(3, [recreated]);
+    now = 22;
+    slack.putMessage({
+      channelId: "C123",
+      messageTs: "302.001",
+      userId: "U900",
+      text: "재사용 @backend @be",
+    });
+    await service.handleEvent(
+      event({
+        eventId: "EvHandleReuse",
+        channelId: "C123",
+        messageTs: "302.001",
+        userId: "U900",
+        text: "재사용 @backend @be",
+        channelType: "channel",
+      }),
+    );
+
+    expect(slack.messages.get("C123:302.001")?.text).toBe(
+      "재사용 `@backend`(<@U444> <@U555>) `@be`",
+    );
+    expect(slack.messages.get("C123:302.001")?.text).not.toContain("U111");
+
+    radarServer.failNextRequestWith(503);
+    now = 33;
+    slack.putMessage({
+      channelId: "C123",
+      messageTs: "303.001",
+      userId: "U900",
+      text: "재검증 실패 @be",
+    });
+    await service.handleEvent(
+      event({
+        eventId: "EvRefreshFailure",
+        channelId: "C123",
+        messageTs: "303.001",
+        userId: "U900",
+        text: "재검증 실패 @be",
+        channelType: "channel",
+      }),
+    );
+
+    expect(slack.messages.get("C123:303.001")?.text).toBe("재검증 실패 @be");
+    expect(slack.updates).toHaveLength(2);
+    expect(radarServer.requests).toEqual([
+      { internalKey: INTERNAL_KEY, ifNoneMatch: undefined },
+      { internalKey: INTERNAL_KEY, ifNoneMatch: '"mention-groups-1"' },
+      { internalKey: INTERNAL_KEY, ifNoneMatch: '"mention-groups-2"' },
+      { internalKey: INTERNAL_KEY, ifNoneMatch: '"mention-groups-3"' },
+    ]);
+  });
+
+  it("OAuth 대기 중 삭제·재생성되면 TTL 후 갱신 catalog의 새 멤버만 사용한다", async () => {
+    const radarServer = await startRadarServer(7, [
+      group(
+        "61b37086-28f7-44fd-9683-e1d8821cd51f",
+        "backend",
+        ["be"],
+        ["U111"],
+      ),
+    ]);
+    let now = 0;
+    const radar = new RadarMentionGroupsClient({
+      apiUrl: radarServer.apiUrl,
+      apiKey: INTERNAL_KEY,
+      cacheTtlMs: 10,
+      requestTimeoutMs: 1_000,
+      now: () => now,
+    });
+    const oauth = new InMemoryOAuth();
+    const slack = new InMemorySlack();
+    const service = new MentionGroupReplacementService(radar, oauth, slack);
+    slack.putMessage({
+      channelId: "G123",
+      messageTs: "400.001",
+      threadTs: "400.000",
+      userId: "U902",
+      text: "OAuth 대기 @be",
+    });
+
+    await service.handleEvent(
+      event({
+        eventId: "EvOAuthDelete",
+        channelId: "G123",
+        messageTs: "400.001",
+        threadTs: "400.000",
+        userId: "U902",
+        text: "OAuth 대기 @be",
+        channelType: "group",
+      }),
+    );
+    expect(slack.messages.get("G123:400.001")?.text).toBe("OAuth 대기 @be");
+
+    radarServer.setCatalog(8, [
+      group(
+        "f0d30ac5-892e-4d98-af10-63878ef17856",
+        "backend",
+        ["be"],
+        ["U777"],
+      ),
+    ]);
+    now = 11;
+    oauth.setToken("T123", "U902", "xoxp-after-delete");
+    await service.resumeAfterAuthorization({
+      teamId: "T123",
+      userId: "U902",
+      context: {
+        channelId: "G123",
+        messageTs: "400.001",
+        threadTs: "400.000",
+        eventId: "EvOAuthDelete",
+      },
+    });
+
+    expect(slack.messages.get("G123:400.001")?.text).toBe("OAuth 대기 `@be`(<@U777>)");
+    expect(slack.messages.get("G123:400.001")?.text).not.toContain("U111");
+    expect(radarServer.requests).toEqual([
+      { internalKey: INTERNAL_KEY, ifNoneMatch: undefined },
+      { internalKey: INTERNAL_KEY, ifNoneMatch: '"mention-groups-7"' },
+    ]);
+  });
 });
 
 function group(
@@ -409,6 +602,7 @@ async function startRadarServer(
 ): Promise<RadarHarness> {
   let revision = initialRevision;
   let groups = initialGroups;
+  let nextFailureStatus: number | null = null;
   const requests: RadarRequestRecord[] = [];
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -422,6 +616,12 @@ async function startRadarServer(
     requests.push({ internalKey, ifNoneMatch });
     if (internalKey !== INTERNAL_KEY) {
       response.writeHead(401).end();
+      return;
+    }
+    if (nextFailureStatus !== null) {
+      const status = nextFailureStatus;
+      nextFailureStatus = null;
+      response.writeHead(status).end();
       return;
     }
 
@@ -445,6 +645,9 @@ async function startRadarServer(
     setCatalog(nextRevision, nextGroups) {
       revision = nextRevision;
       groups = nextGroups;
+    },
+    failNextRequestWith(status) {
+      nextFailureStatus = status;
     },
     close: async () => {
       const index = openServers.indexOf(server);
