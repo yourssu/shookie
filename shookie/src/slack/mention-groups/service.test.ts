@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SlackUserOAuthRequiredError } from "../user-oauth/token-service.js";
 import { MentionEventDeduper } from "./event-deduper.js";
 import type { MentionMessageEvent } from "./event.js";
-import { buildMentionGroupIndex } from "./parser.js";
+import { buildMentionGroupIndex, createMentionReplacementPlan } from "./parser.js";
 import { RadarMentionGroupsError } from "./radar-client.js";
 import { MentionGroupReplacementService } from "./service.js";
 import type { MentionSlackGateway } from "./slack-gateway.js";
@@ -115,7 +115,22 @@ describe("MentionGroupReplacementService", () => {
   it("반복된 중복 그룹 치환 결과가 4,000자를 넘으면 원문을 보존한다", async () => {
     const deps = dependencies();
     const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
-    const repeatedGroups = "@backend @platform ".repeat(200).trim();
+    const pairCount = 100;
+    const repeatedGroups = "@backend @platform ".repeat(pairCount).trim();
+    const legacyGlobalDedupText = [
+      "`@backend`(<@U111> <@U222>)",
+      "`@platform`(<@U333>)",
+      ...Array.from(
+        { length: pairCount - 1 },
+        () => ["`@backend`", "`@platform`"],
+      ).flat(),
+    ].join(" ");
+    const expandedText = createMentionReplacementPlan(repeatedGroups, catalog).text;
+
+    expect(legacyGlobalDedupText).toHaveLength(2_325);
+    expect(legacyGlobalDedupText.length).toBeLessThanOrEqual(4_000);
+    expect(expandedText).toHaveLength(5_699);
+    expect(expandedText.length).toBeGreaterThan(4_000);
 
     await service.handleEvent({ ...event, text: repeatedGroups });
 
@@ -201,11 +216,13 @@ describe("MentionGroupReplacementService", () => {
     });
 
     expect(getCatalog).toHaveBeenCalledTimes(2);
-    expect(deps.slack.updateMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: expect.stringContaining("`@backend`(<@U444>)"),
-      }),
-    );
+    expect(deps.slack.updateMessage).toHaveBeenCalledTimes(1);
+    expect(deps.slack.updateMessage).toHaveBeenCalledWith({
+      accessToken: "xoxp-author",
+      channelId: "C123",
+      messageTs: "123.456",
+      text: "검토 부탁해요 `@backend`(<@U444>) @platform",
+    });
     expect(deps.slack.updateMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining("U111") }),
     );
