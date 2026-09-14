@@ -196,7 +196,9 @@ describe("mention group local contract E2E", () => {
 
     expect(slack.messages.get("C123:100.001")).toMatchObject({
       userId: "U900",
-      text: "배포 `@be`(<@U111> <@U222>) + `@platform`(<@U333>) + @disabled",
+      text:
+        "배포 `@be`(<@U111> <@U222>) + " +
+        "`@platform`(<@U222> <@U333>) + @disabled",
     });
     expect(slack.updates[0]).toMatchObject({
       accessToken: "xoxp-channel-author",
@@ -456,7 +458,7 @@ describe("mention group local contract E2E", () => {
     );
 
     expect(slack.messages.get("C123:302.001")?.text).toBe(
-      "재사용 `@backend`(<@U444> <@U555>) `@be`",
+      "재사용 `@backend`(<@U444> <@U555>) `@be`(<@U444> <@U555>)",
     );
     expect(slack.messages.get("C123:302.001")?.text).not.toContain("U111");
 

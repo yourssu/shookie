@@ -60,7 +60,7 @@ export function createMentionReplacementPlan(
   catalog: MentionGroupCatalog,
   occurrences = findMentionHandleOccurrences(text),
 ): MentionReplacementPlan {
-  const seenMembers = new Set<string>();
+  const uniqueMemberIds = new Set<string>();
   const seenGroups = new Set<string>();
   const unknownHandles = new Set<string>();
   const emptyGroupHandles = new Set<string>();
@@ -81,12 +81,9 @@ export function createMentionReplacementPlan(
       continue;
     }
 
-    const freshMembers = group.memberUserIds.filter((memberId) => {
-      if (seenMembers.has(memberId)) return false;
-      seenMembers.add(memberId);
-      return true;
-    });
-    const memberMentions = freshMembers.map((memberId) => `<@${memberId}>`).join(" ");
+    const occurrenceMembers = [...new Set(group.memberUserIds)];
+    for (const memberId of occurrenceMembers) uniqueMemberIds.add(memberId);
+    const memberMentions = occurrenceMembers.map((memberId) => `<@${memberId}>`).join(" ");
     replacements.push({
       ...occurrence,
       replacement: memberMentions.length > 0
@@ -101,7 +98,7 @@ export function createMentionReplacementPlan(
       changed: false,
       matchedOccurrenceCount,
       groupHandles: [...seenGroups],
-      memberUserIds: [...seenMembers],
+      memberUserIds: [...uniqueMemberIds],
       unknownHandles: [...unknownHandles],
       emptyGroupHandles: [...emptyGroupHandles],
     };
@@ -121,7 +118,7 @@ export function createMentionReplacementPlan(
     changed: output !== text,
     matchedOccurrenceCount,
     groupHandles: [...seenGroups],
-    memberUserIds: [...seenMembers],
+    memberUserIds: [...uniqueMemberIds],
     unknownHandles: [...unknownHandles],
     emptyGroupHandles: [...emptyGroupHandles],
   };
