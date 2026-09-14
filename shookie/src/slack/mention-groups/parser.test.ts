@@ -50,7 +50,7 @@ describe("mention group parser", () => {
     ]);
   });
 
-  it("입력한 그룹 표기를 코드 라벨로 남기고 멤버 합집합을 한 번씩 치환한다", () => {
+  it("부분 중복 그룹마다 전체 멤버를 순서대로 치환하고 로그용 합집합만 중복 제거한다", () => {
     const platform: ActiveMentionGroup = {
       id: "4d92a1d8-52f4-46b0-b389-3284cff8a688",
       handle: "platform",
@@ -64,11 +64,79 @@ describe("mention group parser", () => {
     );
 
     expect(result.text).toBe(
-      "검토: `@be`(<@U111> <@U222>), `@platform`(<@U333>) 그리고 `@backend`",
+      "검토: `@be`(<@U111> <@U222>), `@platform`(<@U222> <@U333>) 그리고 " +
+        "`@backend`(<@U111> <@U222>)",
     );
     expect(result.memberUserIds).toEqual(["U111", "U222", "U333"]);
     expect(result.groupHandles).toEqual(["backend", "platform"]);
     expect(result.matchedOccurrenceCount).toBe(3);
+  });
+
+  it.each([
+    {
+      name: "완전 중복",
+      groups: [
+        backend,
+        {
+          id: "4d92a1d8-52f4-46b0-b389-3284cff8a688",
+          handle: "platform",
+          aliases: [],
+          memberUserIds: ["U111", "U222"],
+        },
+      ],
+      text: "@backend @platform",
+      expected:
+        "`@backend`(<@U111> <@U222>) `@platform`(<@U111> <@U222>)",
+      memberUserIds: ["U111", "U222"],
+    },
+    {
+      name: "역순 부분 중복과 줄바꿈",
+      groups: [
+        backend,
+        {
+          id: "4d92a1d8-52f4-46b0-b389-3284cff8a688",
+          handle: "platform",
+          aliases: [],
+          memberUserIds: ["U222", "U333"],
+        },
+      ],
+      text: "@platform\n@backend",
+      expected:
+        "`@platform`(<@U222> <@U333>)\n`@backend`(<@U111> <@U222>)",
+      memberUserIds: ["U222", "U333", "U111"],
+    },
+  ])("$name에서도 각 occurrence를 독립적으로 펼친다", ({ groups, text, expected, memberUserIds }) => {
+    const result = createMentionReplacementPlan(text, catalog(groups));
+
+    expect(result.text).toBe(expected);
+    expect(result.memberUserIds).toEqual(memberUserIds);
+  });
+
+  it("primary·alias·같은 그룹 반복 occurrence를 모두 전체 멤버로 펼친다", () => {
+    const result = createMentionReplacementPlan(
+      "@backend @be @backend",
+      catalog([backend]),
+    );
+
+    expect(result.text).toBe(
+      "`@backend`(<@U111> <@U222>) `@be`(<@U111> <@U222>) " +
+        "`@backend`(<@U111> <@U222>)",
+    );
+    expect(result.groupHandles).toEqual(["backend"]);
+    expect(result.memberUserIds).toEqual(["U111", "U222"]);
+    expect(result.matchedOccurrenceCount).toBe(3);
+  });
+
+  it("catalog에 그룹 내부 중복 ID가 들어와도 첫 순서로 한 번만 펼친다", () => {
+    const defensiveGroup: ActiveMentionGroup = {
+      ...backend,
+      memberUserIds: ["U222", "U111", "U222", "U111"],
+    };
+
+    const result = createMentionReplacementPlan("@backend", catalog([defensiveGroup]));
+
+    expect(result.text).toBe("`@backend`(<@U222> <@U111>)");
+    expect(result.memberUserIds).toEqual(["U222", "U111"]);
   });
 
   it("알 수 없거나 멤버가 없는 활성 그룹은 원문에 남긴다", () => {
@@ -113,7 +181,7 @@ describe("mention group parser", () => {
       changed: false,
       unknownHandles: ["backend", "be"],
     });
-    expect(afterReuse.text).toBe("호출 `@backend`(<@U444>) `@be`");
+    expect(afterReuse.text).toBe("호출 `@backend`(<@U444>) `@be`(<@U444>)");
     expect(afterReuse.memberUserIds).toEqual(["U444"]);
   });
 });

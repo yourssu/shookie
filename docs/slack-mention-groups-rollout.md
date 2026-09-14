@@ -25,7 +25,7 @@ yarn workspace shookie test
 docker compose config
 ```
 
-`test:e2e:mention-groups`는 로컬 HTTP 테스트 대역으로 Radar 응답/ETag를 제공하고 실제 Shookie 파서, 캐시, 서비스 흐름을 함께 실행한다. 공개 채널 본문, 비공개 채널 스레드 답글, 복수 그룹, 별칭, 중복 멤버 제거, 알 수 없거나 비활성이라 카탈로그에 없는 그룹, revision 갱신, 영구 삭제 후 빈 catalog, handle/별칭 재사용, 만료 캐시 재검증 실패, 미인증 원문 보존, OAuth 후 재처리, 폐기 토큰 무효화와 재인증 후 재처리를 검증한다.
+`test:e2e:mention-groups`는 로컬 HTTP 테스트 대역으로 Radar 응답/ETag를 제공하고 실제 Shookie 파서, 캐시, 서비스 흐름을 함께 실행한다. 공개 채널 본문, 비공개 채널 스레드 답글, 복수 그룹, 별칭, 그룹 간 중복 멤버의 각 그룹별 전체 표시, 알 수 없거나 비활성이라 카탈로그에 없는 그룹, revision 갱신, 영구 삭제 후 빈 catalog, handle/별칭 재사용, 만료 캐시 재검증 실패, 미인증 원문 보존, OAuth 후 재처리, 폐기 토큰 무효화와 재인증 후 재처리를 검증한다.
 
 이 테스트는 `GET /internal/v1/mention-groups`의 HTTP 계약을 모사하는 mock 계약 검증이지 Radar Spring 앱과 DB를 실행하는 Backend E2E가 아니다. Backend 실제 API 검증은 Radar Backend 저장소의 통합 테스트로 `DELETE /api/mention-groups/{id}/permanent?revision=N` 이후 내부 catalog을 직접 대조하고, Shookie PR에서는 그 결과를 mock 결과와 구분해 기록한다.
 
@@ -206,7 +206,7 @@ Radar V5 migration은 스키마만 만들며 seed data를 넣지 않는다. 아�
 1. 테스트 작성자 A와 수신자 B/C를 준비하고 Radar에 활성 그룹, 별칭, 중복 멤버, 비활성 그룹을 만든다.
 2. 공개 채널 본문에 고유 표식과 `@handle`을 쓴다. 같은 메시지가 수정되고 작성자 A, permalink, `channel`, `ts`가 그대로인지 확인한다.
 3. 비공개 채널의 스레드 답글에서 같은 검증을 한다. 부모 메시지가 아니라 정확한 답글만 바뀌어야 한다.
-4. `@alias`, 여러 그룹, 같은 사용자가 겹치는 그룹을 한 메시지에 쓴다. 각 Slack 멘션이 한 번만 생기고 일반 텍스트/코드/이미 생성된 `<@U…>`가 손상되지 않는지 확인한다.
+4. `@alias`, 여러 그룹, 같은 사용자가 겹치는 그룹을 한 메시지에 쓴다. 각 그룹 표기가 그 그룹의 전체 멤버를 독립적으로 포함하고, 그룹 내부의 중복 ID만 한 번 표시되며 일반 텍스트/코드/이미 생성된 `<@U…>`가 손상되지 않는지 확인한다.
 5. 알 수 없는 handle과 비활성/빈 그룹은 원문에 남고 작성자에게만 안내되는지 확인한다.
 6. bot 메시지와 Shookie가 만든 편집 event가 재처리되지 않는지 확인한다. 같은 `event_id` 재전달에도 `chat.update`가 한 번뿐이어야 한다.
 7. Shookie를 재시작하고 이미 인증한 A의 다음 메시지가 OAuth prompt 없이 처리되는지 확인한다. DB에는 `v1:` envelope만 있고 `xox` 평문은 없어야 한다.
@@ -234,7 +234,7 @@ Radar V5 migration은 스키마만 만들며 seed data를 넣지 않는다. 아�
 3. 최신 그룹 revision으로 `DELETE /api/mention-groups/{id}/permanent?revision=N`을 한 번만 호출해 204/빈 본문을 확인한다. 같은 ID의 상세·이력이 404고 catalog revision/ETag가 증가했는지 기록한다.
 4. 캐시 TTL과 작은 여유를 기다린 뒤 새 메시지의 삭제된 primary handle와 별칭이 멤버 멘션으로 치환되지 않고 원문에 남는지 확인한다. 삭제 전에 이미 처리된 메시지의 본문, 작성자, permalink, `channel`, `ts`는 변하지 않아야 한다.
 5. 그 그룹이 마지막이었다면 내부 API가 증가한 revision과 `groups: []`를 반환하고, Shookie가 빈 catalog를 장애로 취급하지 않는지 확인한다.
-6. 같은 primary handle/별칭을 다른 ID와 다른 멤버로 재생성한다. 다시 TTL 후 새 메시지에서 새 멤버만 한 번씩 치환되고 삭제 전 멤버 ID가 없는지 확인한다.
+6. 같은 primary handle/별칭을 다른 ID와 다른 멤버로 재생성한다. 다시 TTL 후 새 메시지에서 primary와 별칭 표기가 각각 새 그룹의 전체 멤버로 치환되고 삭제 전 멤버 ID가 없는지 확인한다.
 7. 별도 메시지로 삭제 전 OAuth 대기 상태를 만들고, 영구 삭제·재생성과 TTL 경과 후 callback을 완료한다. 재처리가 현재 원문과 증가한 catalog revision을 사용해 새 멤버만 치환하는지 확인한다.
 8. 격리 환경에서만 TTL 만료 후 내부 API를 503/timeout으로 만든다. 이전 catalog가 메모리에 있어도 새 메시지가 stale 멤버로 치환되지 않고 원문으로 남는지 확인한다.
 

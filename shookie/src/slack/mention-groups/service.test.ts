@@ -15,6 +15,12 @@ const groups: ActiveMentionGroup[] = [
     aliases: ["be"],
     memberUserIds: ["U111", "U222"],
   },
+  {
+    id: "4d92a1d8-52f4-46b0-b389-3284cff8a688",
+    handle: "platform",
+    aliases: ["infra"],
+    memberUserIds: ["U222", "U333"],
+  },
 ];
 const catalog: MentionGroupCatalog = {
   revision: 12,
@@ -28,7 +34,7 @@ const event: MentionMessageEvent = {
   userId: "U999",
   channelId: "C123",
   messageTs: "123.456",
-  text: "검토 부탁해요 @backend",
+  text: "검토 부탁해요 @backend @platform",
 };
 
 function dependencies(overrides: {
@@ -76,8 +82,11 @@ describe("MentionGroupReplacementService", () => {
       accessToken: "xoxp-author",
       channelId: "C123",
       messageTs: "123.456",
-      text: "검토 부탁해요 `@backend`(<@U111> <@U222>)",
+      text:
+        "검토 부탁해요 `@backend`(<@U111> <@U222>) " +
+        "`@platform`(<@U222> <@U333>)",
     });
+    expect(deps.slack.updateMessage).toHaveBeenCalledTimes(1);
     expect(deps.oauth.createAuthorizationUrl).not.toHaveBeenCalled();
   });
 
@@ -94,6 +103,27 @@ describe("MentionGroupReplacementService", () => {
     await service.handleEvent(event);
 
     expect(deps.slack.updateMessage).toHaveBeenCalledTimes(1);
+    expect(deps.slack.updateMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text:
+          "검토 부탁해요 `@backend`(<@U111> <@U222>) " +
+          "`@platform`(<@U222> <@U333>)",
+      }),
+    );
+  });
+
+  it("반복된 중복 그룹 치환 결과가 4,000자를 넘으면 원문을 보존한다", async () => {
+    const deps = dependencies();
+    const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
+    const repeatedGroups = "@backend @platform ".repeat(200).trim();
+
+    await service.handleEvent({ ...event, text: repeatedGroups });
+
+    expect(deps.slack.updateMessage).not.toHaveBeenCalled();
+    expect(deps.oauth.getAccessToken).not.toHaveBeenCalled();
+    expect(deps.slack.postEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining("원문을 그대로") }),
+    );
   });
 
   it("미인증 작성자에게만 일회성 인증 링크를 보내고 콜백 뒤 원문을 다시 조회한다", async () => {
@@ -172,7 +202,9 @@ describe("MentionGroupReplacementService", () => {
 
     expect(getCatalog).toHaveBeenCalledTimes(2);
     expect(deps.slack.updateMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "검토 부탁해요 `@backend`(<@U444>)" }),
+      expect.objectContaining({
+        text: expect.stringContaining("`@backend`(<@U444>)"),
+      }),
     );
     expect(deps.slack.updateMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining("U111") }),
