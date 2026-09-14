@@ -23,6 +23,7 @@ yarn workspace shookie build
 yarn workspace shookie test:e2e:mention-groups
 yarn workspace shookie test
 docker compose config
+docker compose -f docker-compose.db.yml config
 ```
 
 `test:e2e:mention-groups`는 로컬 HTTP 테스트 대역으로 Radar 응답/ETag를 제공하고 실제 Shookie 파서, 캐시, 서비스 흐름을 함께 실행한다. 공개 채널 본문, 비공개 채널 스레드 답글, 복수 그룹, 별칭, 그룹 간 중복 멤버의 각 그룹별 전체 표시, 알 수 없거나 비활성이라 카탈로그에 없는 그룹, revision 갱신, 영구 삭제 후 빈 catalog, handle/별칭 재사용, 만료 캐시 재검증 실패, 미인증 원문 보존, OAuth 후 재처리, 폐기 토큰 무효화와 재인증 후 재처리를 검증한다.

@@ -4,37 +4,13 @@ x-logging: &default-logging
     max-size: "50m"
     max-file: "5"
 
-services:
-  db:
-    image: postgres:16
-    restart: always
-    logging: *default-logging
-    ports:
-      - "127.0.0.1:5432:5432"
-    environment:
-      POSTGRES_DB: shookie
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./database/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
-      - ./database/migrations/002_add_sessions_and_invocations.sql:/docker-entrypoint-initdb.d/002_add_sessions_and_invocations.sql
-      - ./database/migrations/003_backfill_session_titles.sql:/docker-entrypoint-initdb.d/003_backfill_session_titles.sql
-      - ./database/migrations/004_add_slack_user_oauth.sql:/docker-entrypoint-initdb.d/004_add_slack_user_oauth.sql
-      - ./database/migrations/005_harden_slack_user_oauth.sql:/docker-entrypoint-initdb.d/005_harden_slack_user_oauth.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+name: shookie
 
+services:
   bot:
     build:
       context: .
       dockerfile: shookie/Dockerfile
-    depends_on:
-      db:
-        condition: service_healthy
     restart: always
     logging: *default-logging
     ports:
@@ -63,5 +39,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/shookie
 
-volumes:
-  pgdata:
+networks:
+  default:
+    name: shookie_default
+    external: true
