@@ -43,12 +43,24 @@ jobs:
             cd /home/ubuntu/shookie
             git fetch origin
             git reset --hard origin/main
-            docker stop shookie-bot || true
-            docker rm shookie-bot || true
-            docker compose down || true
+
+            # PostgreSQL은 별도 Compose 생명주기로 관리한다. 일반 배포에서는
+            # 기존 컨테이너가 healthy인지 확인만 하고 생성/교체/중단하지 않는다.
+            DB_CONTAINER_ID_BEFORE="$(docker compose -f docker-compose.db.yml ps -q db)"
+            if [ -z "$DB_CONTAINER_ID_BEFORE" ]; then
+              echo "Shared PostgreSQL container is not running; aborting application deploy."
+              exit 1
+            fi
+            DB_STARTED_AT_BEFORE="$(docker inspect --format '{{.State.StartedAt}}' "$DB_CONTAINER_ID_BEFORE")"
+            if [ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$DB_CONTAINER_ID_BEFORE")" != "healthy" ]; then
+              echo "Shared PostgreSQL container is not healthy; aborting application deploy."
+              exit 1
+            fi
+            docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie
+
             docker builder prune -af
             docker image prune -f
-            docker compose build
+            docker compose build bot
             SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }} \
             SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
             LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
@@ -72,4 +84,18 @@ jobs:
             THREAD_WORKSPACE_MAX_GB=5 \
             LOG_LEVEL=debug \
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
-            docker compose up -d
+            docker compose up -d --no-deps bot
+
+            BOT_CONTAINER_ID="$(docker compose ps -q bot)"
+            if [ -z "$BOT_CONTAINER_ID" ] || [ "$(docker inspect --format '{{.State.Running}}' "$BOT_CONTAINER_ID")" != "true" ]; then
+              echo "Shookie bot container is not running after deploy."
+              exit 1
+            fi
+
+            DB_CONTAINER_ID_AFTER="$(docker compose -f docker-compose.db.yml ps -q db)"
+            DB_STARTED_AT_AFTER="$(docker inspect --format '{{.State.StartedAt}}' "$DB_CONTAINER_ID_AFTER")"
+            if [ "$DB_CONTAINER_ID_BEFORE" != "$DB_CONTAINER_ID_AFTER" ] || [ "$DB_STARTED_AT_BEFORE" != "$DB_STARTED_AT_AFTER" ]; then
+              echo "Shared PostgreSQL identity or start time changed during application deploy."
+              exit 1
+            fi
+            docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie
