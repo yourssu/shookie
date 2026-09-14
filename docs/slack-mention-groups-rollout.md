@@ -26,7 +26,7 @@ docker compose config
 docker compose -f docker-compose.db.yml config
 ```
 
-`test:e2e:mention-groups`는 로컬 HTTP 테스트 대역으로 Radar 응답/ETag를 제공하고 실제 Shookie 파서, 캐시, 서비스 흐름을 함께 실행한다. 공개 채널 본문, 비공개 채널 스레드 답글, 복수 그룹, 별칭, 그룹 간 중복 멤버의 각 그룹별 전체 표시, 알 수 없거나 비활성이라 카탈로그에 없는 그룹, revision 갱신, 영구 삭제 후 빈 catalog, handle/별칭 재사용, 만료 캐시 재검증 실패, 미인증 원문 보존, OAuth 후 재처리, 폐기 토큰 무효화와 재인증 후 재처리를 검증한다.
+`test:e2e:mention-groups`는 로컬 HTTP 테스트 대역으로 Radar 응답/ETag를 제공하고 실제 Shookie 파서, 캐시, 서비스 흐름을 함께 실행한다. 공개 채널 본문, 비공개 채널 스레드 답글, 복수 그룹, 별칭, 그룹 간 중복 멤버의 각 그룹별 전체 표시, 알 수 없거나 비활성이라 카탈로그에 없는 그룹, revision 갱신, 영구 삭제 후 빈 catalog, handle/별칭 재사용, 만료 캐시 재검증 실패, 미인증 원문 보존, OAuth 후 재처리, 폐기 토큰 무효화와 재인증 후 재처리를 검증한다. 작성자 전용 미해결/OAuth 안내에 정확한 `<https://radar.yourssu.com/mention-groups|멘션 그룹 만들기·관리하기>` 링크와 스레드 위치도 포함되는지 확인한다.
 
 이 테스트는 `GET /internal/v1/mention-groups`의 HTTP 계약을 모사하는 mock 계약 검증이지 Radar Spring 앱과 DB를 실행하는 Backend E2E가 아니다. Backend 실제 API 검증은 Radar Backend 저장소의 통합 테스트로 `DELETE /api/mention-groups/{id}/permanent?revision=N` 이후 내부 catalog을 직접 대조하고, Shookie PR에서는 그 결과를 mock 결과와 구분해 기록한다.
 
@@ -208,13 +208,13 @@ Radar V5 migration은 스키마만 만들며 seed data를 넣지 않는다. 아�
 2. 공개 채널 본문에 고유 표식과 `@handle`을 쓴다. 같은 메시지가 수정되고 작성자 A, permalink, `channel`, `ts`가 그대로인지 확인한다.
 3. 비공개 채널의 스레드 답글에서 같은 검증을 한다. 부모 메시지가 아니라 정확한 답글만 바뀌어야 한다.
 4. `@alias`, 여러 그룹, 같은 사용자가 겹치는 그룹을 한 메시지에 쓴다. 각 그룹 표기가 그 그룹의 전체 멤버를 독립적으로 포함하고, 그룹 내부의 중복 ID만 한 번 표시되며 일반 텍스트/코드/이미 생성된 `<@U…>`가 손상되지 않는지 확인한다.
-5. 알 수 없는 handle과 비활성/빈 그룹은 원문에 남고 작성자에게만 안내되는지 확인한다.
+5. 알 수 없는 handle과 비활성/빈 그룹은 원문에 남고 작성자에게만 `<https://radar.yourssu.com/mention-groups|멘션 그룹 만들기·관리하기>` 안내가 스레드 위치와 함께 보여지는지 확인한다.
 6. bot 메시지와 Shookie가 만든 편집 event가 재처리되지 않는지 확인한다. 같은 `event_id` 재전달에도 `chat.update`가 한 번뿐이어야 한다.
 7. Shookie를 재시작하고 이미 인증한 A의 다음 메시지가 OAuth prompt 없이 처리되는지 확인한다. DB에는 `v1:` envelope만 있고 `xox` 평문은 없어야 한다.
 
 ### OAuth, 폐기, 권한 실패
 
-1. 인증 이력이 없는 작성자 D가 그룹을 쓰면 원문이 유지되고 `Slack 인증하기` 안내가 D에게만 보여야 한다.
+1. 인증 이력이 없는 작성자 D가 그룹을 쓰면 원문이 유지되고 `Slack 인증하기`, `<https://radar.yourssu.com/mention-groups|멘션 그룹 만들기·관리하기>`, 자동 재처리 안내가 D에게만 보여야 한다.
 2. 동의 화면의 User Token scope가 `chat:write` 하나인지 확인하고 완료한다. callback 뒤 **현재 저장된 원문**을 다시 읽어 동일 메시지만 수정해야 한다.
 3. callback URL을 새 브라우저에서 다시 열어 state 재사용이 거부되는지 확인한다. 다른 team/user grant를 모사할 수 있는 테스트 앱에서는 주체 불일치가 저장되지 않고 grant가 폐기되는지도 확인한다.
 4. 테스트 사용자의 토큰을 Slack에서 폐기한 뒤 새 그룹 메시지를 쓴다. 원문이 유지되고 재인증 안내가 나오며, 재인증 후 같은 메시지가 처리되는지 확인한다.
