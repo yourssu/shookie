@@ -441,7 +441,7 @@ describe("mention group local contract E2E", () => {
     expect(slack.messages.get("C123:301.001")?.text).toBe("삭제 후 @backend @be");
     expect(slack.messages.get("C123:300.001")?.text).toBe("삭제 전 `@be`(<@U111>)");
     expect(slack.updates).toHaveLength(1);
-    expect(slack.ephemerals.at(-1)?.text).toContain("`@backend`, `@be`");
+    expect(slack.ephemerals.at(-1)?.text).toContain("@backend, @be");
     expect(slack.ephemerals.at(-1)?.text).toContain(RADAR_MENTION_GROUPS_MANAGEMENT_LINK);
 
     radarServer.setCatalog(3, [recreated]);
