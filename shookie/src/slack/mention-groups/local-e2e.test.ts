@@ -19,6 +19,8 @@ import type {
 import type { ActiveMentionGroup } from "./types.js";
 
 const INTERNAL_KEY = "local-e2e-internal-key-0123456789";
+const RADAR_MENTION_GROUPS_MANAGEMENT_LINK =
+  "<https://radar.yourssu.com/mention-groups|멘션 그룹 만들기·관리하기>";
 
 interface StoredMessage {
   channelId: string;
@@ -206,6 +208,7 @@ describe("mention group local contract E2E", () => {
       messageTs: "100.001",
     });
     expect(slack.ephemerals[0]?.text).toContain("알 수 없거나 비활성화된");
+    expect(slack.ephemerals[0]?.text).toContain(RADAR_MENTION_GROUPS_MANAGEMENT_LINK);
 
     oauth.setToken("T123", "U901", "xoxp-thread-author");
     slack.putMessage({
@@ -308,6 +311,7 @@ describe("mention group local contract E2E", () => {
 
     expect(slack.messages.get("G123:200.002")?.text).toBe("최초 인증 @be");
     expect(slack.ephemerals.at(-1)?.text).toContain("Slack 인증하기");
+    expect(slack.ephemerals.at(-1)?.text).toContain(RADAR_MENTION_GROUPS_MANAGEMENT_LINK);
     expect(oauth.authorizationRequests.at(-1)?.context).toMatchObject({
       channelId: "G123",
       messageTs: "200.002",
@@ -351,6 +355,7 @@ describe("mention group local contract E2E", () => {
     expect(oauth.hasToken("T123", "U902")).toBe(false);
     expect(slack.messages.get("C123:201.003")?.text).toBe("폐기 복구 @backend");
     expect(slack.ephemerals.at(-1)?.text).toContain("Slack 인증하기");
+    expect(slack.ephemerals.at(-1)?.text).toContain(RADAR_MENTION_GROUPS_MANAGEMENT_LINK);
 
     oauth.setToken("T123", "U902", "xoxp-reauthorized");
     await service.resumeAfterAuthorization({
@@ -437,6 +442,7 @@ describe("mention group local contract E2E", () => {
     expect(slack.messages.get("C123:300.001")?.text).toBe("삭제 전 `@be`(<@U111>)");
     expect(slack.updates).toHaveLength(1);
     expect(slack.ephemerals.at(-1)?.text).toContain("`@backend`, `@be`");
+    expect(slack.ephemerals.at(-1)?.text).toContain(RADAR_MENTION_GROUPS_MANAGEMENT_LINK);
 
     radarServer.setCatalog(3, [recreated]);
     now = 22;

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SlackUserOAuthRequiredError } from "../user-oauth/token-service.js";
 import { MentionEventDeduper } from "./event-deduper.js";
 import type { MentionMessageEvent } from "./event.js";
@@ -36,6 +36,10 @@ const event: MentionMessageEvent = {
   messageTs: "123.456",
   text: "검토 부탁해요 @backend @platform",
 };
+const RADAR_MENTION_GROUPS_MANAGEMENT_URL =
+  "https://radar.yourssu.com/mention-groups";
+const RADAR_MENTION_GROUPS_MANAGEMENT_LINK =
+  `<${RADAR_MENTION_GROUPS_MANAGEMENT_URL}|멘션 그룹 만들기·관리하기>`;
 
 function dependencies(overrides: {
   getCatalog?: ReturnType<typeof vi.fn>;
@@ -70,6 +74,10 @@ function dependencies(overrides: {
   };
   return { radar, oauth, slack };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("MentionGroupReplacementService", () => {
   it("작성자 User Token의 chat.update 경로로 같은 채널/ts 원문을 치환한다", async () => {
@@ -161,7 +169,17 @@ describe("MentionGroupReplacementService", () => {
       },
     });
     expect(deps.slack.postEphemeral).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "U999", threadTs: "100.000" }),
+      {
+        channelId: "C123",
+        userId: "U999",
+        threadTs: "100.000",
+        text: [
+          "이 메시지의 멘션 그룹을 치환하려면 작성자 Slack 인증이 필요합니다.",
+          "<https://slack.example/oauth|Slack 인증하기>",
+          RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
+          "인증이 끝나면 이 메시지를 자동으로 다시 처리합니다.",
+        ].join(" "),
+      },
     );
 
     await service.resumeAfterAuthorization({
@@ -180,6 +198,41 @@ describe("MentionGroupReplacementService", () => {
       threadTs: "100.000",
     });
     expect(deps.slack.updateMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("미해결 그룹과 OAuth가 함께 필요하면 각 사용자 전용 안내에 관리 링크를 포함한다", async () => {
+    const deps = dependencies({
+      getAccessToken: vi
+        .fn()
+        .mockRejectedValue(new SlackUserOAuthRequiredError("missing")),
+    });
+    const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
+
+    await service.handleEvent({
+      ...event,
+      threadTs: "101.000",
+      text: "@unknown @backend",
+    });
+
+    expect(deps.slack.postEphemeral).toHaveBeenCalledTimes(2);
+    expect(deps.slack.postEphemeral).toHaveBeenNthCalledWith(1, {
+      channelId: "C123",
+      userId: "U999",
+      threadTs: "101.000",
+      text: expect.stringContaining(RADAR_MENTION_GROUPS_MANAGEMENT_LINK),
+    });
+    expect(deps.slack.postEphemeral).toHaveBeenNthCalledWith(2, {
+      channelId: "C123",
+      userId: "U999",
+      threadTs: "101.000",
+      text: expect.stringContaining(RADAR_MENTION_GROUPS_MANAGEMENT_LINK),
+    });
+    expect(deps.slack.postEphemeral).toHaveBeenNthCalledWith(2, {
+      channelId: "C123",
+      userId: "U999",
+      threadTs: "101.000",
+      text: expect.stringContaining("Slack 인증하기"),
+    });
   });
 
   it("OAuth 대기 중 삭제·재생성된 그룹은 콜백 시점 catalog의 새 멤버로 처리한다", async () => {
@@ -257,8 +310,78 @@ describe("MentionGroupReplacementService", () => {
     expect(deps.oauth.getAccessToken).not.toHaveBeenCalled();
     expect(deps.slack.updateMessage).not.toHaveBeenCalled();
     expect(deps.slack.postEphemeral).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining("알 수 없거나 비활성화") }),
+      {
+        channelId: "C123",
+        userId: "U999",
+        text: [
+          "알 수 없거나 비활성화된 멘션 그룹: `@unknown`",
+          RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
+          "해당 handle은 원문에 그대로 두었습니다.",
+        ].join(" "),
+      },
     );
+  });
+
+  it("알 수 없음·빈 그룹·활성 그룹 혼합 시 원문과 사용자 전용 안내를 보존한다", async () => {
+    const emptyGroup: ActiveMentionGroup = {
+      id: "7a7a9d4d-f42c-4d2c-932c-2c832f2f5df4",
+      handle: "empty",
+      aliases: [],
+      memberUserIds: [],
+    };
+    const mixedGroups = [...groups, emptyGroup];
+    const deps = dependencies({
+      getCatalog: vi.fn().mockResolvedValue({
+        revision: 13,
+        etag: '"mention-groups-13"',
+        groups: mixedGroups,
+        byHandle: buildMentionGroupIndex(mixedGroups),
+      }),
+    });
+    const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
+
+    await service.handleEvent({
+      ...event,
+      threadTs: "200.000",
+      text: "@unknown @empty @backend",
+    });
+
+    expect(deps.slack.updateMessage).toHaveBeenCalledWith({
+      accessToken: "xoxp-author",
+      channelId: "C123",
+      messageTs: "123.456",
+      threadTs: "200.000",
+      text: "@unknown @empty `@backend`(<@U111> <@U222>)",
+    });
+    expect(deps.slack.postEphemeral).toHaveBeenCalledWith({
+      channelId: "C123",
+      userId: "U999",
+      threadTs: "200.000",
+      text: [
+        "알 수 없거나 비활성화된 멘션 그룹: `@unknown`",
+        "활성 멤버가 없는 멘션 그룹: `@empty`",
+        RADAR_MENTION_GROUPS_MANAGEMENT_LINK,
+        "해당 handle은 원문에 그대로 두었습니다.",
+      ].join(" "),
+    });
+  });
+
+  it("멘션 그룹 관리 링크는 안내에만 포함하고 로그에는 기록하지 않는다", async () => {
+    const logs: unknown[][] = [];
+    for (const method of ["debug", "info", "warn", "error"] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        logs.push(args);
+      });
+    }
+    const deps = dependencies();
+    const service = new MentionGroupReplacementService(deps.radar, deps.oauth, deps.slack);
+
+    await service.handleEvent({ ...event, text: "@unknown" });
+
+    expect(deps.slack.postEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining(RADAR_MENTION_GROUPS_MANAGEMENT_LINK) }),
+    );
+    expect(JSON.stringify(logs)).not.toContain(RADAR_MENTION_GROUPS_MANAGEMENT_URL);
   });
 
   it("Radar 장애에는 stale 멤버를 사용하지 않고 원문을 보존한다", async () => {
@@ -291,7 +414,9 @@ describe("MentionGroupReplacementService", () => {
     );
     expect(deps.oauth.createAuthorizationUrl).toHaveBeenCalled();
     expect(deps.slack.postEphemeral).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining("Slack 인증하기") }),
+      expect.objectContaining({
+        text: expect.stringContaining(RADAR_MENTION_GROUPS_MANAGEMENT_LINK),
+      }),
     );
   });
 
