@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ADD_MENTION_GROUP_USAGE,
   parseAddMentionGroupCommand,
+  parseUngroupMentionGroupCommand,
+  UNGROUP_MENTION_GROUP_USAGE,
 } from "./command-parser.js";
 
 describe("/group parser", () => {
@@ -26,6 +28,26 @@ describe("/group parser", () => {
     expect(parseAddMentionGroupCommand("help")).toMatchObject({
       ok: false,
       message: expect.stringContaining(ADD_MENTION_GROUP_USAGE),
+    });
+  });
+});
+
+describe("/ungroup parser", () => {
+  it("parses one handle and normalizes its case", () => {
+    expect(parseUngroupMentionGroupCommand(" Backend ")).toEqual({
+      ok: true,
+      command: { handle: "backend" },
+    });
+  });
+
+  it("rejects missing or extra arguments", () => {
+    expect(parseUngroupMentionGroupCommand("")).toEqual({
+      ok: false,
+      message: UNGROUP_MENTION_GROUP_USAGE,
+    });
+    expect(parseUngroupMentionGroupCommand("backend extra")).toEqual({
+      ok: false,
+      message: UNGROUP_MENTION_GROUP_USAGE,
     });
   });
 });
