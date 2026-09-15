@@ -167,6 +167,7 @@ yarn workspace shookie test
 | `POSTHOG_API_KEY` | PostHog Personal API Key |
 | `GITHUB` | GitHub Personal Access Token |
 | `POSTGRES_PASSWORD` | PostgreSQL 비밀번호 |
+| `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY` | `/group` 생성 전용 Radar 내부 API 키 (읽기용 키와 분리) |
 
 ### Radar 멘션 그룹 원문 치환
 

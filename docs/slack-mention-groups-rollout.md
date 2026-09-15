@@ -65,6 +65,7 @@ Radar Backend 전체 `test build`는 118 tests 중 3 failures, 24 skipped로 red
 | `SLACK_CLIENT_SECRET` | 같은 Slack 앱의 OAuth client secret. |
 | `SLACK_TOKEN_ENCRYPTION_KEY` | `openssl rand -base64 32`로 생성한 정확히 32바이트 키. 기존 DB 토큰을 복호화하는 유일한 키이므로 일반 secret rotation처럼 즉시 교체하지 않는다. |
 | `SHOOKIE_MENTION_GROUPS_API_KEY` | Radar와 공유하는 전용 내부 키. 예: `openssl rand -hex 32`; Slack/DB/기타 API 키와 재사용하지 않는다. |
+| `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY` | `/group` 생성 전용 Radar 내부 키. 읽기용 키와 반드시 분리하고 두 서비스에 같은 값을 넣는다. |
 | `POSTGRES_PASSWORD` | 기존 Shookie PostgreSQL 암호. |
 
 ### GitHub Variables
@@ -73,6 +74,8 @@ Radar Backend 전체 `test build`는 118 tests 중 3 failures, 24 skipped로 red
 |---|---|---|
 | `SLACK_OAUTH_REDIRECT_URI` | `https://<운영 호스트>/slack/user-oauth/callback` | 값은 준비하되 OAuth가 준비될 때까지 플래그를 끈다. query/fragment를 넣지 않는다. |
 | `RADAR_MENTION_GROUPS_API_URL` | `https://<Radar 내부 호스트>/internal/v1/mention-groups` | 값은 준비하되 치환 플래그를 끈다. |
+| `SLACK_MENTION_GROUP_COMMAND_ENABLED` | `/group` Slash Command 처리 활성화 | `false` |
+| `RADAR_MENTION_GROUPS_WRITE_API_URL` | `https://<Radar 내부 호스트>/internal/v1/mention-groups` | 값은 준비하되 명령어 플래그를 끈다. |
 | `SLACK_USER_OAUTH_ENABLED` | OAuth 서버와 DB migration 활성화 | `false` |
 | `SLACK_MENTION_GROUP_REPLACEMENT_ENABLED` | 메시지 이벤트 처리 활성화 | `false` |
 | `SLACK_TOKEN_ROTATION_ENABLED` | Slack 앱의 Token Rotation 설정과 정확히 일치 | `false` |
