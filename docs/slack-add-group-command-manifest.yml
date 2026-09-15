@@ -1,0 +1,29 @@
+# Command-only experiment manifest.
+# For an existing Shookie app, merge the slash_commands entry and the
+# `commands` bot scope into its exported manifest instead of replacing the
+# app's existing scopes/events.
+display_information:
+  name: Shookie Mention Group Experiment
+  description: Create Radar mention groups from Slack
+
+features:
+  bot_user:
+    display_name: Shookie
+    always_online: false
+  slash_commands:
+    - command: /add
+      description: Create a Radar mention group
+      usage_hint: group <handle> <@member> [@member ...]
+      should_escape: true
+
+oauth_config:
+  scopes:
+    bot:
+      - commands
+
+settings:
+  socket_mode_enabled: true
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  token_rotation_enabled: false

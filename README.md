@@ -184,6 +184,8 @@ Slack 앱에 `/add` Slash Command를 등록하고 Shookie의 명령어 플래그
 
 Slack이 전달하는 멘션은 `<@U...>`로 변환되며, Shookie는 중복 멤버를 제거하고 명령 실행자의 Slack User ID를 Radar 감사 이력에 남깁니다. 그룹 생성에는 기존 조회용 키와 분리된 `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY`가 필요합니다. 생성 후 별칭·멤버 수정, 활성화·삭제는 Radar의 멘션 그룹 화면에서 진행합니다.
 
+Socket Mode 기반 앱 등록 설정 조각은 [`docs/slack-add-group-command-manifest.yml`](docs/slack-add-group-command-manifest.yml)에 있습니다. 기존 Shookie 앱에 적용할 때는 현재 앱 manifest를 먼저 export한 뒤 `features.slash_commands` 항목과 `commands` bot scope만 병합하세요. Socket Mode에서는 Slash Command Request URL을 입력하지 않습니다.
+
 명령어는 기본적으로 꺼져 있습니다. `.env`에서 다음 값을 설정하고 `/add`가 실제 Slack 앱에 등록된 경우에만 활성화됩니다.
 
 ```dotenv
