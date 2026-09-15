@@ -174,6 +174,30 @@ yarn workspace shookie test
 
 채널 메시지를 수신하고 OAuth 후 대기 메시지를 다시 읽으려면 Slack 앱에 공개/비공개 채널의 message event 구독과 해당 history scope가 필요합니다. 실제 Slack Redirect URL, 앱 scope/event 설정, 메시지 편집 정책과 알림 동작 검증은 자격증명이 있는 배포 환경에서 진행해야 합니다.
 
+### Slack `/add group` 빠른 생성
+
+Slack 앱에 `/add` Slash Command를 등록하고 Shookie의 명령어 플래그를 켜면 다음 형식으로 Radar에 멘션 그룹을 만들 수 있어요.
+
+```text
+/add group backend @backend-user-1 @backend-user-2
+```
+
+Slack이 전달하는 멘션은 `<@U...>`로 변환되며, Shookie는 중복 멤버를 제거하고 명령 실행자의 Slack User ID를 Radar 감사 이력에 남깁니다. 그룹 생성에는 기존 조회용 키와 분리된 `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY`가 필요합니다. 생성 후 별칭·멤버 수정, 활성화·삭제는 Radar의 멘션 그룹 화면에서 진행합니다.
+
+명령어는 기본적으로 꺼져 있습니다. `.env`에서 다음 값을 설정하고 `/add`가 실제 Slack 앱에 등록된 경우에만 활성화됩니다.
+
+```dotenv
+SLACK_MENTION_GROUP_COMMAND_ENABLED=true
+RADAR_MENTION_GROUPS_WRITE_API_URL=http://localhost:8080/internal/v1/mention-groups
+SHOOKIE_MENTION_GROUPS_WRITE_API_KEY=<Radar와 동일한 전용 write key>
+```
+
+자격증명 없이 전체 흐름을 확인하는 로컬 실험은 다음 명령으로 실행합니다. 로컬 HTTP Radar write 계약 대역, Shookie parser/client/handler를 함께 실행하며 실제 Radar DB는 변경하지 않습니다.
+
+```bash
+corepack yarn workspace shookie test:e2e:mention-group-command
+```
+
 Slack 앱 설정, 비밀값 분류, 로컬/수동 E2E, 기존 mention-bot 전환 및 롤백 절차는 [`docs/slack-mention-groups-rollout.md`](docs/slack-mention-groups-rollout.md)를 따르세요. 특히 두 봇을 같은 채널에서 동시에 활성화하지 말고, 편집으로 추가된 멘션의 실제 알림 여부를 실워크스페이스에서 승인하기 전에는 운영 전환하지 않습니다.
 
 ## 기술 스택

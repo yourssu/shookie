@@ -1,6 +1,7 @@
 import { App } from "@slack/bolt";
 import {
   config,
+  getMentionGroupCommandConfig,
   getMentionGroupReplacementConfig,
   getSlackUserOAuthConfig,
 } from "./config.js";
@@ -16,6 +17,8 @@ import {
   createMentionGroupReplacementService,
   registerMentionGroupReplacement,
 } from "./slack/mention-groups/index.js";
+import { RadarMentionGroupCommandClient } from "./slack/mention-groups/command-client.js";
+import { registerAddMentionGroupCommand } from "./slack/mention-groups/add-command.js";
 
 async function main() {
   // 1. 로깅 설정
@@ -25,6 +28,7 @@ async function main() {
   // 2. 사용자 OAuth 초기화 (멘션 그룹 원문 치환용)
   const userOAuthConfig = getSlackUserOAuthConfig();
   const mentionGroupConfig = getMentionGroupReplacementConfig();
+  const mentionGroupCommandConfig = getMentionGroupCommandConfig();
   if (userOAuthConfig) {
     const appliedMigrations = await runMigrations();
     if (appliedMigrations.length > 0) {
@@ -78,6 +82,11 @@ async function main() {
       mentionGroupReplacement.resumeAfterAuthorization(state);
     registerMentionGroupReplacement(app, mentionGroupReplacement);
     logger.info("Slack 멘션 그룹 원문 치환 활성화");
+  }
+  if (mentionGroupCommandConfig) {
+    const mentionGroupCommand = new RadarMentionGroupCommandClient(mentionGroupCommandConfig);
+    registerAddMentionGroupCommand(app, mentionGroupCommand);
+    logger.info("Slack /add group 명령어 활성화");
   }
   registerHandlers(app, agent);
   registerAssistantHandlers(app);
