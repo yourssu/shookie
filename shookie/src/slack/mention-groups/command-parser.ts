@@ -7,12 +7,23 @@ export interface AddMentionGroupCommand {
   memberUserIds: string[];
 }
 
+export interface UngroupMentionGroupCommand {
+  handle: string;
+}
+
 export type AddMentionGroupCommandParseResult =
   | { ok: true; command: AddMentionGroupCommand }
   | { ok: false; message: string };
 
+export type UngroupMentionGroupCommandParseResult =
+  | { ok: true; command: UngroupMentionGroupCommand }
+  | { ok: false; message: string };
+
 export const ADD_MENTION_GROUP_USAGE =
   "사용법: `/group <핸들> <@멤버> [@멤버 ...]`\n예: `/group backend <@U0123456789> <@U9876543210>`";
+
+export const UNGROUP_MENTION_GROUP_USAGE =
+  "사용법: `/ungroup <핸들>`\n예: `/ungroup backend`";
 
 /**
  * Slack slash command text is passed as one string. Mentions arrive as
@@ -56,6 +67,23 @@ export function parseAddMentionGroupCommand(text: string): AddMentionGroupComman
       memberUserIds,
     },
   };
+}
+
+export function parseUngroupMentionGroupCommand(text: string): UngroupMentionGroupCommandParseResult {
+  const tokens = text.trim().split(/\s+/u).filter(Boolean);
+  if (tokens.length !== 1) {
+    return { ok: false, message: UNGROUP_MENTION_GROUP_USAGE };
+  }
+
+  const handle = tokens[0]?.toLowerCase();
+  if (!handle || !HANDLE_PATTERN.test(handle)) {
+    return {
+      ok: false,
+      message: `핸들은 영문 소문자로 시작하는 2~32자의 값이어야 합니다.\n${UNGROUP_MENTION_GROUP_USAGE}`,
+    };
+  }
+
+  return { ok: true, command: { handle } };
 }
 
 function displayNameFromHandle(handle: string): string {

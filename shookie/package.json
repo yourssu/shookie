@@ -9,6 +9,7 @@
     "test": "vitest run",
     "test:e2e:mention-groups": "vitest run src/slack/mention-groups/local-e2e.test.ts",
     "test:e2e:mention-group-command": "vitest run src/slack/mention-groups/command-local-e2e.test.ts",
+    "test:e2e:mention-group-ungroup-command": "vitest run src/slack/mention-groups/ungroup-command-local-e2e.test.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

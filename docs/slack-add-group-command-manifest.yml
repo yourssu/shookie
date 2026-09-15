@@ -15,6 +15,10 @@ features:
       description: Create a Radar mention group
       usage_hint: <handle> <@member> [@member ...]
       should_escape: true
+    - command: /ungroup
+      description: Deactivate a Radar mention group
+      usage_hint: <handle>
+      should_escape: true
 
 oauth_config:
   scopes:

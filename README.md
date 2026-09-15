@@ -195,6 +195,10 @@ RADAR_MENTION_GROUPS_WRITE_API_URL=http://localhost:8080/internal/v1/mention-gro
 SHOOKIE_MENTION_GROUPS_WRITE_API_KEY=<Radar와 동일한 전용 write key>
 ```
 
+같은 플래그와 write key로 `/ungroup <handle>`도 사용할 수 있습니다. `/ungroup`은 해당 그룹을
+soft delete(비활성화)하며 변경 이력은 보존합니다. 예: `/ungroup backend`. 영구 삭제와 handle 재사용은
+Radar 멘션 그룹 관리 화면/API에서 별도로 수행하세요.
+
 자격증명 없이 전체 흐름을 확인하는 로컬 실험은 다음 명령으로 실행합니다. 로컬 HTTP Radar write 계약 대역, Shookie parser/client/handler를 함께 실행하며 실제 Radar DB는 변경하지 않습니다.
 
 ```bash

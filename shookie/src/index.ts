@@ -19,6 +19,7 @@ import {
 } from "./slack/mention-groups/index.js";
 import { RadarMentionGroupCommandClient } from "./slack/mention-groups/command-client.js";
 import { registerAddMentionGroupCommand } from "./slack/mention-groups/add-command.js";
+import { registerUngroupMentionGroupCommand } from "./slack/mention-groups/ungroup-command.js";
 
 async function main() {
   // 1. 로깅 설정
@@ -86,6 +87,7 @@ async function main() {
   if (mentionGroupCommandConfig) {
     const mentionGroupCommand = new RadarMentionGroupCommandClient(mentionGroupCommandConfig);
     registerAddMentionGroupCommand(app, mentionGroupCommand);
+    registerUngroupMentionGroupCommand(app, mentionGroupCommand);
     logger.info("Slack /group 명령어 활성화");
   }
   registerHandlers(app, agent);
