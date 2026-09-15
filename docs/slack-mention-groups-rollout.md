@@ -28,6 +28,8 @@ docker compose -f docker-compose.db.yml config
 
 `test:e2e:mention-groups`는 로컬 HTTP 테스트 대역으로 Radar 응답/ETag를 제공하고 실제 Shookie 파서, 캐시, 서비스 흐름을 함께 실행한다. 공개 채널 본문, 비공개 채널 스레드 답글, 복수 그룹, 별칭, 그룹 간 중복 멤버의 각 그룹별 전체 표시, 알 수 없거나 비활성이라 카탈로그에 없는 그룹, revision 갱신, 영구 삭제 후 빈 catalog, handle/별칭 재사용, 만료 캐시 재검증 실패, 미인증 원문 보존, OAuth 후 재처리, 폐기 토큰 무효화와 재인증 후 재처리를 검증한다. 작성자 전용 미해결/OAuth 안내에 정확한 `<https://radar.yourssu.com/mention-groups|멘션 그룹 만들기·관리하기>` 링크와 스레드 위치도 포함되는지 확인한다.
 
+`test:e2e:mention-group-command`는 `/group <handle> <@멤버>...` 입력을 parser → Radar POST client → command responder까지 연결해 검증하는 무자격증명 로컬 실험이다. 실제 Slack에서는 앱에 `/group` Slash Command를 등록하고 Shookie의 `SLACK_MENTION_GROUP_COMMAND_ENABLED=true`, Radar의 `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY`, 그리고 Shookie의 동일한 write key 설정을 별도로 넣는다. 이 write endpoint는 기존 GET catalog read key와 분리되어 있으며 생성만 허용한다.
+
 이 테스트는 `GET /internal/v1/mention-groups`의 HTTP 계약을 모사하는 mock 계약 검증이지 Radar Spring 앱과 DB를 실행하는 Backend E2E가 아니다. Backend 실제 API 검증은 Radar Backend 저장소의 통합 테스트로 `DELETE /api/mention-groups/{id}/permanent?revision=N` 이후 내부 catalog을 직접 대조하고, Shookie PR에서는 그 결과를 mock 결과와 구분해 기록한다.
 
 전체 테스트는 여기에 일회성 state, team/user 일치, `chat:write` 단일 scope, AES-256-GCM, 재시작 뒤 암호문 재사용, 회전 CAS, 폐기, 이벤트 중복/편집/봇 필터, 응답 크기·스키마·ETag 실패, 로그 마스킹을 추가로 검증한다. 이 테스트는 Slack API를 모사하므로 실제 Slack 작성자 표시와 알림 전달을 증명하지 않는다.
@@ -79,7 +81,7 @@ Radar Backend 전체 `test build`는 118 tests 중 3 failures, 24 skipped로 red
 | `RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS` | Radar 캐시 수명, 1~300초 | `30` |
 | `RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS` | Radar 요청 제한, 250~10000ms | `3000` |
 
-현재 구현은 32바이트 난수 state의 SHA-256 해시만 PostgreSQL에 저장하고 원자적으로 한 번 소비하므로 별도 `SLACK_OAUTH_STATE_SECRET`이 없다. 현재 Slack 이벤트는 Socket Mode로 수신하므로 `SLACK_SIGNING_SECRET`도 코드에서 사용하지 않는다. 나중에 HTTP Events API, slash command, action receiver를 추가한다면 그때 signing secret을 별도 Secret으로 주입하고 [Slack 요청 서명 검증](https://docs.slack.dev/authentication/verifying-requests-from-slack/)을 구현해야 한다.
+현재 구현은 32바이트 난수 state의 SHA-256 해시만 PostgreSQL에 저장하고 원자적으로 한 번 소비하므로 별도 `SLACK_OAUTH_STATE_SECRET`이 없다. Slack 이벤트와 `/group` Slash Command는 Socket Mode로 수신하므로 `SLACK_SIGNING_SECRET`이나 공개 Slash Command Request URL을 사용하지 않는다. HTTP Events API나 HTTP action receiver로 전환한다면 그때 signing secret을 별도 Secret으로 주입하고 [Slack 요청 서명 검증](https://docs.slack.dev/authentication/verifying-requests-from-slack/)을 구현해야 한다. 앱 등록용 설정 조각은 [`slack-add-group-command-manifest.yml`](slack-add-group-command-manifest.yml)에서 확인한다.
 
 ### OAuth callback 프록시 예시
 
