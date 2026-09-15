@@ -174,19 +174,19 @@ yarn workspace shookie test
 
 채널 메시지를 수신하고 OAuth 후 대기 메시지를 다시 읽으려면 Slack 앱에 공개/비공개 채널의 message event 구독과 해당 history scope가 필요합니다. 실제 Slack Redirect URL, 앱 scope/event 설정, 메시지 편집 정책과 알림 동작 검증은 자격증명이 있는 배포 환경에서 진행해야 합니다.
 
-### Slack `/add group` 빠른 생성
+### Slack `/group` 빠른 생성
 
-Slack 앱에 `/add` Slash Command를 등록하고 Shookie의 명령어 플래그를 켜면 다음 형식으로 Radar에 멘션 그룹을 만들 수 있어요.
+Slack 앱에 `/group` Slash Command를 등록하고 Shookie의 명령어 플래그를 켜면 다음 형식으로 Radar에 멘션 그룹을 만들 수 있어요.
 
 ```text
-/add group backend @backend-user-1 @backend-user-2
+/group backend @backend-user-1 @backend-user-2
 ```
 
 Slack이 전달하는 멘션은 `<@U...>`로 변환되며, Shookie는 중복 멤버를 제거하고 명령 실행자의 Slack User ID를 Radar 감사 이력에 남깁니다. 그룹 생성에는 기존 조회용 키와 분리된 `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY`가 필요합니다. 생성 후 별칭·멤버 수정, 활성화·삭제는 Radar의 멘션 그룹 화면에서 진행합니다.
 
 Socket Mode 기반 앱 등록 설정 조각은 [`docs/slack-add-group-command-manifest.yml`](docs/slack-add-group-command-manifest.yml)에 있습니다. 기존 Shookie 앱에 적용할 때는 현재 앱 manifest를 먼저 export한 뒤 `features.slash_commands` 항목과 `commands` bot scope만 병합하세요. Socket Mode에서는 Slash Command Request URL을 입력하지 않습니다.
 
-명령어는 기본적으로 꺼져 있습니다. `.env`에서 다음 값을 설정하고 `/add`가 실제 Slack 앱에 등록된 경우에만 활성화됩니다.
+명령어는 기본적으로 꺼져 있습니다. `.env`에서 다음 값을 설정하고 `/group`이 실제 Slack 앱에 등록된 경우에만 활성화됩니다.
 
 ```dotenv
 SLACK_MENTION_GROUP_COMMAND_ENABLED=true

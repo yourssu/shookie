@@ -4,10 +4,10 @@ import {
   parseAddMentionGroupCommand,
 } from "./command-parser.js";
 
-describe("/add group parser", () => {
+describe("/group parser", () => {
   it("parses Slack mentions, derives a display name, and de-duplicates members", () => {
     expect(
-      parseAddMentionGroupCommand("group backend-team <@U111|alice> <@U222> <@U111|alice>"),
+      parseAddMentionGroupCommand("backend-team <@U111|alice> <@U222> <@U111|alice>"),
     ).toEqual({
       ok: true,
       command: {
@@ -18,8 +18,8 @@ describe("/add group parser", () => {
     });
   });
 
-  it("rejects arbitrary member text and missing group subcommands", () => {
-    expect(parseAddMentionGroupCommand("group backend alice")).toMatchObject({
+  it("rejects arbitrary member text and missing members", () => {
+    expect(parseAddMentionGroupCommand("backend alice")).toMatchObject({
       ok: false,
       message: expect.stringContaining(ADD_MENTION_GROUP_USAGE),
     });

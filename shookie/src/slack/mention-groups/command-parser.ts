@@ -12,7 +12,7 @@ export type AddMentionGroupCommandParseResult =
   | { ok: false; message: string };
 
 export const ADD_MENTION_GROUP_USAGE =
-  "사용법: `/add group <핸들> <@멤버> [@멤버 ...]`\n예: `/add group backend <@U0123456789> <@U9876543210>`";
+  "사용법: `/group <핸들> <@멤버> [@멤버 ...]`\n예: `/group backend <@U0123456789> <@U9876543210>`";
 
 /**
  * Slack slash command text is passed as one string. Mentions arrive as
@@ -21,11 +21,11 @@ export const ADD_MENTION_GROUP_USAGE =
  */
 export function parseAddMentionGroupCommand(text: string): AddMentionGroupCommandParseResult {
   const tokens = text.trim().split(/\s+/u).filter(Boolean);
-  if (tokens.length === 0 || tokens[0]?.toLowerCase() !== "group") {
+  if (tokens.length === 0) {
     return { ok: false, message: `그룹 생성 명령이 아닙니다.\n${ADD_MENTION_GROUP_USAGE}` };
   }
 
-  const handle = tokens[1]?.toLowerCase();
+  const handle = tokens[0]?.toLowerCase();
   if (!handle || !HANDLE_PATTERN.test(handle)) {
     return {
       ok: false,
@@ -37,7 +37,7 @@ export function parseAddMentionGroupCommand(text: string): AddMentionGroupComman
   }
 
   const memberUserIds: string[] = [];
-  for (const token of tokens.slice(2)) {
+  for (const token of tokens.slice(1)) {
     const match = SLACK_MENTION_PATTERN.exec(token);
     if (!match) {
       return {

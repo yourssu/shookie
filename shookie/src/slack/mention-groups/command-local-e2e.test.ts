@@ -16,7 +16,7 @@ afterEach(async () => {
   );
 });
 
-describe("/add group local experiment", () => {
+describe("/group local experiment", () => {
   it("runs the Slack command parser, real HTTP client, and Radar write contract together", async () => {
     const requests: Array<Record<string, unknown>> = [];
     const server = createServer(async (request, response) => {
@@ -53,7 +53,7 @@ describe("/add group local experiment", () => {
     const responder = { respond: async (value: { response_type: "ephemeral"; text: string }) => value };
 
     await handleAddMentionGroupCommand(
-      { text: "group platform <@U111> <@U222>", user_id: "U900", team_id: "T123" },
+      { text: "platform <@U111> <@U222>", user_id: "U900", team_id: "T123" },
       client,
       responder,
     );

@@ -86,7 +86,7 @@ async function main() {
   if (mentionGroupCommandConfig) {
     const mentionGroupCommand = new RadarMentionGroupCommandClient(mentionGroupCommandConfig);
     registerAddMentionGroupCommand(app, mentionGroupCommand);
-    logger.info("Slack /add group 명령어 활성화");
+    logger.info("Slack /group 명령어 활성화");
   }
   registerHandlers(app, agent);
   registerAssistantHandlers(app);

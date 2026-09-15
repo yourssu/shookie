@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleAddMentionGroupCommand } from "./add-command.js";
 
-describe("Slack /add group command", () => {
+describe("Slack /group command", () => {
   it("creates a group and responds privately with the result", async () => {
     const client = {
       create: vi.fn().mockResolvedValue({
@@ -15,7 +15,7 @@ describe("Slack /add group command", () => {
     const responder = { respond: vi.fn().mockResolvedValue(undefined) };
 
     await handleAddMentionGroupCommand(
-      { text: "group backend <@U111> <@U222>", user_id: "U900", team_id: "T123" },
+      { text: "backend <@U111> <@U222>", user_id: "U900", team_id: "T123" },
       client,
       responder,
     );
@@ -36,7 +36,7 @@ describe("Slack /add group command", () => {
     const responder = { respond: vi.fn().mockResolvedValue(undefined) };
 
     await handleAddMentionGroupCommand(
-      { text: "group backend", user_id: "U900", team_id: "T123" },
+      { text: "backend", user_id: "U900", team_id: "T123" },
       client,
       responder,
     );

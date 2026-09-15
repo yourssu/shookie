@@ -51,7 +51,7 @@ export class RadarMentionGroupCommandClient {
         actorUserId,
         handle: command.handle,
         displayName: command.displayName,
-        description: "Created from Slack /add group",
+        description: "Created from Slack /group",
         aliases: [],
         memberUserIds: command.memberUserIds,
       }),

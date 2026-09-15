@@ -11,9 +11,9 @@ features:
     display_name: Shookie
     always_online: false
   slash_commands:
-    - command: /add
+    - command: /group
       description: Create a Radar mention group
-      usage_hint: group <handle> <@member> [@member ...]
+      usage_hint: <handle> <@member> [@member ...]
       should_escape: true
 
 oauth_config:

@@ -46,7 +46,7 @@ export async function handleAddMentionGroupCommand(
       text: formatSuccess(created),
     });
   } catch (error) {
-    logger.warn("Slack /add group 처리 실패", {
+    logger.warn("Slack /group 처리 실패", {
       teamId: payload.team_id,
       userId: payload.user_id,
       error: error instanceof RadarMentionGroupCommandError ? error.code : errorName(error),
@@ -59,7 +59,7 @@ export function registerAddMentionGroupCommand(
   app: App,
   client: Pick<RadarMentionGroupCommandClient, "create">,
 ): void {
-  app.command("/add", async ({ command, ack, respond }) => {
+  app.command("/group", async ({ command, ack, respond }) => {
     await ack();
     await handleAddMentionGroupCommand(command, client, {
       respond: (response) => respond(response),
