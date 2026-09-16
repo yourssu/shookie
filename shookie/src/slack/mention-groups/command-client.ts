@@ -1,8 +1,5 @@
 import { z } from "zod";
-import type {
-  AddMentionGroupCommand,
-  UngroupMentionGroupCommand,
-} from "./command-parser.js";
+import type { AddMentionGroupCommand, UngroupMentionGroupCommand } from "./command-parser.js";
 
 const createdGroupSchema = z.object({
   id: z.string().uuid(),
@@ -12,16 +9,7 @@ const createdGroupSchema = z.object({
   revision: z.number().int().positive(),
 });
 
-const deletedGroupSchema = z.object({
-  id: z.string().uuid(),
-  handle: z.string(),
-  displayName: z.string(),
-  active: z.boolean().refine((active) => !active),
-  revision: z.number().int().positive(),
-});
-
 export type CreatedMentionGroup = z.infer<typeof createdGroupSchema>;
-export type DeletedMentionGroup = z.infer<typeof deletedGroupSchema>;
 
 export class RadarMentionGroupCommandError extends Error {
   constructor(
@@ -85,22 +73,19 @@ export class RadarMentionGroupCommandClient {
     return parsed.data;
   }
 
-  async deactivate(
+  async deletePermanently(
     command: UngroupMentionGroupCommand,
-    actorUserId: string,
     requestId?: string,
-  ): Promise<DeletedMentionGroup> {
+  ): Promise<void> {
     const response = await this.fetcher(
-      `${this.options.apiUrl}/${encodeURIComponent(command.handle)}`,
+      `${this.options.apiUrl}/${encodeURIComponent(command.handle)}/permanent`,
       {
         method: "DELETE",
         headers: {
           Accept: "application/json",
-          "Content-Type": "application/json",
           "X-Radar-Internal-Key": this.options.apiKey,
           ...(requestId ? { "X-Request-Id": requestId } : {}),
         },
-        body: JSON.stringify({ actorUserId }),
         redirect: "error",
       },
     );
@@ -112,12 +97,6 @@ export class RadarMentionGroupCommandClient {
       );
     }
 
-    const raw = await response.json().catch(() => null);
-    const parsed = deletedGroupSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new RadarMentionGroupCommandError(response.status, "invalid_schema");
-    }
-    return parsed.data;
   }
 }
 

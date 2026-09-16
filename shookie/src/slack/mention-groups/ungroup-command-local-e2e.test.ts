@@ -17,28 +17,19 @@ afterEach(async () => {
 });
 
 describe("/ungroup local experiment", () => {
-  it("runs the Slack command parser, real HTTP client, and Radar delete contract together", async () => {
-    const requests: Array<Record<string, unknown>> = [];
+  it("runs the Slack command parser, real HTTP client, and Radar hard-delete contract together", async () => {
+    let requestCount = 0;
     const server = createServer(async (request, response) => {
       if (
         request.method !== "DELETE" ||
-        request.url !== "/internal/v1/mention-groups/backend" ||
+        request.url !== "/internal/v1/mention-groups/backend/permanent" ||
         request.headers["x-radar-internal-key"] !== INTERNAL_KEY
       ) {
         response.writeHead(401).end();
         return;
       }
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({
-        id: "61b37086-28f7-44fd-9683-e1d8821cd51f",
-        handle: "backend",
-        displayName: "Backend",
-        active: false,
-        revision: 2,
-      }));
+      requestCount += 1;
+      response.writeHead(204).end();
     });
     server.listen(0, "127.0.0.1");
     servers.push(server);
@@ -57,9 +48,7 @@ describe("/ungroup local experiment", () => {
       { respond: async (value) => { responses.push(value); } },
     );
 
-    expect(requests).toEqual([
-      expect.objectContaining({ actorUserId: "U900" }),
-    ]);
-    expect(responses[0]?.text).toContain("그룹을 삭제했습니다");
+    expect(requestCount).toBe(1);
+    expect(responses[0]?.text).toContain("영구 삭제했습니다");
   });
 });

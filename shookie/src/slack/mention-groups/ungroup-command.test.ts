@@ -2,16 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { handleUngroupMentionGroupCommand } from "./ungroup-command.js";
 
 describe("Slack /ungroup command", () => {
-  it("deactivates a group and responds privately with the result", async () => {
-    const client = {
-      deactivate: vi.fn().mockResolvedValue({
-        id: "61b37086-28f7-44fd-9683-e1d8821cd51f",
-        handle: "backend",
-        displayName: "Backend",
-        active: false,
-        revision: 2,
-      }),
-    };
+  it("permanently deletes a group and responds privately with the result", async () => {
+    const client = { deletePermanently: vi.fn().mockResolvedValue(undefined) };
     const responder = { respond: vi.fn().mockResolvedValue(undefined) };
 
     await handleUngroupMentionGroupCommand(
@@ -20,19 +12,18 @@ describe("Slack /ungroup command", () => {
       responder,
     );
 
-    expect(client.deactivate).toHaveBeenCalledWith(
+    expect(client.deletePermanently).toHaveBeenCalledWith(
       { handle: "backend" },
-      "U900",
       expect.stringMatching(/^shookie-ungroup-T123-/u),
     );
     expect(responder.respond).toHaveBeenCalledWith({
       response_type: "ephemeral",
-      text: expect.stringContaining("그룹을 삭제했습니다"),
+      text: expect.stringContaining("영구 삭제했습니다"),
     });
   });
 
   it("returns usage without calling Radar for invalid input", async () => {
-    const client = { deactivate: vi.fn() };
+    const client = { deletePermanently: vi.fn() };
     const responder = { respond: vi.fn().mockResolvedValue(undefined) };
 
     await handleUngroupMentionGroupCommand(
@@ -41,7 +32,7 @@ describe("Slack /ungroup command", () => {
       responder,
     );
 
-    expect(client.deactivate).not.toHaveBeenCalled();
+    expect(client.deletePermanently).not.toHaveBeenCalled();
     expect(responder.respond).toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining("사용법") }),
     );

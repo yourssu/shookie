@@ -45,18 +45,9 @@ describe("RadarMentionGroupCommandClient", () => {
     });
   });
 
-  it("deactivates a group by handle through the internal write endpoint", async () => {
+  it("permanently deletes a group by handle through the internal write endpoint", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          id: "61b37086-28f7-44fd-9683-e1d8821cd51f",
-          handle: "backend",
-          displayName: "Backend",
-          active: false,
-          revision: 2,
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
+      new Response(null, { status: 204 }),
     );
     const client = new RadarMentionGroupCommandClient({
       apiUrl: "http://localhost:8080/internal/v1/mention-groups",
@@ -65,10 +56,10 @@ describe("RadarMentionGroupCommandClient", () => {
     });
 
     await expect(
-      client.deactivate({ handle: "backend" }, "U900", "request-2"),
-    ).resolves.toMatchObject({ handle: "backend", active: false, revision: 2 });
+      client.deletePermanently({ handle: "backend" }, "request-2"),
+    ).resolves.toBeUndefined();
     expect(fetcher).toHaveBeenCalledWith(
-      "http://localhost:8080/internal/v1/mention-groups/backend",
+      "http://localhost:8080/internal/v1/mention-groups/backend/permanent",
       expect.objectContaining({
         method: "DELETE",
         headers: expect.objectContaining({
@@ -77,8 +68,5 @@ describe("RadarMentionGroupCommandClient", () => {
         }),
       }),
     );
-    expect(JSON.parse(fetcher.mock.calls[0]?.[1]?.body as string)).toEqual({
-      actorUserId: "U900",
-    });
   });
 });

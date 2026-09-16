@@ -6,7 +6,6 @@ import {
 } from "./command-parser.js";
 import {
   RadarMentionGroupCommandError,
-  type DeletedMentionGroup,
   type RadarMentionGroupCommandClient,
 } from "./command-client.js";
 
@@ -22,7 +21,7 @@ export interface UngroupMentionGroupCommandResponder {
 
 export async function handleUngroupMentionGroupCommand(
   payload: UngroupCommandPayload,
-  client: Pick<RadarMentionGroupCommandClient, "deactivate">,
+  client: Pick<RadarMentionGroupCommandClient, "deletePermanently">,
   responder: UngroupMentionGroupCommandResponder,
 ): Promise<void> {
   const parsed = parseUngroupMentionGroupCommand(payload.text ?? "");
@@ -40,14 +39,13 @@ export async function handleUngroupMentionGroupCommand(
   }
 
   try {
-    const deleted = await client.deactivate(
+    await client.deletePermanently(
       parsed.command,
-      payload.user_id,
       requestId(payload.team_id),
     );
     await responder.respond({
       response_type: "ephemeral",
-      text: formatSuccess(deleted),
+      text: formatSuccess(parsed.command),
     });
   } catch (error) {
     logger.warn("Slack /ungroup 처리 실패", {
@@ -61,7 +59,7 @@ export async function handleUngroupMentionGroupCommand(
 
 export function registerUngroupMentionGroupCommand(
   app: App,
-  client: Pick<RadarMentionGroupCommandClient, "deactivate">,
+  client: Pick<RadarMentionGroupCommandClient, "deletePermanently">,
 ): void {
   app.command("/ungroup", async ({ command, ack, respond }) => {
     await ack();
@@ -71,9 +69,9 @@ export function registerUngroupMentionGroupCommand(
   });
 }
 
-function formatSuccess(group: DeletedMentionGroup): string {
-  return `✅ *${group.displayName}* 그룹을 삭제했습니다.\n` +
-    `핸들: \`@${group.handle}\` · 현재 비활성 상태 · revision: ${group.revision}`;
+function formatSuccess(command: UngroupMentionGroupCommand): string {
+  return `✅ \`@${command.handle}\` 멘션 그룹을 영구 삭제했습니다.\n` +
+    "그룹·멤버·alias·변경 이력까지 삭제되어 복구할 수 없습니다.";
 }
 
 function formatFailure(error: unknown): string {

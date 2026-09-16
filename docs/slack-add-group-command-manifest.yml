@@ -16,7 +16,7 @@ features:
       usage_hint: <handle> <@member> [@member ...]
       should_escape: true
     - command: /ungroup
-      description: Deactivate a Radar mention group
+      description: Permanently delete a Radar mention group
       usage_hint: <handle>
       should_escape: true
 
