@@ -20,7 +20,7 @@ export type UngroupMentionGroupCommandParseResult =
   | { ok: false; message: string };
 
 export const ADD_MENTION_GROUP_USAGE =
-  "사용법: `/group <핸들> <@멤버> [@멤버 ...]`\n예: `/group backend <@U0123456789> <@U9876543210>`";
+  "사용법: `/group <핸들> <@멤버> [@멤버 ...]`\n예: `/group backend <@U0123456789>`";
 
 export const UNGROUP_MENTION_GROUP_USAGE =
   "사용법: `/ungroup <핸들>`\n예: `/ungroup backend`";
@@ -43,7 +43,7 @@ export function parseAddMentionGroupCommand(text: string): AddMentionGroupComman
       message: `핸들은 영문 소문자로 시작하는 2~32자의 값이어야 합니다.\n${ADD_MENTION_GROUP_USAGE}`,
     };
   }
-  if (tokens.length < 3) {
+  if (tokens.length < 2) {
     return { ok: false, message: `멤버를 한 명 이상 멘션해 주세요.\n${ADD_MENTION_GROUP_USAGE}` };
   }
 
