@@ -7,6 +7,17 @@ import {
 } from "./command-parser.js";
 
 describe("/group parser", () => {
+  it("accepts a group with one Slack member mention", () => {
+    expect(parseAddMentionGroupCommand("backend <@U111|alice>")).toEqual({
+      ok: true,
+      command: {
+        handle: "backend",
+        displayName: "Backend",
+        memberUserIds: ["U111"],
+      },
+    });
+  });
+
   it("parses Slack mentions, derives a display name, and de-duplicates members", () => {
     expect(
       parseAddMentionGroupCommand("backend-team <@U111|alice> <@U222> <@U111|alice>"),
