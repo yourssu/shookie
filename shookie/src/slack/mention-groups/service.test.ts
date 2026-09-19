@@ -464,3 +464,36 @@ describe("MentionGroupReplacementService", () => {
     );
   });
 });
+
+it("Radar 조회 실패의 상관관계는 보존하되 Slack 식별자와 원본 예외는 기록하지 않는다", async () => {
+  const diagnostics = {
+    requestId: "61b37086-28f7-44fd-9683-e1d8821cd51f",
+    stage: "body" as const,
+    elapsedMs: 3000,
+    stageElapsedMs: 2900,
+  };
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const deps = dependencies({
+    getCatalog: vi.fn().mockRejectedValue(
+      new RadarMentionGroupsError("timeout", diagnostics),
+    ),
+  });
+  const service = () => new MentionGroupReplacementService(
+    deps.radar, deps.oauth, deps.slack,
+  );
+  await service().handleEvent(event);
+  expect(warning).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({ error: "timeout", ...diagnostics }),
+  );
+  deps.radar.getCatalog.mockRejectedValueOnce(
+    Object.assign(new Error("private-host"), { name: "private-host" }),
+  );
+  await service().handleEvent(event);
+  const output = JSON.stringify(warning.mock.calls);
+  for (const value of [...Object.values(event), "private-host"]) {
+    expect(output).not.toContain(value);
+  }
+  expect(deps.slack.updateMessage).not.toHaveBeenCalled();
+  expect(deps.slack.postEphemeral).toHaveBeenCalledTimes(2);
+});

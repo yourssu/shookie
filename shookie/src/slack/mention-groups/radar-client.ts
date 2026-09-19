@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { logger } from "../../logger.js";
 import { buildMentionGroupIndex } from "./parser.js";
@@ -18,10 +19,16 @@ const groupSchema = z
   .superRefine((group, context) => {
     const handles = [group.handle, ...group.aliases];
     if (new Set(handles).size !== handles.length) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "duplicate handle or alias" });
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "duplicate handle or alias",
+      });
     }
     if (new Set(group.memberUserIds).size !== group.memberUserIds.length) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "duplicate member" });
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "duplicate member",
+      });
     }
   });
 
@@ -36,7 +43,10 @@ const catalogSchema = z
     const groupIds = new Set<string>();
     for (const group of catalog.groups) {
       if (groupIds.has(group.id)) {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: "duplicate group id" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "duplicate group id",
+        });
       }
       groupIds.add(group.id);
       for (const handle of [group.handle, ...group.aliases]) {
@@ -52,7 +62,10 @@ const catalogSchema = z
     }
   });
 
-type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+type Fetcher = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export interface RadarMentionGroupsClientOptions {
   apiUrl: string;
@@ -69,8 +82,28 @@ interface CachedCatalog {
   expiresAt: number;
 }
 
+type RequestStage =
+  | "fetch"
+  | "http"
+  | "body"
+  | "json"
+  | "schema"
+  | "etag"
+  | "catalog";
+
+interface RequestDiagnostics {
+  requestId: string;
+  stage: RequestStage;
+  elapsedMs: number;
+  stageElapsedMs: number;
+  httpStatus?: number;
+}
+
 export class RadarMentionGroupsError extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    readonly diagnostics?: RequestDiagnostics,
+  ) {
     super(`Radar mention groups request failed: ${code}`);
     this.name = "RadarMentionGroupsError";
   }
@@ -93,7 +126,8 @@ export class RadarMentionGroupsClient {
   }
 
   async getCatalog(): Promise<MentionGroupCatalog> {
-    if (this.cached && this.cached.expiresAt > this.now()) return this.cached.catalog;
+    if (this.cached && this.cached.expiresAt > this.now())
+      return this.cached.catalog;
     if (this.refreshInFlight) return this.refreshInFlight;
 
     const refresh = this.refresh().finally(() => {
@@ -104,6 +138,39 @@ export class RadarMentionGroupsClient {
   }
 
   private async refresh(): Promise<MentionGroupCatalog> {
+    const requestId = randomUUID();
+    const startedAt = performance.now();
+    let httpStatus: number | undefined;
+    let stage: RequestStage = "fetch";
+    let stageStartedAt = startedAt;
+    const diagnostics = (): RequestDiagnostics => {
+      const now = performance.now();
+      return {
+        requestId,
+        stage,
+        elapsedMs: now - startedAt,
+        stageElapsedMs: now - stageStartedAt,
+        ...(httpStatus !== undefined ? { httpStatus } : {}),
+      };
+    };
+    // Durations use a monotonic clock, independently of the cache TTL clock.
+    // Only fixed labels and numeric metadata reach the existing redacting logger.
+    const completeStage = (next?: RequestStage) => {
+      logger.info("Radar 멘션 그룹 요청 단계 완료", {
+        event: "radar_mention_groups_request",
+        outcome: "completed",
+        ...diagnostics(),
+      });
+      if (next) {
+        stage = next;
+        stageStartedAt = performance.now();
+      }
+    };
+    logger.info("Radar 멘션 그룹 요청 시작", {
+      event: "radar_mention_groups_request",
+      outcome: "started",
+      ...diagnostics(),
+    });
     const controller = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {
@@ -111,30 +178,42 @@ export class RadarMentionGroupsClient {
       controller.abort();
     }, this.options.requestTimeoutMs);
 
-    let response: Response;
     try {
-      const headers: Record<string, string> = {
-        Accept: "application/json",
-        "X-Radar-Internal-Key": this.options.apiKey,
-      };
-      if (this.cached) headers["If-None-Match"] = this.cached.catalog.etag;
-      response = await this.fetcher(this.options.apiUrl, {
-        method: "GET",
-        headers,
-        redirect: "error",
-        signal: controller.signal,
-      });
-    } catch {
-      clearTimeout(timeout);
-      throw new RadarMentionGroupsError(timedOut ? "timeout" : "network_error");
-    }
-
-    try {
+      let response: Response;
+      try {
+        const headers: Record<string, string> = {
+          Accept: "application/json",
+          "X-Request-Id": requestId,
+          "X-Radar-Internal-Key": this.options.apiKey,
+        };
+        if (this.cached) headers["If-None-Match"] = this.cached.catalog.etag;
+        response = await this.fetcher(this.options.apiUrl, {
+          method: "GET",
+          headers,
+          redirect: "error",
+          signal: controller.signal,
+        });
+      } catch {
+        throw new RadarMentionGroupsError(
+          timedOut ? "timeout" : "network_error",
+        );
+      }
+      httpStatus = response.status;
+      completeStage("http");
       if (response.status === 304) {
-        if (!this.cached) throw new RadarMentionGroupsError("unexpected_not_modified");
-        if (!isEquivalentEntityTag(response.headers.get("etag"), this.cached.catalog.etag)) {
+        stage = "etag";
+        stageStartedAt = performance.now();
+        if (!this.cached)
+          throw new RadarMentionGroupsError("unexpected_not_modified");
+        if (
+          !isEquivalentEntityTag(
+            response.headers.get("etag"),
+            this.cached.catalog.etag,
+          )
+        ) {
           throw new RadarMentionGroupsError("invalid_not_modified_etag");
         }
+        completeStage("catalog");
         this.cached.expiresAt = this.now() + this.options.cacheTtlMs;
         return this.cached.catalog;
       }
@@ -142,15 +221,20 @@ export class RadarMentionGroupsClient {
         throw new RadarMentionGroupsError(`http_${response.status}`);
       }
 
+      stage = "body";
+      stageStartedAt = performance.now();
       let rawBody: string;
       try {
         rawBody = await response.text();
       } catch {
-        throw new RadarMentionGroupsError(timedOut ? "timeout" : "network_error");
+        throw new RadarMentionGroupsError(
+          timedOut ? "timeout" : "network_error",
+        );
       }
       if (Buffer.byteLength(rawBody, "utf8") > MAX_RESPONSE_BYTES) {
         throw new RadarMentionGroupsError("response_too_large");
       }
+      completeStage("json");
 
       let rawCatalog: unknown;
       try {
@@ -158,14 +242,17 @@ export class RadarMentionGroupsClient {
       } catch {
         throw new RadarMentionGroupsError("invalid_json");
       }
+      completeStage("schema");
       const parsed = catalogSchema.safeParse(rawCatalog);
       if (!parsed.success) throw new RadarMentionGroupsError("invalid_schema");
 
+      completeStage("etag");
       const expectedEtag = `"mention-groups-${parsed.data.revision}"`;
       if (!isEquivalentEntityTag(response.headers.get("etag"), expectedEtag)) {
         throw new RadarMentionGroupsError("invalid_etag");
       }
 
+      completeStage("catalog");
       const groups = parsed.data.groups as ActiveMentionGroup[];
       const fingerprint = catalogFingerprint(groups);
       if (this.cached) {
@@ -192,18 +279,38 @@ export class RadarMentionGroupsClient {
         fingerprint,
         expiresAt: this.now() + this.options.cacheTtlMs,
       };
+      completeStage();
       logger.info("Radar 멘션 그룹 캐시 갱신", {
+        requestId,
         revision: catalog.revision,
         groupCount: catalog.groups.length,
       });
       return catalog;
+    } catch (error) {
+      const context = diagnostics();
+      logger.warn("Radar 멘션 그룹 요청 실패", {
+        event: "radar_mention_groups_request",
+        outcome: "failed",
+        error:
+          error instanceof RadarMentionGroupsError
+            ? error.code
+            : "unexpected_error",
+        ...context,
+      });
+      if (error instanceof RadarMentionGroupsError) {
+        throw new RadarMentionGroupsError(error.code, context);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
   }
 }
 
-function isEquivalentEntityTag(actual: string | null, expectedStrong: string): boolean {
+function isEquivalentEntityTag(
+  actual: string | null,
+  expectedStrong: string,
+): boolean {
   return actual === expectedStrong || actual === `W/${expectedStrong}`;
 }
 
