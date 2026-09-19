@@ -161,11 +161,11 @@ export class MentionGroupReplacementService {
       catalog = await this.radar.getCatalog();
     } catch (error) {
       logger.warn("Radar 멘션 그룹 조회 실패, 원문 보존", {
-        ...this.logContext(input),
+        ...(error instanceof RadarMentionGroupsError ? error.diagnostics : {}),
         error:
           error instanceof RadarMentionGroupsError
             ? error.code
-            : safeErrorCode(error),
+            : "unknown_error",
       });
       await this.notifyGenericFailure(input);
       return "failed";
