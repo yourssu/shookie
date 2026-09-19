@@ -297,3 +297,30 @@ it("rejects an invalid 304 ETag without logging the header or falling back to st
     ]),
   );
 });
+
+it("reports an oversized UTF-8 response in the body stage without exposing its contents", async () => {
+  const rawBody = `${privateValue}${"가".repeat(350_000)}`;
+  expect(rawBody.length).toBeLessThan(1_048_576);
+  expect(Buffer.byteLength(rawBody, "utf8")).toBeGreaterThan(1_048_576);
+  const fetcher = vi.fn().mockResolvedValue(new Response(rawBody));
+  const { radar } = setup(fetcher);
+  const result = radar.getCatalog();
+  const id = requestId(fetcher);
+
+  await expect(result).rejects.toMatchObject({
+    code: "response_too_large",
+    diagnostics: { requestId: id, stage: "body", httpStatus: 200 },
+  });
+  const records = assertDiagnostics(id);
+  expect(records).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        stage: "body",
+        outcome: "failed",
+        error: "response_too_large",
+      }),
+    ]),
+  );
+  expect(records.some((record) => record.stage === "json")).toBe(false);
+  expect(JSON.stringify(output)).not.toContain("가");
+});

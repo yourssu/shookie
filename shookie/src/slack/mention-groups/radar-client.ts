@@ -231,10 +231,10 @@ export class RadarMentionGroupsClient {
           timedOut ? "timeout" : "network_error",
         );
       }
-      completeStage("json");
       if (Buffer.byteLength(rawBody, "utf8") > MAX_RESPONSE_BYTES) {
         throw new RadarMentionGroupsError("response_too_large");
       }
+      completeStage("json");
 
       let rawCatalog: unknown;
       try {
