@@ -1,19 +1,33 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { App } from "@slack/bolt";
-import { routeTeam, buildPermalink, relayToAll } from "./reaction-relay.js";
+import {
+  backfillPublicChannels,
+  buildPermalink,
+  registerChannelAutoJoin,
+  relayToAll,
+  routeTeam,
+} from "./reaction-relay.js";
 import { logger } from "../logger.js";
 
 type MockPostMessage = ReturnType<typeof vi.fn>;
 type MockGetPermalink = ReturnType<typeof vi.fn>;
+type MockConversationsList = ReturnType<typeof vi.fn>;
+type MockConversationsJoin = ReturnType<typeof vi.fn>;
 
 function createMockClient(opts: {
   getPermalink?: MockGetPermalink;
   postMessage?: MockPostMessage;
+  conversationsList?: MockConversationsList;
+  conversationsJoin?: MockConversationsJoin;
 }): App["client"] {
   return {
     chat: {
       getPermalink: opts.getPermalink ?? vi.fn(),
       postMessage: opts.postMessage ?? vi.fn(),
+    },
+    conversations: {
+      list: opts.conversationsList ?? vi.fn(),
+      join: opts.conversationsJoin ?? vi.fn(),
     },
   } as unknown as App["client"];
 }
@@ -134,5 +148,109 @@ describe("relayToAll", () => {
       "relay sent",
       expect.objectContaining({ team: "design" }),
     );
+  });
+});
+
+describe("public channel membership", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  it("기존 공개 채널을 페이지별로 조회하고 미가입 채널에 참여한다", async () => {
+    const conversationsList = vi.fn()
+      .mockResolvedValueOnce({
+        channels: [
+          { id: "C_ALREADY", name: "already", is_member: true },
+          { id: "C_FIRST", name: "first", is_member: false },
+        ],
+        response_metadata: { next_cursor: "next-page" },
+      })
+      .mockResolvedValueOnce({
+        channels: [{ id: "C_SECOND", name: "second", is_member: false }],
+        response_metadata: { next_cursor: "" },
+      });
+    const conversationsJoin = vi.fn().mockResolvedValue({ ok: true });
+    const client = createMockClient({ conversationsList, conversationsJoin });
+
+    const result = await backfillPublicChannels(client);
+
+    expect(result).toEqual({ listed: 3, alreadyJoined: 1, joined: 2, failed: 0 });
+    expect(conversationsList).toHaveBeenNthCalledWith(1, {
+      cursor: undefined,
+      exclude_archived: true,
+      limit: 200,
+      types: "public_channel",
+    });
+    expect(conversationsList).toHaveBeenNthCalledWith(2, {
+      cursor: "next-page",
+      exclude_archived: true,
+      limit: 200,
+      types: "public_channel",
+    });
+    expect(conversationsJoin).toHaveBeenCalledTimes(2);
+    expect(conversationsJoin).toHaveBeenNthCalledWith(1, { channel: "C_FIRST" });
+    expect(conversationsJoin).toHaveBeenNthCalledWith(2, { channel: "C_SECOND" });
+  });
+
+  it("한 채널 참여에 실패해도 다음 채널을 계속 처리한다", async () => {
+    const conversationsList = vi.fn().mockResolvedValue({
+      channels: [
+        { id: "C_FAILED", name: "failed", is_member: false },
+        { id: "C_OK", name: "ok", is_member: false },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+    const conversationsJoin = vi.fn()
+      .mockRejectedValueOnce(new Error("restricted_action"))
+      .mockResolvedValueOnce({ ok: true });
+    const client = createMockClient({ conversationsList, conversationsJoin });
+
+    const result = await backfillPublicChannels(client);
+
+    expect(result).toEqual({ listed: 2, alreadyJoined: 0, joined: 1, failed: 1 });
+    expect(conversationsJoin).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "공개 채널 자동 참여 실패",
+      expect.objectContaining({ channelId: "C_FAILED", error: "restricted_action" }),
+    );
+  });
+
+  it("새 공개 채널 생성 이벤트가 오면 자동으로 참여한다", async () => {
+    const eventRegistration = vi.fn();
+    const conversationsJoin = vi.fn().mockResolvedValue({ ok: true });
+    const client = createMockClient({ conversationsJoin });
+
+    registerChannelAutoJoin({ event: eventRegistration } as unknown as App);
+
+    expect(eventRegistration).toHaveBeenCalledWith("channel_created", expect.any(Function));
+    const handler = eventRegistration.mock.calls[0]?.[1] as
+      | ((payload: unknown) => Promise<void>)
+      | undefined;
+    expect(handler).toBeDefined();
+
+    await handler?.({
+      event: { channel: { id: "C_NEW", name: "new-channel", is_private: false } },
+      client,
+    });
+
+    expect(conversationsJoin).toHaveBeenCalledWith({ channel: "C_NEW" });
+  });
+
+  it("백필 대상에서 비공개 채널을 조회하지 않는다", async () => {
+    const conversationsList = vi.fn().mockResolvedValue({ channels: [], response_metadata: {} });
+    const client = createMockClient({ conversationsList });
+
+    await backfillPublicChannels(client);
+
+    expect(conversationsList).toHaveBeenCalledWith(expect.objectContaining({ types: "public_channel" }));
   });
 });

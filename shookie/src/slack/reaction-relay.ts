@@ -21,6 +21,14 @@ const TEAM_CHANNELS: Partial<Record<TeamKey, string>> = {
 const ROUTABLE_KEYS: ReadonlySet<string> = new Set<string>([...ALL_TEAMS, "all", "general"]);
 
 const RELAY_BATCH_DELAY_MS = 250;
+const CHANNEL_LIST_PAGE_SIZE = 200;
+
+export interface PublicChannelBackfillResult {
+  listed: number;
+  alreadyJoined: number;
+  joined: number;
+  failed: number;
+}
 
 export function routeTeam(reaction: string): TeamKey | null {
   if (!reaction.endsWith("_go")) return null;
@@ -88,6 +96,101 @@ export async function relayToAll(client: App["client"], permalink: string): Prom
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function joinPublicChannel(
+  client: App["client"],
+  channelId: string,
+  channelName?: string,
+): Promise<boolean> {
+  try {
+    const response = await client.conversations.join({ channel: channelId });
+    if (response?.ok === false) {
+      logger.warn("공개 채널 자동 참여 실패", {
+        channelId,
+        channelName,
+        error: response.error ?? "unknown_error",
+      });
+      return false;
+    }
+
+    logger.info("공개 채널 자동 참여 완료", { channelId, channelName });
+    return true;
+  } catch (error) {
+    logger.warn("공개 채널 자동 참여 실패", {
+      channelId,
+      channelName,
+      error: errorMessage(error),
+    });
+    return false;
+  }
+}
+
+export async function backfillPublicChannels(
+  client: App["client"],
+): Promise<PublicChannelBackfillResult> {
+  const result: PublicChannelBackfillResult = {
+    listed: 0,
+    alreadyJoined: 0,
+    joined: 0,
+    failed: 0,
+  };
+  let cursor: string | undefined;
+
+  try {
+    do {
+      const response = await client.conversations.list({
+        cursor,
+        exclude_archived: true,
+        limit: CHANNEL_LIST_PAGE_SIZE,
+        types: "public_channel",
+      });
+
+      for (const channel of response.channels ?? []) {
+        if (!channel.id) continue;
+        result.listed += 1;
+
+        if (channel.is_member) {
+          result.alreadyJoined += 1;
+          continue;
+        }
+
+        if (await joinPublicChannel(client, channel.id, channel.name)) {
+          result.joined += 1;
+        } else {
+          result.failed += 1;
+        }
+      }
+
+      cursor = response.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+  } catch (error) {
+    logger.warn("기존 공개 채널 백필 중단", {
+      ...result,
+      error: errorMessage(error),
+    });
+  }
+
+  logger.info("기존 공개 채널 백필 완료", result);
+  return result;
+}
+
+export function registerChannelAutoJoin(app: App): void {
+  app.event("channel_created", async ({ event, client }) => {
+    if (event.channel.is_private) {
+      logger.info("비공개 채널은 자동 참여 대상에서 제외", {
+        channelId: event.channel.id,
+        channelName: event.channel.name,
+      });
+      return;
+    }
+
+    await joinPublicChannel(client, event.channel.id, event.channel.name);
+  });
+}
+
 async function verifyChannelMembership(client: App["client"]): Promise<void> {
   const joined = new Set<string>();
   let cursor: string | undefined;
@@ -121,7 +224,10 @@ async function verifyChannelMembership(client: App["client"]): Promise<void> {
 }
 
 export function registerReactionRelay(app: App): void {
+  registerChannelAutoJoin(app);
+
   void (async () => {
+    await backfillPublicChannels(app.client);
     await verifyChannelMembership(app.client);
 
     let botUserId: string | undefined;
