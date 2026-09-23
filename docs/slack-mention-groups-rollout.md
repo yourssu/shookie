@@ -82,7 +82,7 @@ Radar Backend 전체 `test build`는 118 tests 중 3 failures, 24 skipped로 red
 | `SLACK_USER_OAUTH_PORT` | loopback callback 포트 | `3000` |
 | `SLACK_OAUTH_STATE_TTL_SECONDS` | OAuth state 수명, 60~900초 | `600` |
 | `RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS` | Radar 캐시 수명, 1~300초 | `30` |
-| `RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS` | Radar 요청 제한, 250~10000ms | `3000` |
+| `RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS` | Radar 요청 제한, 250~10000ms | `10000` |
 
 현재 구현은 32바이트 난수 state의 SHA-256 해시만 PostgreSQL에 저장하고 원자적으로 한 번 소비하므로 별도 `SLACK_OAUTH_STATE_SECRET`이 없다. Slack 이벤트와 `/group` Slash Command는 Socket Mode로 수신하므로 `SLACK_SIGNING_SECRET`이나 공개 Slash Command Request URL을 사용하지 않는다. HTTP Events API나 HTTP action receiver로 전환한다면 그때 signing secret을 별도 Secret으로 주입하고 [Slack 요청 서명 검증](https://docs.slack.dev/authentication/verifying-requests-from-slack/)을 구현해야 한다. 앱 등록용 설정 조각은 [`slack-add-group-command-manifest.yml`](slack-add-group-command-manifest.yml)에서 확인한다.
 
