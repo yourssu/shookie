@@ -47,7 +47,7 @@ const envSchema = z.object({
     .int()
     .min(250)
     .max(10_000)
-    .default(3_000),
+    .default(10_000),
 
   // LLM (OpenAI-compatible)
   LLM_API_KEY: z.string().min(1),

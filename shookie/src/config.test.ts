@@ -16,6 +16,7 @@ const baseEnvironment = {
 
 async function loadConfig(overrides: Record<string, string> = {}) {
   vi.resetModules();
+  vi.doMock("dotenv", () => ({ config: vi.fn() }));
   for (const [name, value] of Object.entries({ ...baseEnvironment, ...overrides })) {
     vi.stubEnv(name, value);
   }
@@ -24,6 +25,7 @@ async function loadConfig(overrides: Record<string, string> = {}) {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.doUnmock("dotenv");
   vi.resetModules();
 });
 
@@ -72,6 +74,19 @@ describe("Slack user OAuth config", () => {
 });
 
 describe("mention group replacement config", () => {
+  it("defaults the request timeout to 10000ms and allows the maximum", async () => {
+    const defaults = await loadConfig();
+    expect(defaults.config.RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS).toBe(10_000);
+
+    const maximum = await loadConfig({
+      RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS: "10000",
+    });
+    expect(maximum.config.RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS).toBe(10_000);
+    await expect(
+      loadConfig({ RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS: "10001" }),
+    ).rejects.toThrow();
+  });
+
   it("SPR-128 HTTPS endpoint와 cache/timeout 설정을 정규화한다", async () => {
     const { getMentionGroupReplacementConfig } = await loadConfig({
       SLACK_MENTION_GROUP_REPLACEMENT_ENABLED: "true",
