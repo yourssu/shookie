@@ -285,6 +285,8 @@ Slack 도움말은 메시지 편집으로 추가한 멘션은 알림을 보내�
 
 대시보드/로그에서 최소한 다음 코드별 건수를 볼 수 있어야 한다: Radar cache revision 갱신, 치환 성공, authorization required, token revoked/expired, permission failure, Radar timeout/401/schema/ETag 오류, 중복 event 무시. 로그에는 access/refresh token, OAuth code/state, client secret, encryption key, Radar key, Authorization header, 원문 메시지 본문을 남기지 않는다.
 
+Shookie의 Radar 조회는 기존 `X-Request-Id`와 일치하는 Undici 요청에 한해 `radar_mention_groups_transport` 이벤트를 남긴다. 요청 생성·전송·응답 header·전송 오류의 단계와 경과 시간, HTTP status, 안전한 오류 class/code만 기록하며, 다른 fetch의 이벤트와 URL/호스트/IP·header·인증값·본문은 기록하지 않는다. Undici의 connection 채널은 개별 요청과 안전하게 연결할 수 없으므로 사용하지 않으며, 이 로그는 DNS/TCP/TLS 시간을 의미하지 않는다. 지원되지 않는 fetcher 또는 runtime에서 상관된 channel 이벤트가 없을 때는 기존 Radar 요청 단계 로그가 경계를 유지한다.
+
 다음 중 하나면 배포를 중단한다.
 
 - 새 Secret/Variable이 비어 있거나 Slack 앱 설정과 rotation flag가 다름

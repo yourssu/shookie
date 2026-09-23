@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { logger } from "../../logger.js";
 import { buildMentionGroupIndex } from "./parser.js";
+import { startRadarTransportDiagnostics } from "./transport-diagnostics.js";
 import type { ActiveMentionGroup, MentionGroupCatalog } from "./types.js";
 
 const MAX_RESPONSE_BYTES = 1_048_576;
@@ -171,6 +172,13 @@ export class RadarMentionGroupsClient {
       outcome: "started",
       ...diagnostics(),
     });
+    const transport = startRadarTransportDiagnostics(requestId, (event) => {
+      logger.info("Radar 멘션 그룹 전송 단계", {
+        event: "radar_mention_groups_transport",
+        outcome: event.stage === "request_error" ? "failed" : "observed",
+        ...event,
+      });
+    });
     const controller = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {
@@ -193,7 +201,8 @@ export class RadarMentionGroupsClient {
           redirect: "error",
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
+        transport.recordError(error);
         throw new RadarMentionGroupsError(
           timedOut ? "timeout" : "network_error",
         );
@@ -226,7 +235,8 @@ export class RadarMentionGroupsClient {
       let rawBody: string;
       try {
         rawBody = await response.text();
-      } catch {
+      } catch (error) {
+        transport.recordError(error);
         throw new RadarMentionGroupsError(
           timedOut ? "timeout" : "network_error",
         );
@@ -302,6 +312,7 @@ export class RadarMentionGroupsClient {
       }
       throw error;
     } finally {
+      transport.stop();
       clearTimeout(timeout);
     }
   }
