@@ -7,6 +7,12 @@ export type RadarTransportStage =
   | "response_headers"
   | "request_error";
 
+type RadarTransportErrorClass =
+  | "type_error"
+  | "dom_exception"
+  | "error"
+  | "other";
+
 export interface RadarTransportEvent {
   requestId: string;
   stage: RadarTransportStage;
@@ -37,6 +43,22 @@ interface CorrelatedRequest {
 
 const activeContexts = new Map<string, RequestContext>();
 const correlatedRequests = new WeakMap<object, CorrelatedRequest>();
+const SAFE_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_ABORTED",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 const requestCreateChannel = diagnosticsChannel.channel("undici:request:create");
 const requestBodySentChannel = diagnosticsChannel.channel(
@@ -248,24 +270,18 @@ function readHttpStatus(value: unknown): number | undefined {
     : undefined;
 }
 
-function safeErrorClass(error: unknown): string {
-  const candidate =
-    error !== null && typeof error === "object"
-      ? readProperty(readProperty(error, "constructor"), "name")
-      : undefined;
-  if (
-    typeof candidate === "string" &&
-    /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(candidate)
-  ) {
-    return candidate;
+function safeErrorClass(error: unknown): RadarTransportErrorClass {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    return "dom_exception";
   }
-  return "unknown_error";
+  if (error instanceof TypeError) return "type_error";
+  if (error instanceof Error) return "error";
+  return "other";
 }
 
 function safeErrorCode(error: unknown): string | undefined {
   const candidate = readProperty(error, "code");
-  return typeof candidate === "string" &&
-    /^[A-Z][A-Z0-9_]{0,31}$/u.test(candidate)
+  return typeof candidate === "string" && SAFE_ERROR_CODES.has(candidate)
     ? candidate
     : undefined;
 }

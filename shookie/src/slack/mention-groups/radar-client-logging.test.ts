@@ -236,6 +236,36 @@ describe("Radar catalog request diagnostics", () => {
       );
     },
   );
+
+  it("does not log arbitrary uppercase error class names or codes", async () => {
+    const secret = "TOPSECRET123";
+    const error = Object.assign(new Error(secret), { code: secret });
+    Object.defineProperty(error, "constructor", {
+      value: { name: secret },
+    });
+    const fetcher = vi.fn().mockRejectedValue(error);
+    const { radar } = setup(fetcher);
+
+    await expect(radar.getCatalog()).rejects.toMatchObject({
+      code: "network_error",
+    });
+
+    const id = requestId(fetcher);
+    const transportRecords = logs.filter(
+      (log) =>
+        log.event === "radar_mention_groups_transport" &&
+        log.requestId === id,
+    );
+    expect(transportRecords).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "request_error",
+          errorClass: "error",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(output)).not.toContain(secret);
+  });
 });
 
 it("measures fetch and body durations independently", async () => {

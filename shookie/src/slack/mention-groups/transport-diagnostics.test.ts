@@ -225,7 +225,7 @@ describe("Radar transport diagnostics", () => {
       expect.objectContaining({
         stage: "request_error",
         elapsedMs: 0,
-        errorClass: "Error",
+        errorClass: "error",
         errorCode: "ECONNREFUSED",
       }),
     ]);
