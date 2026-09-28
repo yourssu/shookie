@@ -7,7 +7,7 @@
 - 언어: TypeScript ESM (Node.js 20+)
 - 패키지 매니저: Yarn 4 (corepack)
 - 프레임워크: Mastra (에이전트) + @slack/bolt (Socket Mode)
-- LLM: OpenAI API (`@ai-sdk/openai`)
+- LLM: DeepSeek API (`@ai-sdk/deepseek`, 기본 엔드포인트 `https://api.deepseek.com`, 기본 모델 `deepseek-flash`)
 - 설정: Zod 스키마 (`shookie/src/config.ts`), `.env` 파일로 관리
 - **절대 `.env` 파일을 커밋하지 않기**
 

@@ -36,7 +36,7 @@ services:
       RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS: ${RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS:-10000}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-pro}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-flash}
       POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}
       GITHUB: ${GITHUB:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}

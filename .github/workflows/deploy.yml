@@ -68,6 +68,7 @@ jobs:
             SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
             LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
             LLM_BASE_URL=https://api.deepseek.com \
+            LLM_MODEL=deepseek-flash \
             POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
             GITHUB=${{ secrets.GITHUB }} \
             SLACK_USER_OAUTH_ENABLED="$DEPLOY_SLACK_USER_OAUTH_ENABLED" \
