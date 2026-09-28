@@ -211,7 +211,7 @@ Slack 앱 설정, 비밀값 분류, 로컬/수동 E2E, 기존 mention-bot 전환
 
 - **TypeScript ESM** (Node.js 20+) + @slack/bolt (Socket Mode)
 - **Mastra** (에이전트 프레임워크)
-- **LLM** DeepSeek (`@ai-sdk/deepseek`, OpenAI 호환 API)
+- **LLM** DeepSeek (`@ai-sdk/deepseek`, `https://api.deepseek.com`, 기본 모델 `deepseek-flash`)
 - **PostgreSQL** (`pg`) — 에이전트 호출 로깅
 - **Zod** (환경변수 및 도구 스키마 검증)
 - **Yarn 4** (monorepo, corepack)

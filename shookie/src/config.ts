@@ -52,7 +52,7 @@ const envSchema = z.object({
   // LLM (OpenAI-compatible)
   LLM_API_KEY: z.string().min(1),
   LLM_BASE_URL: z.string().default("https://api.deepseek.com"),
-  LLM_MODEL: z.string().default("deepseek-v4-pro"),
+  LLM_MODEL: z.string().default("deepseek-flash"),
 
   // PostHog (optional)
   POSTHOG_API_KEY: z.string().default(""),
