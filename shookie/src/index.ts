@@ -4,12 +4,14 @@ import {
   getMentionGroupCommandConfig,
   getMentionGroupReplacementConfig,
   getSlackUserOAuthConfig,
+  getSlackEventAttendanceConfig,
 } from "./config.js";
 import { setLogLevel, logger } from "./logger.js";
 import { createAgent } from "./agent/index.js";
 import { registerHandlers } from "./slack/handlers.js";
 import { registerAssistantHandlers } from "./slack/assistant.js";
 import { registerReactionRelay } from "./slack/reaction-relay.js";
+import { registerEventAttendanceSlackSync } from "./slack/event-attendance.js";
 import { closePool, runMigrations } from "database";
 import { createSlackUserOAuthController } from "./slack/user-oauth/index.js";
 import type { ConsumedSlackOAuthState } from "./slack/user-oauth/state-service.js";
@@ -28,6 +30,7 @@ async function main() {
 
   // 2. 사용자 OAuth 초기화 (멘션 그룹 원문 치환용)
   const userOAuthConfig = getSlackUserOAuthConfig();
+  const eventAttendanceConfig = getSlackEventAttendanceConfig();
   const mentionGroupConfig = getMentionGroupReplacementConfig();
   const mentionGroupCommandConfig = getMentionGroupCommandConfig();
   if (userOAuthConfig) {
@@ -93,6 +96,12 @@ async function main() {
   registerHandlers(app, agent);
   registerAssistantHandlers(app);
   registerReactionRelay(app);
+  if (eventAttendanceConfig) {
+    registerEventAttendanceSlackSync(app, eventAttendanceConfig);
+    logger.info("Slack 행사 참석 반응 동기화 활성화", {
+      reactionKinds: Object.keys(eventAttendanceConfig.reactionKinds).length,
+    });
+  }
 
   // 6. 시작
   await app.start();

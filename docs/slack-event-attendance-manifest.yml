@@ -1,0 +1,12 @@
+# Merge these entries into the existing Shookie Slack app manifest.
+# Do not replace the app's current scopes or bot event subscriptions.
+oauth_config:
+  scopes:
+    bot:
+      - reactions:read
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - reaction_added
+      - reaction_removed
