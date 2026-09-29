@@ -30,6 +30,23 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  SLACK_EVENT_ATTENDANCE_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  SLACK_EVENT_ATTENDING_EMOJI: z.string().default("shookie_attend"),
+  SLACK_EVENT_ABSENT_EMOJI: z.string().default("shookie_absent"),
+  SLACK_EVENT_AFTERPARTY_EMOJI: z.string().default("shookie_afterparty"),
+
+  // Radar event attendance (optional)
+  RADAR_EVENT_ATTENDANCE_WRITE_API_URL: z.string().default(""),
+  SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY: z.string().default(""),
+  RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(250)
+    .max(10_000)
+    .default(10_000),
 
   // Radar mention groups (optional)
   RADAR_MENTION_GROUPS_API_URL: z.string().default(""),
@@ -223,5 +240,74 @@ export function getMentionGroupCommandConfig() {
   return {
     apiUrl: apiUrl.toString().replace(/\/$/u, ""),
     apiKey: config.SHOOKIE_MENTION_GROUPS_WRITE_API_KEY,
+  };
+}
+
+export function getSlackEventAttendanceConfig() {
+  if (!config.SLACK_EVENT_ATTENDANCE_ENABLED) return null;
+
+  if (!config.RADAR_EVENT_ATTENDANCE_WRITE_API_URL.trim()) {
+    throw new Error(
+      "Slack event attendance requires RADAR_EVENT_ATTENDANCE_WRITE_API_URL",
+    );
+  }
+  if (
+    config.SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY.length < 16 ||
+    config.SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY.length > 512 ||
+    /\s/u.test(config.SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY)
+  ) {
+    throw new Error(
+      "SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY must be 16-512 characters without whitespace",
+    );
+  }
+
+  let apiUrl: URL;
+  try {
+    apiUrl = new URL(config.RADAR_EVENT_ATTENDANCE_WRITE_API_URL);
+  } catch {
+    throw new Error("RADAR_EVENT_ATTENDANCE_WRITE_API_URL must be an absolute URL");
+  }
+  const isLocalHttp =
+    apiUrl.protocol === "http:" &&
+    (apiUrl.hostname === "localhost" || apiUrl.hostname === "127.0.0.1" || apiUrl.hostname === "[::1]");
+  if (apiUrl.protocol !== "https:" && !isLocalHttp) {
+    throw new Error("RADAR_EVENT_ATTENDANCE_WRITE_API_URL must use HTTPS outside localhost");
+  }
+  if (apiUrl.username || apiUrl.password || apiUrl.search || apiUrl.hash) {
+    throw new Error(
+      "RADAR_EVENT_ATTENDANCE_WRITE_API_URL must not contain credentials, a query, or a fragment",
+    );
+  }
+  if (apiUrl.pathname.replace(/\/$/u, "") !== "/internal/v1/events/slack-reactions") {
+    throw new Error(
+      "RADAR_EVENT_ATTENDANCE_WRITE_API_URL must target /internal/v1/events/slack-reactions",
+    );
+  }
+
+  const emojiNames = [
+    config.SLACK_EVENT_ATTENDING_EMOJI,
+    config.SLACK_EVENT_ABSENT_EMOJI,
+    config.SLACK_EVENT_AFTERPARTY_EMOJI,
+  ];
+  if (
+    emojiNames.some((name) => !/^[a-z0-9][a-z0-9_-]{0,79}$/u.test(name)) ||
+    new Set(emojiNames).size !== emojiNames.length
+  ) {
+    throw new Error(
+      "Event emoji names must be unique Slack emoji names using lowercase letters, numbers, underscores, or hyphens",
+    );
+  }
+
+  const reactionKinds = {
+    [config.SLACK_EVENT_ATTENDING_EMOJI]: "attending",
+    [config.SLACK_EVENT_ABSENT_EMOJI]: "absent",
+    [config.SLACK_EVENT_AFTERPARTY_EMOJI]: "afterparty",
+  } as Record<string, "attending" | "absent" | "afterparty">;
+
+  return {
+    apiUrl: apiUrl.toString().replace(/\/$/u, ""),
+    apiKey: config.SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY,
+    requestTimeoutMs: config.RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS,
+    reactionKinds,
   };
 }
