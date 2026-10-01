@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+case "$1" in clone) mkdir -p "${3:-shookie}";; esac
+exit 0

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Stateful fake `docker` for deploy script tests. State lives in $MOCK_STATE:
+#   containers/bot  image ID the bot container runs       refs/bot  image reference of the container
+#   tags/<name>     image ID for a local tag ("/" -> "__", ":" -> "--")
+#   db/id, db/started, db/health   shared PostgreSQL container identity (defaults are created on first use)
+# Image IDs steer the bot's behavior: "crashloop" -> restarting, "noready" -> running without start log,
+# "flap" -> restarts right after it reports ready. Everything else is a healthy bot.
+# Failure injection: MOCK_PULL_FAIL, MOCK_INSPECT_FAIL, MOCK_TAG_FAIL, MOCK_UP_FAIL_FIRST (partial replace),
+#   MOCK_DB_BOUNCE_ON_UP, MOCK_DB_MISSING, MOCK_DB_UNHEALTHY, MOCK_PG_FAIL.
+set -u
+mkdir -p "$MOCK_STATE/containers" "$MOCK_STATE/refs" "$MOCK_STATE/tags" "$MOCK_STATE/db"
+echo "docker $*" >> "$MOCK_STATE/log"
+READY_LINE='2026-01-01T00:00:00.000Z [INFO] 슈키가 시작되었습니다! 🚀'
+key() { printf '%s' "$1" | sed -e 's#/#__#g' -e 's#:#--#g'; }
+resolve() { # tag-or-id -> image ID (empty + failure when unknown)
+  if [ -f "$MOCK_STATE/tags/$(key "$1")" ]; then cat "$MOCK_STATE/tags/$(key "$1")"; return 0; fi
+  case "$1" in sha256:*|id:*) printf '%s\n' "$1"; return 0;; esac
+  return 1
+}
+counter() { n=$(cat "$MOCK_STATE/$1" 2>/dev/null || echo 0); echo $((n + 1)) > "$MOCK_STATE/$1"; echo $((n + 1)); }
+db_init() {
+  [ -f "$MOCK_STATE/db/id" ] || echo "cid-db" > "$MOCK_STATE/db/id"
+  [ -f "$MOCK_STATE/db/started" ] || echo "2026-01-01T00:00:00Z" > "$MOCK_STATE/db/started"
+  [ -f "$MOCK_STATE/db/health" ] || echo "healthy" > "$MOCK_STATE/db/health"
+}
+bot_state() { # status restarts startedAt for the bot container
+  id=$(cat "$MOCK_STATE/containers/bot")
+  case "$id" in
+    *crashloop*) echo "restarting 5 2026-01-01T00:00:0$(counter bot_state_n)Z" ;;
+    *flap*) if [ $(( $(counter bot_state_n) % 2 )) = 1 ]; then echo "running 0 2026-01-01T00:00:00Z"; else echo "running 1 2026-01-01T00:00:09Z"; fi ;;
+    *) echo "running 0 2026-01-01T00:00:00Z" ;;
+  esac
+}
+
+case "$1" in
+  login) cat > /dev/null; echo "docker-config=${DOCKER_CONFIG:-unset}" >> "$MOCK_STATE/login_env" ;;
+  pull) echo "docker-config=${DOCKER_CONFIG:-unset} $2" >> "$MOCK_STATE/pull_env"
+        [ -n "${MOCK_PULL_FAIL:-}" ] && { echo "mock pull denied" >&2; exit 1; }; exit 0 ;;
+  logs)
+    id=$(cat "$MOCK_STATE/containers/bot" 2>/dev/null) || exit 1
+    echo "boot line"
+    case "$id" in *crashloop*|*noready*) ;; *) echo "$READY_LINE" ;; esac
+    exit 0 ;;
+  compose)
+    shift
+    file=docker-compose.yml
+    while [ "${1:-}" = "-f" ]; do file="$2"; shift 2; done
+    sub="$1"; shift
+    if [ "$file" = "docker-compose.db.yml" ]; then
+      db_init
+      case "$sub" in
+        ps) [ -n "${MOCK_DB_MISSING:-}" ] || cat "$MOCK_STATE/db/id"; exit 0 ;;
+        exec) [ -n "${MOCK_PG_FAIL:-}" ] && { echo "mock pg_isready: no response" >&2; exit 2; }
+              echo "db:5432 - accepting connections"; exit 0 ;;
+        *) echo "mock: unexpected db compose subcommand $sub" >&2; exit 99 ;;
+      esac
+    fi
+    case "$sub" in
+      ps)
+        if [[ " $* " == *" -q "* ]]; then
+          [ -f "$MOCK_STATE/containers/bot" ] && echo "cid-bot"
+          exit 0
+        fi
+        echo "mock compose ps"; exit 0 ;;
+      logs) echo "mock log line"; echo "Error: mock startup failure"; exit 0 ;;
+      up)
+        n=$(counter up_count)
+        echo "UP image=$SHOOKIE_BOT_IMAGE args=up $*" >> "$MOCK_STATE/ups"
+        for v in COMPOSE_FILE SHOOKIE_BOT_IMAGE POSTGRES_PASSWORD SLACK_BOT_TOKEN SLACK_APP_TOKEN LLM_API_KEY POSTHOG_API_KEY GITHUB LLM_BASE_URL LLM_MODEL THREAD_WORKSPACE_BASE_PATH THREAD_WORKSPACE_MAX_GB LOG_LEVEL SLACK_USER_OAUTH_PORT SHOOKIE_MENTION_GROUPS_API_KEY; do printf '%s=%s\n' "$v" "${!v-}"; done > "$MOCK_STATE/up_env_$n"
+        id=$(resolve "$SHOOKIE_BOT_IMAGE" || echo "id:$SHOOKIE_BOT_IMAGE")
+        echo "$id" > "$MOCK_STATE/containers/bot"; echo "$SHOOKIE_BOT_IMAGE" > "$MOCK_STATE/refs/bot"
+        if [ -n "${MOCK_DB_BOUNCE_ON_UP:-}" ]; then db_init; echo "cid-db-new" > "$MOCK_STATE/db/id"; fi
+        if [ -n "${MOCK_UP_FAIL_FIRST:-}" ] && [ "$n" = 1 ]; then echo "mock up failed after replacing bot" >&2; exit 1; fi
+        exit 0 ;;
+      *) echo "mock: unexpected compose subcommand $sub" >&2; exit 99 ;;
+    esac ;;
+  inspect)
+    [ -n "${MOCK_INSPECT_FAIL:-}" ] && { echo "mock inspect failed" >&2; exit 1; }
+    fmt="$3"; cid="$4"
+    if [ "$cid" = "cid-db" ] || [ "$cid" = "cid-db-new" ]; then
+      db_init
+      case "$fmt" in
+        '{{.State.StartedAt}}') cat "$MOCK_STATE/db/started" ;;
+        '{{if .State.Health}}'*) if [ -n "${MOCK_DB_UNHEALTHY:-}" ]; then echo unhealthy; else cat "$MOCK_STATE/db/health"; fi ;;
+        *) echo "mock: unexpected db inspect format $fmt" >&2; exit 99 ;;
+      esac
+      exit 0
+    fi
+    [ -f "$MOCK_STATE/containers/bot" ] || exit 1
+    case "$fmt" in
+      '{{.Image}}') cat "$MOCK_STATE/containers/bot" ;;
+      '{{.Config.Image}}') cat "$MOCK_STATE/refs/bot" ;;
+      '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}') bot_state ;;
+      *) echo "mock: unexpected inspect format $fmt" >&2; exit 99 ;;
+    esac ;;
+  image)
+    shift
+    case "$1" in
+      inspect)
+        shift; fmt=""
+        if [ "${1:-}" = "--format" ]; then fmt="$2"; shift 2; fi
+        for name in "$@"; do
+          id=$(resolve "$name") || { echo "Error: No such image: $name" >&2; exit 1; }
+          [ -n "$fmt" ] && echo "$id"
+        done
+        exit 0 ;;
+      ls)
+        repo="$2"; prefix=$(key "$repo")--
+        # newest first, like the real CLI: tests name sha tags so that reverse lexical order is newest first
+        for f in $(ls -r "$MOCK_STATE/tags/"); do
+          case "$f" in "$prefix"*) echo "$repo:${f#"$prefix"}" ;; esac
+        done
+        exit 0 ;;
+    esac ;;
+  tag)
+    n=$(counter tag_count)
+    [ -n "${MOCK_TAG_FAIL:-}" ] && { echo "mock tag failed" >&2; exit 1; }
+    resolve "$2" > /dev/null || { echo "Error: No such image: $2" >&2; exit 1; }
+    resolve "$2" > "$MOCK_STATE/tags/$(key "$3")" ;;
+  rmi)
+    shift
+    for name in "$@"; do rm -f "$MOCK_STATE/tags/$(key "$name")"; done ;;
+  *) echo "mock: unexpected docker command $1" >&2; exit 99 ;;
+esac
+exit 0
