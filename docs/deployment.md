@@ -123,7 +123,9 @@ workflow는 `docker compose -f docker-compose.db.yml ps -q db` / `exec -T db pg_
 - 이 저장소의 `ghcr.io/yourssu/shookie:sha-<12자>` 태그만 정리한다. **성공한 배포 이력**(`/home/ubuntu/.shookie-deploy-history`) 기준
   최근 3개(중복 제외)를 유지하고 나머지 sha 태그(이력에 없는 pull-only 이미지 포함)를 제거한다. 이력 파일은 이미지별 마지막 성공 순서로
   중복을 제거해 최대 20개만 저장하므로, 같은 SHA를 반복 배포해도 이전의 서로 다른 성공 이미지(예: 롤백 대상)가 밀려나지 않는다.
-  이력 갱신에 실패하면 이미지 정리는 건너뛴다. 사용 중인 이미지는 `docker rmi`가 거부한다.
+  이력은 기존 이력 + 이번 이미지로 새 파일을 만들어 원자적으로 교체하고(파이프 대신 단계별 임시 파일로 각 단계 실패를 판정),
+  이번 이미지가 게시된 이력의 마지막 줄인 것까지 확인된 경우에만 정리한다. 어느 단계든 실패하면 경고만 남기고 정리를 건너뛰며
+  (배포는 성공 유지, 기존 이력은 그대로) 이미지를 삭제하지 않는다. 사용 중인 이미지는 `docker rmi`가 거부한다.
   (`docker image ls` 정렬은 이미지 생성 시각이라 캐시/메타데이터 전용 빌드에서 불확실해 쓰지 않는다. 실제 Docker로 확인했다.)
 - snapshot은 방금 게시한 1개(`shookie-rollback/bot`)만 유지한다.
 - Radar 이미지(`ghcr.io/yourssu/radar-*`), 다른 저장소 이미지, dangling 이미지, builder cache는 건드리지 않는다.

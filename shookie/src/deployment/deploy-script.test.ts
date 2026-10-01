@@ -13,6 +13,8 @@ import {
   type RunResult,
 } from "./test-helpers.js";
 import path from "node:path";
+import { chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 /**
  * Runs the real remote deploy script from the workflow against fake docker/git/flock/sleep binaries
@@ -199,6 +201,67 @@ describe("EC2 deploy script (mock docker)", () => {
       expect(history()).toEqual([image(B), image(C), image(A), image(D)]);
       expect(tagId(image(B))).toBeNull();
       for (const sha of [C, A, D]) expect(tagId(image(sha)), sha).not.toBeNull();
+    });
+
+    describe("when the history cannot be updated", () => {
+      const original = [image(A), image(B), image(C)].map((l) => `${l}\n`).join("");
+      const historyPath = () => path.join(sandbox, "home/.shookie-deploy-history");
+      const seed = () => {
+        for (const sha of [A, B, C, D]) tag(image(sha), `sha256:${sha}`);
+        tag(newImage, "sha256:newbot");
+        writeFileSync(historyPath(), original);
+      };
+      const shim = (name: string, body: string) => writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+      const realPath = (name: string) => spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+      const shaRmi = () => dockerLog().split("\n").filter((l) => l.startsWith("docker rmi") && l.includes("ghcr.io/yourssu/shookie:sha-"));
+
+      /** The deploy itself succeeded: cleanup is skipped (preserve over delete) and the old history is untouched. */
+      const expectCleanupSkipped = (result: RunResult) => {
+        expect(result.status, result.output).toBe(0);
+        expect(result.output).toContain("could not update the deploy history");
+        expect(shaRmi()).toEqual([]);
+        for (const sha of [A, B, C, D]) expect(tagId(image(sha)), sha).not.toBeNull();
+        expect(readFileSync(historyPath(), "utf8")).toBe(original);
+        expect(readdirSync(path.join(sandbox, "home")).filter((f) => f.startsWith(".shookie-deploy-history."))).toEqual([]);
+        expect(readFileSync(path.join(sandbox, "home/.shookie-deploy-state"), "utf8")).toContain(`bot=${newImage}`);
+      };
+
+      for (const tool of ["awk", "sort", "cut"]) {
+        it(`a failing ${tool} while generating the new history skips cleanup and keeps the old history`, () => {
+          seed();
+          shim(tool, "echo 'mock generation failure' >&2; exit 1");
+          expectCleanupSkipped(run());
+        });
+      }
+
+      it("a failed publish (rename) skips cleanup and keeps the old history", () => {
+        seed();
+        shim("mv", `case "\${@: -1}" in *.shookie-deploy-history) echo 'mock publish failure' >&2; exit 1;; esac\nexec ${realPath("mv")} "$@"`);
+        expectCleanupSkipped(run());
+      });
+
+      it("a blocked temporary history path skips cleanup and keeps the old history", () => {
+        seed();
+        mkdirSync(`${historyPath()}.new`);
+        const result = run();
+        rmSync(`${historyPath()}.new`, { recursive: true });
+        expect(result.status, result.output).toBe(0);
+        expect(result.output).toContain("could not update the deploy history");
+        expect(shaRmi()).toEqual([]);
+        expect(readFileSync(historyPath(), "utf8")).toBe(original);
+      });
+
+      it.skipIf(process.getuid?.() === 0)("a read-only history file is replaced atomically, recording the new success before any cleanup", () => {
+        seed();
+        chmodSync(historyPath(), 0o444);
+        const result = run();
+        expect(result.status, result.output).toBe(0);
+        // The history is rebuilt in a new file and renamed into place, so a read-only old file does not matter:
+        // the new success is recorded, and only then is cleanup done against the last three (B, C, new).
+        expect(readFileSync(historyPath(), "utf8")).toBe(`${image(A)}\n${image(B)}\n${image(C)}\n${newImage}\n`);
+        for (const ref of [image(B), image(C), newImage]) expect(tagId(ref), ref).not.toBeNull();
+        for (const ref of [image(A), image(D)]) expect(tagId(ref), ref).toBeNull();
+      });
     });
 
     it("a failed deploy does not enter the history and its pulled image is dropped after a successful rollback", () => {

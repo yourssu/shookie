@@ -418,22 +418,39 @@ jobs:
               check_db_unchanged || exit 1
               printf 'time=%s sha=%s bot=%s\n' "$(date -u +%FT%TZ)" "$DEPLOY_SHA" "$NEW_BOT_IMAGE" > "$STATE_FILE"
               # 이 저장소의 sha 태그 이미지는 "성공한 배포 이력" 기준 최근 3개(중복 제외)만 유지한다.
-              # 이력 파일은 이미지별 마지막 성공 순서로 중복을 제거해 저장한다(최대 20개). 같은 SHA 를 반복 배포해도
-              # 이전의 서로 다른 성공 이미지를 밀어내지 않는다. 이력 갱신에 실패하면 정리를 건너뛴다(삭제보다 보존).
+              # 이력은 "기존 이력 + 이번 이미지"로 새 파일을 만들어 이미지별 마지막 성공 순서로 중복을 제거하고(최대 20개)
+              # 원자적으로 교체한다. 같은 SHA 를 반복 배포해도 이전의 서로 다른 성공 이미지를 밀어내지 않는다.
+              # 파이프(pipefail 없음) 대신 단계별 임시 파일 + && 체인으로 각 단계의 실패를 정확히 판정하며, 이번 이미지가
+              # 게시된 이력의 마지막 줄인 것까지 확인된 경우에만 정리한다. 어떤 단계든 실패하면 경고만 남기고 정리를 건너뛴다
+              # (삭제보다 보존; 배포 자체는 성공 유지, 기존 이력은 그대로).
               # docker image ls 정렬은 이미지 생성 시각이라 캐시/메타데이터 전용 빌드에서 순서가 불확실하므로 쓰지 않는다.
               # 이력에 없는 태그(실패한 배포에서 pull 만 된 이미지 등)는 정리 대상이다. 사용 중인 이미지는 rmi 가 거부한다.
-              printf '%s\n' "$NEW_BOT_IMAGE" >> "$HISTORY_FILE" || true
-              awk '{ last[$0] = NR } END { for (k in last) print last[k], k }' "$HISTORY_FILE" | sort -n | cut -d' ' -f2- | tail -n 20 > "${HISTORY_FILE}.tmp" || true
-              if [ -s "${HISTORY_FILE}.tmp" ] && mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"; then
-                KEEP_FILE="$(mktemp)"
-                tail -n 3 "$HISTORY_FILE" > "$KEEP_FILE" || true
-                if [ -s "$KEEP_FILE" ]; then
+              history_ok=false
+              HIST_WORK="$(mktemp -d)" || HIST_WORK=""
+              if [ -n "$HIST_WORK" ] \
+                && { if [ -e "$HISTORY_FILE" ]; then cat "$HISTORY_FILE" > "$HIST_WORK/raw"; else : > "$HIST_WORK/raw"; fi; } \
+                && printf '%s\n' "$NEW_BOT_IMAGE" >> "$HIST_WORK/raw" \
+                && awk '{ last[$0] = NR } END { for (k in last) print last[k], k }' "$HIST_WORK/raw" > "$HIST_WORK/ranked" \
+                && sort -n "$HIST_WORK/ranked" > "$HIST_WORK/sorted" \
+                && cut -d' ' -f2- "$HIST_WORK/sorted" > "$HIST_WORK/dedup" \
+                && tail -n 20 "$HIST_WORK/dedup" > "${HISTORY_FILE}.new" \
+                && [ "$(tail -n 1 "${HISTORY_FILE}.new")" = "$NEW_BOT_IMAGE" ] \
+                && mv "${HISTORY_FILE}.new" "$HISTORY_FILE" \
+                && [ "$(tail -n 1 "$HISTORY_FILE")" = "$NEW_BOT_IMAGE" ]; then
+                history_ok=true
+              fi
+              rm -rf "$HIST_WORK"
+              if [ "$history_ok" = true ]; then
+                KEEP_FILE="$(mktemp)" || KEEP_FILE=""
+                if [ -n "$KEEP_FILE" ] && tail -n 3 "$HISTORY_FILE" > "$KEEP_FILE" && [ -s "$KEEP_FILE" ]; then
                   docker image ls "$BOT_REPO" --format '{{.Repository}}:{{.Tag}}' \
                     | grep -E ':sha-[0-9a-f]{12}$' | grep -vxFf "$KEEP_FILE" | xargs -r docker rmi || true
+                else
+                  echo "WARNING: could not compute the images to keep; skipping image cleanup"
                 fi
                 rm -f "$KEEP_FILE"
               else
-                rm -f "${HISTORY_FILE}.tmp"
+                rm -f "${HISTORY_FILE}.new" 2>/dev/null || true
                 echo "WARNING: could not update the deploy history; skipping image cleanup"
               fi
               # 방금 게시한 snapshot 만 남기고 오래된 snapshot 태그는 정리한다.
