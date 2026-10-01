@@ -111,7 +111,8 @@ shookie/
 │   │   ├── log-agent-call.ts        # 에이전트 호출 기록 저장
 │   │   └── index.ts
 │   └── migrations/001_init.sql      # agent_calls 테이블 스키마
-├── docker-compose.yml               # Shookie bot (일반 배포 단위)
+├── docker-compose.yml               # Shookie bot (일반 배포 단위, 로컬은 build)
+├── docker-compose.deploy.yml        # 운영 override (CI가 빌드한 GHCR 이미지 사용, 서버 빌드 없음)
 ├── docker-compose.db.yml            # 공유 PostgreSQL (별도 생명주기)
 ├── package.json                     # workspace root
 └── tsconfig.base.json
@@ -153,9 +154,9 @@ yarn workspace shookie test
 
 ## 배포
 
-`main` 브랜치에 push하면 GitHub Actions가 자동으로 EC2에 Shookie bot만 배포해요. 공유 PostgreSQL은 `docker-compose.db.yml`에서 별도로 관리하며 일반 앱 배포는 컨테이너, 시작 시각, `shookie_pgdata` 볼륨을 유지합니다. 두 Compose 모델은 기존 `shookie_default` 네트워크와 `db` 호스트 이름을 계속 사용하므로 Radar 연결 계약도 바뀌지 않습니다.
+`main` 브랜치에 push하면 GitHub Actions가 `linux/arm64` bot 이미지를 빌드해 GHCR(`ghcr.io/yourssu/shookie:sha-<12자>`, private)에 푸시하고, EC2에서는 이미지를 pull해 Shookie bot만 교체해요(서버 빌드 없음, 실패 시 자동 롤백, 수동 롤백은 `rollback_sha`). 자세한 흐름·롤백·설정은 [`docs/deployment.md`](docs/deployment.md)를 참고하세요. 공유 PostgreSQL은 `docker-compose.db.yml`에서 별도로 관리하며 일반 앱 배포는 컨테이너, 시작 시각, `shookie_pgdata` 볼륨을 유지합니다. 두 Compose 모델은 기존 `shookie_default` 네트워크와 `db` 호스트 이름을 계속 사용하므로 Radar 연결 계약도 바뀌지 않습니다.
 
-새 환경에서는 PostgreSQL을 먼저 `docker compose -f docker-compose.db.yml up -d`로 준비한 다음 `docker compose up -d --no-deps bot`을 실행하세요. 운영 검증, DB 유지보수, 앱 롤백 절차는 [`docs/database-lifecycle.md`](docs/database-lifecycle.md)를 따르세요. 일반 배포나 앱 롤백 중에는 `docker compose -f docker-compose.db.yml down`, `docker compose down`, `docker compose up db`, 볼륨 삭제 명령을 실행하지 않습니다.
+새 환경에서는 PostgreSQL을 먼저 `docker compose -f docker-compose.db.yml up -d`로 준비한 다음 deploy workflow(또는 `docs/database-lifecycle.md`의 override 명령)로 bot을 올리세요. 로컬 개발은 `docker compose up --build`를 그대로 쓰면 돼요. 운영 검증, DB 유지보수, 앱 롤백 절차는 [`docs/database-lifecycle.md`](docs/database-lifecycle.md)를 따르세요. 일반 배포나 앱 롤백 중에는 `docker compose -f docker-compose.db.yml down`, `docker compose down`, `docker compose up db`, 볼륨 삭제 명령을 실행하지 않습니다.
 
 | GitHub Secret | 설명 |
 |---|---|
