@@ -144,6 +144,74 @@ describe("EC2 deploy script (mock docker)", () => {
     expectNoForbiddenDockerCommands();
   });
 
+  describe("image retention", () => {
+    const repo = "ghcr.io/yourssu/shookie";
+    const image = (sha: string) => `${repo}:sha-${sha}`;
+    const A = "aaaaaaaaaaaa";
+    const B = "bbbbbbbbbbbb";
+    const C = "cccccccccccc";
+    const D = "dddddddddddd";
+    const history = () => {
+      const file = path.join(sandbox, "home/.shookie-deploy-history");
+      return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : [];
+    };
+
+    it("repeated deploys of the same SHA never push earlier distinct successes out of the kept three", () => {
+      for (const sha of [A, B, C, D]) tag(image(sha), `sha256:${sha}`);
+      tag("ghcr.io/yourssu/radar-backend:sha-eeeeeeeeeeee", "sha256:radar");
+      tag("ghcr.io/yourssu/shookie-other:sha-eeeeeeeeeeee", "sha256:other");
+      // A, B succeeded earlier; C then succeeded 30 times in a row (raw events, also covers the pre-dedupe format).
+      writeFileSync(
+        path.join(sandbox, "home/.shookie-deploy-history"),
+        [image(A), image(B), ...Array.from({ length: 30 }, () => image(C))].map((l) => `${l}\n`).join(""),
+      );
+
+      const result = run({ IMAGE_TAG: `sha-${C}` });
+
+      expect(result.status, result.output).toBe(0);
+      // Deduplicated, ordered by last success, bounded; A and B are still among the last three distinct successes.
+      expect(history()).toEqual([image(A), image(B), image(C)]);
+      for (const sha of [A, B, C]) expect(tagId(image(sha)), sha).not.toBeNull();
+      // Never deployed successfully -> removed. Other repositories are never touched.
+      expect(tagId(image(D))).toBeNull();
+      expect(tagId("ghcr.io/yourssu/radar-backend:sha-eeeeeeeeeeee")).not.toBeNull();
+      expect(tagId("ghcr.io/yourssu/shookie-other:sha-eeeeeeeeeeee")).not.toBeNull();
+    });
+
+    it("the history stays bounded and ordered by last success across many repeated runs", () => {
+      writeFileSync(
+        path.join(sandbox, "home/.shookie-deploy-history"),
+        Array.from({ length: 25 }, (_, i) => `${repo}:sha-${String(i).padStart(12, "0")}\n`).join(""),
+      );
+      for (let i = 0; i < 3; i++) expect(run({ IMAGE_TAG: `sha-${A}` }).status).toBe(0);
+      const lines = history();
+      expect(lines).toHaveLength(20);
+      expect(lines.at(-1)).toBe(image(A));
+      expect(new Set(lines).size).toBe(lines.length);
+    });
+
+    it("follows deploy and rollback order: A, B, C, rollback to A, then D keeps C, A, D", () => {
+      for (const sha of [A, B, C, A, D]) {
+        tag(image(sha), `sha256:${sha}`); // what `docker pull` does for this deploy
+        const result = run({ IMAGE_TAG: `sha-${sha}` });
+        expect(result.status, `${sha}: ${result.output}`).toBe(0);
+      }
+      expect(history()).toEqual([image(B), image(C), image(A), image(D)]);
+      expect(tagId(image(B))).toBeNull();
+      for (const sha of [C, A, D]) expect(tagId(image(sha)), sha).not.toBeNull();
+    });
+
+    it("a failed deploy does not enter the history and its pulled image is dropped after a successful rollback", () => {
+      healthyCurrentBot();
+      tag(image(A), "sha256:a");
+      writeFileSync(path.join(sandbox, "home/.shookie-deploy-history"), `${image(A)}\n`);
+      const result = run({ IMAGE_TAG: "sha-noready000000" });
+      expect(result.status).not.toBe(0);
+      expect(history()).toEqual([image(A)]);
+      expect(tagId(image(A))).not.toBeNull();
+    });
+  });
+
   it("uses only the compose override for the bot and keeps runtime configuration", () => {
     const result = run({ DEPLOY_SLACK_USER_OAUTH_PORT: "3000", DEPLOY_SLACK_BOT_TOKEN: "xoxb-1", DEPLOY_POSTGRES_PASSWORD: "pg" });
     expect(result.status, result.output).toBe(0);
@@ -178,6 +246,42 @@ describe("EC2 deploy script (mock docker)", () => {
     expect(ups()).toEqual([]);
     expect(botImage()).toBe("sha256:oldbot");
     expect(pointer()).toBeNull();
+  });
+
+  // Only the bot's state inspect fails (DB inspects and the pre-checks keep working), so the snapshot branch itself
+  // must tell "could not read the state" apart from "state read, bot is unstable".
+  for (const nth of ["1", "2"]) {
+    it(`bot state inspect failing on sample ${nth} aborts before replacement and keeps the previous snapshot`, () => {
+      healthyCurrentBot();
+      tag("shookie-rollback/bot:s-old", "sha256:ancientbot");
+      writeFileSync(path.join(sandbox, "home/.shookie-rollback-snapshot"), "s-old\n");
+
+      const result = run({ MOCK_BOT_STATE_FAIL_NTH: nth });
+
+      expect(result.status, result.output).not.toBe(0);
+      expect(result.output).toContain("could not inspect the current bot state");
+      expect(result.output).not.toContain("not running stably");
+      // DB pre-checks passed, so the failure really came from the bot-state inspect.
+      expect(dockerLog()).toContain("pg_isready");
+      expect(dockerLog()).toContain("docker pull");
+      expect(dockerLog()).not.toContain("compose up");
+      expect(ups()).toEqual([]);
+      expect(botImage()).toBe("sha256:oldbot");
+      expect(pointer()).toBe("s-old");
+      expect(snapshotTags()).toEqual(["shookie-rollback__bot--s-old"]);
+      expect(tagId("shookie-rollback/bot:s-old")).toBe("sha256:ancientbot");
+      expect(existsSync(path.join(sandbox, "home/.shookie-deploy-state"))).toBe(false);
+    });
+  }
+
+  it("a bot state inspect failure while waiting for the new bot is not-ready and rolls back", () => {
+    healthyCurrentBot();
+    // Samples 1 and 2 belong to the snapshot stability check; sample 3 is the first readiness check of the new bot.
+    const result = run({ MOCK_BOT_STATE_FAIL_NTH: "3" });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("did not become ready");
+    expect(result.output).toContain("Rollback succeeded");
+    expect(botImage()).toBe("sha256:oldbot");
   });
 
   it("snapshot tag failure aborts before replacement and keeps the previous snapshot", () => {

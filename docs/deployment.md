@@ -83,8 +83,10 @@ bot은 HTTP health endpoint가 없다. 코드(`shookie/src/index.ts`) 조사 결
 | 위 상태에서 inspect/tag/검증/게시 실패 | **교체 전 중단** |
 | bot 컨테이너 없음 (최초 배포) | snapshot 없이 진행, 실패해도 롤백 불가 |
 | 이미 비정상(crash loop 등) | snapshot 없이 진행(깨진 버전을 보존하지 않음), 롤백 불가. 수정본으로 앞으로 가는 수밖에 없다 |
+| 상태 조회(`docker inspect`) 자체가 실패 | **교체 전 중단**. 조회 오류는 "비정상"이 아니다(정상일 수 있는 bot을 snapshot 없이 교체하지 않는다) |
 
-"안정적으로 실행 중"은 10초 간격의 두 샘플에서 `running`이고 `StartedAt`/`RestartCount`가 같은 것이다.
+"안정적으로 실행 중"은 10초 간격의 두 샘플에서 `running`이고 `StartedAt`/`RestartCount`가 같은 것이다. 안정성 확인 함수는 안정(0) / 조회는 됐지만 불안정(1) /
+조회 실패(2)를 구분해 반환하며, 준비 확인(`wait_ready`)은 1과 2를 모두 실패로 취급한다.
 자동 롤백은 **이번 실행에서 게시한 snapshot**만 사용한다(포인터에 남은 예전 이미지는 쓰지 않는다). 롤백도 위 준비 확인을 통과해야 성공으로 보고하며,
 성공 여부와 무관하게 이 배포는 실패로 끝난다. 롤백이 성공하면 실패한 새 이미지 태그는 정리한다.
 
@@ -119,7 +121,9 @@ workflow는 `docker compose -f docker-compose.db.yml ps -q db` / `exec -T db pg_
 ## 이미지 / snapshot 보존 정책
 
 - 이 저장소의 `ghcr.io/yourssu/shookie:sha-<12자>` 태그만 정리한다. **성공한 배포 이력**(`/home/ubuntu/.shookie-deploy-history`) 기준
-  최근 3개(중복 제외)를 유지하고 나머지 sha 태그(이력에 없는 pull-only 이미지 포함)를 제거한다. 사용 중인 이미지는 `docker rmi`가 거부한다.
+  최근 3개(중복 제외)를 유지하고 나머지 sha 태그(이력에 없는 pull-only 이미지 포함)를 제거한다. 이력 파일은 이미지별 마지막 성공 순서로
+  중복을 제거해 최대 20개만 저장하므로, 같은 SHA를 반복 배포해도 이전의 서로 다른 성공 이미지(예: 롤백 대상)가 밀려나지 않는다.
+  이력 갱신에 실패하면 이미지 정리는 건너뛴다. 사용 중인 이미지는 `docker rmi`가 거부한다.
   (`docker image ls` 정렬은 이미지 생성 시각이라 캐시/메타데이터 전용 빌드에서 불확실해 쓰지 않는다. 실제 Docker로 확인했다.)
 - snapshot은 방금 게시한 1개(`shookie-rollback/bot`)만 유지한다.
 - Radar 이미지(`ghcr.io/yourssu/radar-*`), 다른 저장소 이미지, dangling 이미지, builder cache는 건드리지 않는다.

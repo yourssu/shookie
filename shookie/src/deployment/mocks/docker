@@ -6,7 +6,8 @@
 # Image IDs steer the bot's behavior: "crashloop" -> restarting, "noready" -> running without start log,
 # "flap" -> restarts right after it reports ready. Everything else is a healthy bot.
 # Failure injection: MOCK_PULL_FAIL, MOCK_INSPECT_FAIL, MOCK_TAG_FAIL, MOCK_UP_FAIL_FIRST (partial replace),
-#   MOCK_DB_BOUNCE_ON_UP, MOCK_DB_MISSING, MOCK_DB_UNHEALTHY, MOCK_PG_FAIL.
+#   MOCK_DB_BOUNCE_ON_UP, MOCK_DB_MISSING, MOCK_DB_UNHEALTHY, MOCK_PG_FAIL,
+#   MOCK_BOT_STATE_FAIL_NTH=<n> (only the n-th bot status/restart/startedAt inspect fails; DB and other inspects keep working).
 set -u
 mkdir -p "$MOCK_STATE/containers" "$MOCK_STATE/refs" "$MOCK_STATE/tags" "$MOCK_STATE/db"
 echo "docker $*" >> "$MOCK_STATE/log"
@@ -90,7 +91,10 @@ case "$1" in
     case "$fmt" in
       '{{.Image}}') cat "$MOCK_STATE/containers/bot" ;;
       '{{.Config.Image}}') cat "$MOCK_STATE/refs/bot" ;;
-      '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}') bot_state ;;
+      '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}')
+        n=$(counter bot_state_inspect_count)
+        [ "${MOCK_BOT_STATE_FAIL_NTH:-0}" = "$n" ] && { echo "mock bot state inspect failed" >&2; exit 1; }
+        bot_state ;;
       *) echo "mock: unexpected inspect format $fmt" >&2; exit 99 ;;
     esac ;;
   image)
