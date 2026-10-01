@@ -8,6 +8,7 @@ name: shookie
 
 services:
   bot:
+    image: shookie-bot:local
     build:
       context: .
       dockerfile: shookie/Dockerfile

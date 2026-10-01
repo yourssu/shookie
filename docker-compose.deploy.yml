@@ -1,0 +1,11 @@
+# 운영 배포용 override. CI가 빌드/푸시한 immutable 이미지만 사용하고 서버에서는 빌드하지 않는다.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --no-build --no-deps bot
+#
+# SHOOKIE_BOT_IMAGE 는 deploy workflow가 SHA 태그로 지정한다. 공유 PostgreSQL(docker-compose.db.yml)은
+# 이 override와 무관하며 일반 배포에서 건드리지 않는다.
+# 로컬 개발은 이 파일 없이 기존처럼 `docker compose up --build`를 사용한다.
+services:
+  bot:
+    image: ${SHOOKIE_BOT_IMAGE:?SHOOKIE_BOT_IMAGE is required}
+    pull_policy: never
