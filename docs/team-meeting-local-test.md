@@ -1,6 +1,6 @@
 # 팀·TF 회의 일정 로컬 확인
 
-회의 기능은 Radar 백엔드, Radar 프론트엔드, Shookie 세 저장소의 `feat/team-meeting-visibility` 브랜치에 있습니다. Slack 채널 ID를 수정하는 신규 API는 제거했습니다. 리마인더는 기존 그룹의 `representative_slack_channel_id`를 읽습니다.
+회의 기능은 Radar 백엔드, Radar 프론트엔드, Shookie 세 저장소의 `feat/team-meeting-visibility` 브랜치에 있습니다. Slack 채널 ID를 수정하는 신규 API는 제거했습니다. 리마인더는 기존 그룹의 `representative_slack_channel_id`를 읽습니다. 팀·TF 연결은 선택 사항이며, 연결이 없거나 연결된 Slack 채널이 없어도 회의 일정은 표시됩니다.
 
 ## 자격증명 없이 기능별 확인
 
@@ -81,6 +81,7 @@ PostgreSQL 16, Docker Compose, 유효한 Radar Google OAuth 설정, Shookie Slac
 - 반복 회의를 매주·격주·매월·사용자 지정 주기로 생성해 해당 날짜에만 표시되는지 확인합니다.
 - 온라인과 오프라인을 각각 만들고, 기본 장소 `동방(학생회관 244호)` 및 새 장소 추가를 확인합니다.
 - 그룹 필터로 팀/TF별 일정을 확인합니다.
+- 팀·TF를 선택하지 않은 회의를 생성해 전체 캘린더에 표시되는지 확인합니다. 그룹과 채널이 없는 회의에서는 Slack 리마인더가 발송되지 않습니다.
 - 리마인더는 시작 30분 이내의 회의를 기존 대표 Slack 채널이 설정된 그룹에만 보냅니다. `GET /internal/v1/meeting-reminders/due` 요청에 `X-Radar-Meeting-Reminder-Key` 헤더를 넣어 대상을 확인할 수 있습니다. 헤더가 없거나 키가 틀리면 접근이 거부되어야 합니다.
 - 대상 회의가 있으면 Shookie가 회의 제목·시작 시각·장소를 멘션 없이 채널에 보내는지 확인합니다. 전송 후 Radar 확인 처리로 같은 회의가 다시 전송되지 않아야 합니다.
 
