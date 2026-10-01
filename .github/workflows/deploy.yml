@@ -1,21 +1,167 @@
 name: Deploy to EC2
 
+# main push / 수동 실행: GitHub Actions에서 linux/arm64 bot 이미지를 빌드해 GHCR에 푸시한 뒤,
+# EC2에서는 이미지 pull + bot 컨테이너 교체(--no-build --no-deps)만 수행한다 (EC2에서 Docker build 없음).
+# pull_request: 빌드 설정 변경 시 arm64 빌드만 검증한다 (푸시/배포 없음).
+# 공유 PostgreSQL(docker-compose.db.yml)은 배포 전후 상태를 확인만 하고 생성/교체/중단하지 않는다.
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - shookie/Dockerfile
+      - .dockerignore
+      - package.json
+      - yarn.lock
+      - .yarnrc.yml
+      - tsconfig.base.json
+      - shookie/package.json
+      - database/package.json
+      - docker-compose*.yml
+      - scripts/verify-image-arch.sh
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+    inputs:
+      rollback_sha:
+        description: "Rollback: 이미 GHCR에 있는 커밋 SHA(12자 이상 hex)의 이미지를 빌드 없이 재배포 (비워두면 현재 커밋 빌드/배포)"
+        required: false
+        default: ""
+        type: string
 
-concurrency:
-  group: deploy-ec2
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
-  deploy:
+  # 빌드는 서로 독립적이고 SHA 태그라 중복 실행/취소가 안전하다.
+  # 원격 배포(deploy job)는 별도 concurrency 그룹으로 분리해 진행 중 SSH 배포를 취소하지 않는다.
+  build:
+    if: ${{ inputs.rollback_sha == '' }}
     runs-on: ubuntu-latest
-
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: build-shookie-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      # main 에서만 푸시한다. PR / 다른 브랜치의 수동 실행은 빌드 검증만 한다.
+      PUSH_IMAGES: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
-      - name: Deploy to EC2 via SSH
+      - uses: actions/checkout@v7
+
+      - name: Compute image name
+        id: meta
+        run: |
+          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="sha-${GITHUB_SHA::12}"
+          echo "bot_image=${prefix}:${tag}" >> "$GITHUB_OUTPUT"
+
+      # shookie/Dockerfile 전체가 arm64 stage 에서 실행되므로 QEMU 로 에뮬레이션된다 (yarn install + tsc).
+      # 느릴 수 있어 GHA 캐시를 쓴다.
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: ${{ env.PUSH_IMAGES == 'true' }}
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # build-args / secrets 는 사용하지 않는다. 이미지에는 소스와 의존성만 들어간다.
+      - name: Build shookie bot image (linux/arm64, push on main)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: shookie/Dockerfile
+          platforms: linux/arm64
+          push: ${{ env.PUSH_IMAGES == 'true' }}
+          provenance: false
+          tags: ${{ steps.meta.outputs.bot_image }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=shookie-bot
+          cache-to: type=gha,mode=max,scope=shookie-bot
+
+      - name: Verify pushed image is linux/arm64
+        if: ${{ env.PUSH_IMAGES == 'true' }}
+        env:
+          BOT_IMAGE: ${{ steps.meta.outputs.bot_image }}
+        run: bash scripts/verify-image-arch.sh "$BOT_IMAGE" linux/arm64
+
+  deploy:
+    needs: build
+    # rollback 실행에서는 build 가 skipped 이다. main 에서만 배포한다.
+    if: >-
+      ${{ !cancelled()
+      && (needs.build.result == 'success' || needs.build.result == 'skipped')
+      && github.event_name != 'pull_request'
+      && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    # 진행 중인 원격 배포를 취소하면 SSH 세션이 끊겨 EC2 스크립트가 중간에 중단될 수 있으므로
+    # cancel-in-progress 를 쓰지 않는다. 대기 중인 실행은 최신 1개만 유지된다.
+    concurrency:
+      group: deploy-ec2
+      cancel-in-progress: false
+    steps:
+      - name: Resolve image tag and check this commit is still main HEAD
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROLLBACK_SHA: ${{ inputs.rollback_sha }}
+        run: |
+          set -eu
+          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ -n "$ROLLBACK_SHA" ]; then
+            if ! printf '%s' "$ROLLBACK_SHA" | grep -Eq '^[0-9a-f]{12,40}$'; then
+              echo "rollback_sha must be 12-40 lowercase hex characters" >&2
+              exit 1
+            fi
+            tag="sha-${ROLLBACK_SHA:0:12}"
+            skip=false
+          else
+            tag="sha-${GITHUB_SHA::12}"
+            # 빌드 대기 중 더 새로운 main 커밋이 생겼다면 오래된 이미지를 배포하지 않는다.
+            head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            if [ "$head_sha" = "$GITHUB_SHA" ]; then skip=false; else skip=true; fi
+          fi
+          {
+            echo "image_prefix=${prefix}"
+            echo "image_tag=${tag}"
+            echo "skip=${skip}"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$skip" = true ]; then
+            echo "::notice::main 에 더 새로운 커밋이 있어 ${tag} 배포를 건너뜁니다."
+          fi
+
+      - name: Deploy to EC2 via SSH (pull + bot replace)
+        if: ${{ steps.target.outputs.skip != 'true' }}
         uses: appleboy/ssh-action@v1
         env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # private 패키지 pull 용. 기본은 job 의 GITHUB_TOKEN(packages: read, 배포 중에만 유효).
+          # 패키지가 저장소 접근을 상속받지 못하는 경우에만 read:packages PAT 를 GHCR_PULL_TOKEN 으로 등록한다.
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN || secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ vars.GHCR_PULL_USER || github.actor }}
+          REPO_SLUG: ${{ github.repository }}
+          DEPLOY_SHA: ${{ github.sha }}
+          IMAGE_PREFIX: ${{ steps.target.outputs.image_prefix }}
+          IMAGE_TAG: ${{ steps.target.outputs.image_tag }}
+          DEPLOY_SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          DEPLOY_SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+          DEPLOY_LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          DEPLOY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          DEPLOY_GITHUB: ${{ secrets.GITHUB }}
+          DEPLOY_POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           DEPLOY_SLACK_USER_OAUTH_ENABLED: ${{ vars.SLACK_USER_OAUTH_ENABLED || 'false' }}
           DEPLOY_SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
           DEPLOY_SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
@@ -45,82 +191,266 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: DEPLOY_SLACK_USER_OAUTH_ENABLED,DEPLOY_SLACK_CLIENT_ID,DEPLOY_SLACK_CLIENT_SECRET,DEPLOY_SLACK_OAUTH_REDIRECT_URI,DEPLOY_SLACK_TOKEN_ENCRYPTION_KEY,DEPLOY_SLACK_TOKEN_ROTATION_ENABLED,DEPLOY_SLACK_USER_OAUTH_PORT,DEPLOY_SLACK_OAUTH_STATE_TTL_SECONDS,DEPLOY_SLACK_MENTION_GROUP_REPLACEMENT_ENABLED,DEPLOY_SLACK_MENTION_GROUP_COMMAND_ENABLED,DEPLOY_RADAR_MENTION_GROUPS_API_URL,DEPLOY_SHOOKIE_MENTION_GROUPS_API_KEY,DEPLOY_RADAR_MENTION_GROUPS_WRITE_API_URL,DEPLOY_SHOOKIE_MENTION_GROUPS_WRITE_API_KEY,DEPLOY_RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS,DEPLOY_RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS,DEPLOY_SLACK_EVENT_ATTENDANCE_ENABLED,DEPLOY_SLACK_EVENT_ATTENDING_EMOJI,DEPLOY_SLACK_EVENT_ABSENT_EMOJI,DEPLOY_SLACK_EVENT_AFTERPARTY_EMOJI,DEPLOY_RADAR_EVENT_ATTENDANCE_WRITE_API_URL,DEPLOY_SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY,DEPLOY_RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS,DEPLOY_RADAR_MEETING_REMINDER_API_URL,DEPLOY_SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY
+          command_timeout: 25m
+          envs: GIT_TOKEN,GHCR_TOKEN,GHCR_USER,REPO_SLUG,DEPLOY_SHA,IMAGE_PREFIX,IMAGE_TAG,DEPLOY_SLACK_BOT_TOKEN,DEPLOY_SLACK_APP_TOKEN,DEPLOY_LLM_API_KEY,DEPLOY_POSTHOG_API_KEY,DEPLOY_GITHUB,DEPLOY_POSTGRES_PASSWORD,DEPLOY_SLACK_USER_OAUTH_ENABLED,DEPLOY_SLACK_CLIENT_ID,DEPLOY_SLACK_CLIENT_SECRET,DEPLOY_SLACK_OAUTH_REDIRECT_URI,DEPLOY_SLACK_TOKEN_ENCRYPTION_KEY,DEPLOY_SLACK_TOKEN_ROTATION_ENABLED,DEPLOY_SLACK_USER_OAUTH_PORT,DEPLOY_SLACK_OAUTH_STATE_TTL_SECONDS,DEPLOY_SLACK_MENTION_GROUP_REPLACEMENT_ENABLED,DEPLOY_SLACK_MENTION_GROUP_COMMAND_ENABLED,DEPLOY_RADAR_MENTION_GROUPS_API_URL,DEPLOY_SHOOKIE_MENTION_GROUPS_API_KEY,DEPLOY_RADAR_MENTION_GROUPS_WRITE_API_URL,DEPLOY_SHOOKIE_MENTION_GROUPS_WRITE_API_KEY,DEPLOY_RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS,DEPLOY_RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS,DEPLOY_SLACK_EVENT_ATTENDANCE_ENABLED,DEPLOY_SLACK_EVENT_ATTENDING_EMOJI,DEPLOY_SLACK_EVENT_ABSENT_EMOJI,DEPLOY_SLACK_EVENT_AFTERPARTY_EMOJI,DEPLOY_RADAR_EVENT_ATTENDANCE_WRITE_API_URL,DEPLOY_SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY,DEPLOY_RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS,DEPLOY_RADAR_MEETING_REMINDER_API_URL,DEPLOY_SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY
           script: |
-            set -e
-            # 이전 GITHUB_TOKEN 기반 url 설정 초기화 (토큰 만료/누적 방지)
-            git config --global --get-regexp '^url\.' 2>/dev/null | awk '{print $1}' | while read key; do git config --global --unset-all "$key" 2>/dev/null || true; done
-            # 새 토큰으로 설정
-            git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
-            cd /home/ubuntu/shookie
-            git fetch origin
-            git reset --hard origin/main
+            set -eu
+            # Compose interpolation 용 값. 값은 ssh-action 이 single-quote 이스케이프한 env 로만 전달되며
+            # script 텍스트에 삽입되지 않는다. 디스크에 저장하지 않고 이 프로세스에서만 export 한다.
+            export SLACK_BOT_TOKEN="${DEPLOY_SLACK_BOT_TOKEN:-}"
+            export SLACK_APP_TOKEN="${DEPLOY_SLACK_APP_TOKEN:-}"
+            export LLM_API_KEY="${DEPLOY_LLM_API_KEY:-}"
+            export POSTHOG_API_KEY="${DEPLOY_POSTHOG_API_KEY:-}"
+            export GITHUB="${DEPLOY_GITHUB:-}"
+            export POSTGRES_PASSWORD="${DEPLOY_POSTGRES_PASSWORD:-}"
+            export SLACK_USER_OAUTH_ENABLED="${DEPLOY_SLACK_USER_OAUTH_ENABLED:-}"
+            export SLACK_CLIENT_ID="${DEPLOY_SLACK_CLIENT_ID:-}"
+            export SLACK_CLIENT_SECRET="${DEPLOY_SLACK_CLIENT_SECRET:-}"
+            export SLACK_OAUTH_REDIRECT_URI="${DEPLOY_SLACK_OAUTH_REDIRECT_URI:-}"
+            export SLACK_TOKEN_ENCRYPTION_KEY="${DEPLOY_SLACK_TOKEN_ENCRYPTION_KEY:-}"
+            export SLACK_TOKEN_ROTATION_ENABLED="${DEPLOY_SLACK_TOKEN_ROTATION_ENABLED:-}"
+            export SLACK_USER_OAUTH_PORT="${DEPLOY_SLACK_USER_OAUTH_PORT:-}"
+            export SLACK_OAUTH_STATE_TTL_SECONDS="${DEPLOY_SLACK_OAUTH_STATE_TTL_SECONDS:-}"
+            export SLACK_MENTION_GROUP_REPLACEMENT_ENABLED="${DEPLOY_SLACK_MENTION_GROUP_REPLACEMENT_ENABLED:-}"
+            export SLACK_MENTION_GROUP_COMMAND_ENABLED="${DEPLOY_SLACK_MENTION_GROUP_COMMAND_ENABLED:-}"
+            export RADAR_MENTION_GROUPS_API_URL="${DEPLOY_RADAR_MENTION_GROUPS_API_URL:-}"
+            export SHOOKIE_MENTION_GROUPS_API_KEY="${DEPLOY_SHOOKIE_MENTION_GROUPS_API_KEY:-}"
+            export RADAR_MENTION_GROUPS_WRITE_API_URL="${DEPLOY_RADAR_MENTION_GROUPS_WRITE_API_URL:-}"
+            export SHOOKIE_MENTION_GROUPS_WRITE_API_KEY="${DEPLOY_SHOOKIE_MENTION_GROUPS_WRITE_API_KEY:-}"
+            export RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS="${DEPLOY_RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS:-}"
+            export RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS="${DEPLOY_RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS:-}"
+            export SLACK_EVENT_ATTENDANCE_ENABLED="${DEPLOY_SLACK_EVENT_ATTENDANCE_ENABLED:-}"
+            export SLACK_EVENT_ATTENDING_EMOJI="${DEPLOY_SLACK_EVENT_ATTENDING_EMOJI:-}"
+            export SLACK_EVENT_ABSENT_EMOJI="${DEPLOY_SLACK_EVENT_ABSENT_EMOJI:-}"
+            export SLACK_EVENT_AFTERPARTY_EMOJI="${DEPLOY_SLACK_EVENT_AFTERPARTY_EMOJI:-}"
+            export RADAR_EVENT_ATTENDANCE_WRITE_API_URL="${DEPLOY_RADAR_EVENT_ATTENDANCE_WRITE_API_URL:-}"
+            export SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY="${DEPLOY_SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY:-}"
+            export RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS="${DEPLOY_RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS:-}"
+            export RADAR_MEETING_REMINDER_API_URL="${DEPLOY_RADAR_MEETING_REMINDER_API_URL:-}"
+            export SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY="${DEPLOY_SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY:-}"
+            # 이전 배포부터 고정된 비-secret 런타임 값
+            export LLM_BASE_URL=https://api.deepseek.com
+            export LLM_MODEL=deepseek-flash
+            export THREAD_WORKSPACE_BASE_PATH=/tmp/shookie-workspaces
+            export THREAD_WORKSPACE_MAX_GB=5
+            export LOG_LEVEL=debug
 
-            # PostgreSQL은 별도 Compose 생명주기로 관리한다. 일반 배포에서는
-            # 기존 컨테이너가 healthy인지 확인만 하고 생성/교체/중단하지 않는다.
+            # 동시에 두 배포가 EC2 에서 실행되지 않도록 잠근다.
+            exec 9>/home/ubuntu/.shookie-deploy.lock
+            flock -n 9 || { echo "Another deploy is already running on this host"; exit 1; }
+
+            BOT_REPO="$IMAGE_PREFIX"
+            NEW_BOT_IMAGE="${BOT_REPO}:${IMAGE_TAG}"
+            SNAPSHOT_REPO="shookie-rollback/bot"
+            SNAPSHOT_POINTER=/home/ubuntu/.shookie-rollback-snapshot
+            STATE_FILE=/home/ubuntu/.shookie-deploy-state
+            HISTORY_FILE=/home/ubuntu/.shookie-deploy-history
+            # app.start() 가 Socket Mode 연결(Connected)까지 기다린 뒤 이 로그를 남긴다 (shookie/src/index.ts).
+            READY_MARKER="슈키가 시작되었습니다"
+            READY_ATTEMPTS=36
+            READY_INTERVAL=5
+            STABLE_SECONDS=10
+
+            fail() {
+              echo "ERROR: $*" >&2
+              exit 1
+            }
+
+            # 이전 GITHUB_TOKEN 기반 url 설정 정리 (만료된 토큰이 새 인증과 충돌하지 않도록)
+            git config --global --get-regexp '^url\.https://x-access-token:' 2>/dev/null | awk '{print $1}' | while read key; do git config --global --unset-all "$key" 2>/dev/null || true; done || true
+            # Git 인증: 서버 Git 이 2.25 라서 GIT_CONFIG_COUNT/KEY/VALUE(2.31+)는 무시된다. 어떤 버전에서도
+            # 동작하는 GIT_ASKPASS 를 쓴다. 토큰은 환경변수(GIT_TOKEN)로만 helper 에 전달되고 helper 파일,
+            # gitconfig, remote URL, git 명령행(ps)에 남지 않는다. credential helper 로 저장되지 않게 비우고,
+            # 프롬프트가 불가능한 환경에서 인증이 실패하면 즉시 중단한다 (pull/up 이전).
+            ASKPASS_DIR="$(mktemp -d /home/ubuntu/.shookie-git-askpass.XXXXXX)"
+            cleanup() {
+              rm -rf "$ASKPASS_DIR" "${DOCKER_AUTH_DIR:-}"
+            }
+            trap cleanup EXIT
+            printf '%s\n' '#!/bin/sh' 'case "$1" in' '  Username*) printf "%s\n" x-access-token ;;' '  *) printf "%s\n" "$GIT_TOKEN" ;;' 'esac' > "$ASKPASS_DIR/askpass"
+            chmod 700 "$ASKPASS_DIR/askpass"
+            git_auth() {
+              GIT_ASKPASS="$ASKPASS_DIR/askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= "$@"
+            }
+            cd /home/ubuntu
+            if [ ! -d shookie ]; then
+              git_auth clone "https://github.com/${REPO_SLUG}.git" shookie \
+                || fail "git clone failed (authentication?); aborting before pull/up"
+            fi
+            cd shookie
+            git_auth fetch origin main \
+              || fail "git fetch failed (authentication?); aborting before pull/up"
+            git reset --hard "$DEPLOY_SHA"
+            unset GIT_TOKEN
+            rm -rf "$ASKPASS_DIR"
+
+            # 배포 override: 이미지 사용, 서버 빌드 금지 (docker-compose.deploy.yml). DB 확인은 -f 로 별도 파일을 쓴다.
+            export COMPOSE_FILE=docker-compose.yml:docker-compose.deploy.yml
+            export SHOOKIE_BOT_IMAGE="$NEW_BOT_IMAGE"
+
+            # 공유 PostgreSQL(Radar 와 공유)은 별도 Compose 생명주기다. 일반 배포에서는 이미 실행 중인
+            # 컨테이너가 healthy 인지 확인만 하고 생성/교체/중단/네트워크·볼륨 변경을 하지 않는다.
             DB_CONTAINER_ID_BEFORE="$(docker compose -f docker-compose.db.yml ps -q db)"
             if [ -z "$DB_CONTAINER_ID_BEFORE" ]; then
-              echo "Shared PostgreSQL container is not running; aborting application deploy."
-              exit 1
+              fail "Shared PostgreSQL container is not running; aborting application deploy."
             fi
             DB_STARTED_AT_BEFORE="$(docker inspect --format '{{.State.StartedAt}}' "$DB_CONTAINER_ID_BEFORE")"
             if [ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$DB_CONTAINER_ID_BEFORE")" != "healthy" ]; then
-              echo "Shared PostgreSQL container is not healthy; aborting application deploy."
-              exit 1
+              fail "Shared PostgreSQL container is not healthy; aborting application deploy."
             fi
             docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie
 
-            docker builder prune -af
-            docker image prune -f
-            docker compose build bot
-            SLACK_BOT_TOKEN=${{ secrets.SLACK_BOT_TOKEN }} \
-            SLACK_APP_TOKEN=${{ secrets.SLACK_APP_TOKEN }} \
-            LLM_API_KEY=${{ secrets.LLM_API_KEY }} \
-            LLM_BASE_URL=https://api.deepseek.com \
-            LLM_MODEL=deepseek-flash \
-            POSTHOG_API_KEY=${{ secrets.POSTHOG_API_KEY }} \
-            GITHUB=${{ secrets.GITHUB }} \
-            SLACK_USER_OAUTH_ENABLED="$DEPLOY_SLACK_USER_OAUTH_ENABLED" \
-            SLACK_CLIENT_ID="$DEPLOY_SLACK_CLIENT_ID" \
-            SLACK_CLIENT_SECRET="$DEPLOY_SLACK_CLIENT_SECRET" \
-            SLACK_OAUTH_REDIRECT_URI="$DEPLOY_SLACK_OAUTH_REDIRECT_URI" \
-            SLACK_TOKEN_ENCRYPTION_KEY="$DEPLOY_SLACK_TOKEN_ENCRYPTION_KEY" \
-            SLACK_TOKEN_ROTATION_ENABLED="$DEPLOY_SLACK_TOKEN_ROTATION_ENABLED" \
-            SLACK_USER_OAUTH_PORT="$DEPLOY_SLACK_USER_OAUTH_PORT" \
-            SLACK_OAUTH_STATE_TTL_SECONDS="$DEPLOY_SLACK_OAUTH_STATE_TTL_SECONDS" \
-            SLACK_MENTION_GROUP_REPLACEMENT_ENABLED="$DEPLOY_SLACK_MENTION_GROUP_REPLACEMENT_ENABLED" \
-            SLACK_MENTION_GROUP_COMMAND_ENABLED="$DEPLOY_SLACK_MENTION_GROUP_COMMAND_ENABLED" \
-            RADAR_MENTION_GROUPS_API_URL="$DEPLOY_RADAR_MENTION_GROUPS_API_URL" \
-            SHOOKIE_MENTION_GROUPS_API_KEY="$DEPLOY_SHOOKIE_MENTION_GROUPS_API_KEY" \
-            RADAR_MENTION_GROUPS_WRITE_API_URL="$DEPLOY_RADAR_MENTION_GROUPS_WRITE_API_URL" \
-            SHOOKIE_MENTION_GROUPS_WRITE_API_KEY="$DEPLOY_SHOOKIE_MENTION_GROUPS_WRITE_API_KEY" \
-            RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS="$DEPLOY_RADAR_MENTION_GROUPS_CACHE_TTL_SECONDS" \
-            RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS="$DEPLOY_RADAR_MENTION_GROUPS_REQUEST_TIMEOUT_MS" \
-            SLACK_EVENT_ATTENDANCE_ENABLED="$DEPLOY_SLACK_EVENT_ATTENDANCE_ENABLED" \
-            SLACK_EVENT_ATTENDING_EMOJI="$DEPLOY_SLACK_EVENT_ATTENDING_EMOJI" \
-            SLACK_EVENT_ABSENT_EMOJI="$DEPLOY_SLACK_EVENT_ABSENT_EMOJI" \
-            SLACK_EVENT_AFTERPARTY_EMOJI="$DEPLOY_SLACK_EVENT_AFTERPARTY_EMOJI" \
-            RADAR_EVENT_ATTENDANCE_WRITE_API_URL="$DEPLOY_RADAR_EVENT_ATTENDANCE_WRITE_API_URL" \
-            SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY="$DEPLOY_SHOOKIE_EVENT_ATTENDANCE_WRITE_API_KEY" \
-            RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS="$DEPLOY_RADAR_EVENT_ATTENDANCE_REQUEST_TIMEOUT_MS" \
-            RADAR_MEETING_REMINDER_API_URL="$DEPLOY_RADAR_MEETING_REMINDER_API_URL" \
-            SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY="$DEPLOY_SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY" \
-            THREAD_WORKSPACE_BASE_PATH=/tmp/shookie-workspaces \
-            THREAD_WORKSPACE_MAX_GB=5 \
-            LOG_LEVEL=debug \
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }} \
-            docker compose up -d --no-deps bot
+            # 배포 종료 시(성공/실패/롤백 후) 공유 DB 가 그대로인지 확인한다. 변경되었다면 이 배포는 실패다.
+            check_db_unchanged() {
+              id_after="$(docker compose -f docker-compose.db.yml ps -q db)" || return 1
+              [ -n "$id_after" ] || { echo "ERROR: Shared PostgreSQL container is missing after deploy" >&2; return 1; }
+              started_after="$(docker inspect --format '{{.State.StartedAt}}' "$id_after")" || return 1
+              if [ "$DB_CONTAINER_ID_BEFORE" != "$id_after" ] || [ "$DB_STARTED_AT_BEFORE" != "$started_after" ]; then
+                echo "ERROR: Shared PostgreSQL identity or start time changed during application deploy." >&2
+                return 1
+              fi
+              [ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$id_after")" = "healthy" ] \
+                || { echo "ERROR: Shared PostgreSQL container is not healthy after deploy." >&2; return 1; }
+              docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie
+            }
 
-            BOT_CONTAINER_ID="$(docker compose ps -q bot)"
-            if [ -z "$BOT_CONTAINER_ID" ] || [ "$(docker inspect --format '{{.State.Running}}' "$BOT_CONTAINER_ID")" != "true" ]; then
-              echo "Shookie bot container is not running after deploy."
-              exit 1
+            # 1) pull: 성공하기 전에는 기존 컨테이너를 건드리지 않는다. 실패하면 set -e 로 여기서 종료된다.
+            #    GHCR 인증은 임시 DOCKER_CONFIG 에만 저장하고 종료 시 삭제한다.
+            DOCKER_AUTH_DIR="$(mktemp -d)"
+            printf '%s' "$GHCR_TOKEN" | DOCKER_CONFIG="$DOCKER_AUTH_DIR" docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            DOCKER_CONFIG="$DOCKER_AUTH_DIR" docker pull "$NEW_BOT_IMAGE"
+            rm -rf "$DOCKER_AUTH_DIR"
+            unset GHCR_TOKEN
+
+            bot_container() {
+              ids="$(docker compose ps -a -q bot)" || return 1
+              printf '%s\n' "$ids" | head -n 1
+            }
+            bot_state() {
+              docker inspect --format '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}' "$1"
+            }
+            # Running=true 만으로는 부족하다: crash loop(restart: always)에서도 순간적으로 running 이다.
+            # 일정 시간 동안 같은 기동(StartedAt)을 유지하고 재시작이 없어야 안정적으로 본다.
+            bot_is_stable() {
+              first="$(bot_state "$1")" || return 1
+              case "$first" in "running "*) ;; *) return 1 ;; esac
+              sleep "$STABLE_SECONDS"
+              second="$(bot_state "$1")" || return 1
+              [ "$first" = "$second" ]
+            }
+            # 새로 만든 컨테이너의 준비 상태: 재시작 없이 running + Socket Mode 연결 후 시작 로그가 있어야 하고,
+            # 그 뒤에도 안정 구간 동안 재시작이 없어야 한다. (bot 은 HTTP health endpoint 가 없다.)
+            wait_ready() {
+              for _ in $(seq 1 "$READY_ATTEMPTS"); do
+                cid="$(bot_container)" || return 1
+                [ -n "$cid" ] || { echo "bot container does not exist" >&2; return 1; }
+                state="$(bot_state "$cid")" || return 1
+                case "$state" in
+                  "running 0 "*) ;;
+                  *) echo "bot container is not running cleanly: ${state%% *} (restarts: $(printf '%s' "$state" | cut -d' ' -f2))" >&2; return 1 ;;
+                esac
+                if docker logs "$cid" 2>&1 | grep -qF "$READY_MARKER"; then
+                  bot_is_stable "$cid" || { echo "bot container restarted or stopped right after it became ready" >&2; return 1; }
+                  case "$(bot_state "$cid")" in "running 0 "*) return 0 ;; *) return 1 ;; esac
+                fi
+                sleep "$READY_INTERVAL"
+              done
+              echo "bot did not report Slack Socket Mode readiness in time" >&2
+              return 1
+            }
+            tag_image_id() {
+              image_id="$(docker image inspect --format '{{.Id}}' "$1")" || return 1
+              [ -n "$image_id" ] && [ "$image_id" = "$2" ]
+            }
+            drop_snapshot() {
+              docker rmi "${SNAPSHOT_REPO}:$1" >/dev/null 2>&1 || true
+            }
+
+            # 2) 롤백 snapshot: 현재 정상 동작 중인 bot 이미지를 image ID 로 고정한다.
+            #    snapshot 은 같은 ID 를 가진 로컬 태그(shookie-rollback/bot:<id>)가 검증된 뒤에만 포인터 파일에
+            #    게시되며, 이전 snapshot 은 새 snapshot 이 완성되기 전까지 건드리지 않는다.
+            #    첫 전환 배포의 로컬 빌드 이미지도 image ID 로 보존된다.
+            #    - 컨테이너가 없음(최초 배포): snapshot 없이 진행 (롤백 불가)
+            #    - 현재 bot 이 비정상(재시작 반복 등): snapshot 없이 진행 (이미 깨진 버전을 보존하지 않음, 롤백 불가)
+            #    - bot 이 정상인데 snapshot 을 보존할 수 없음: 컨테이너 교체 전에 중단
+            SNAPSHOT_ID=""
+            bot_before="$(bot_container)" || fail "could not list the bot container"
+            if [ -z "$bot_before" ]; then
+              echo "No existing bot container (first deploy); no rollback snapshot will be available"
+            elif ! bot_is_stable "$bot_before"; then
+              echo "WARNING: current bot is not running stably; no rollback snapshot is taken, automatic rollback is unavailable"
+            else
+              ref="$(docker inspect --format '{{.Image}}' "$bot_before")" || fail "could not inspect the bot container; aborting before replacement"
+              [ -n "$ref" ] || fail "empty bot image reference; aborting before replacement"
+              bot_id="$(docker image inspect --format '{{.Id}}' "$ref")" || fail "could not resolve the bot image; aborting before replacement"
+              [ -n "$bot_id" ] || fail "empty image ID; aborting before replacement"
+              new_snapshot="s$(date -u +%Y%m%d%H%M%S)-$$"
+              docker tag "$bot_id" "${SNAPSHOT_REPO}:${new_snapshot}" \
+                || { drop_snapshot "$new_snapshot"; fail "could not tag the bot snapshot; aborting before replacement"; }
+              tag_image_id "${SNAPSHOT_REPO}:${new_snapshot}" "$bot_id" \
+                || { drop_snapshot "$new_snapshot"; fail "rollback snapshot verification failed; aborting before replacement"; }
+              { printf '%s\n' "$new_snapshot" > "${SNAPSHOT_POINTER}.tmp" && mv "${SNAPSHOT_POINTER}.tmp" "$SNAPSHOT_POINTER"; } \
+                || { drop_snapshot "$new_snapshot"; fail "could not publish the rollback snapshot; aborting before replacement"; }
+              SNAPSHOT_ID="$new_snapshot"
+              echo "Rollback snapshot ${SNAPSHOT_ID}: bot=$(docker inspect --format '{{.Config.Image}}' "$bot_before" || true)"
+            fi
+            if [ -f "$STATE_FILE" ]; then echo "Last successful deploy: $(cat "$STATE_FILE")"; fi
+
+            # 3) 교체: bot 만 재생성한다 (down / build / 전역 prune / DB 관련 명령 없음).
+            #    단일 컨테이너 교체이므로 재기동 동안 짧은 중단이 발생한다 (무중단 아님).
+            deploy_ok=false
+            if docker compose up -d --no-build --no-deps bot && wait_ready; then
+              deploy_ok=true
             fi
 
-            DB_CONTAINER_ID_AFTER="$(docker compose -f docker-compose.db.yml ps -q db)"
-            DB_STARTED_AT_AFTER="$(docker inspect --format '{{.State.StartedAt}}' "$DB_CONTAINER_ID_AFTER")"
-            if [ "$DB_CONTAINER_ID_BEFORE" != "$DB_CONTAINER_ID_AFTER" ] || [ "$DB_STARTED_AT_BEFORE" != "$DB_STARTED_AT_AFTER" ]; then
-              echo "Shared PostgreSQL identity or start time changed during application deploy."
-              exit 1
+            if [ "$deploy_ok" = true ]; then
+              echo "Shookie bot is ready ($NEW_BOT_IMAGE)"
+              # 공유 DB 가 바뀌었다면 상태 기록/정리 없이 실패 처리한다.
+              check_db_unchanged || exit 1
+              printf 'time=%s sha=%s bot=%s\n' "$(date -u +%FT%TZ)" "$DEPLOY_SHA" "$NEW_BOT_IMAGE" > "$STATE_FILE"
+              # 이 저장소의 sha 태그 이미지는 "성공한 배포 이력" 기준 최근 3개(중복 제외)만 유지한다.
+              # docker image ls 정렬은 이미지 생성 시각이라 캐시/메타데이터 전용 빌드에서 순서가 불확실하므로 쓰지 않는다.
+              # 이력에 없는 태그(실패한 배포에서 pull 만 된 이미지 등)는 정리 대상이다. 사용 중인 이미지는 rmi 가 거부한다.
+              printf '%s\n' "$NEW_BOT_IMAGE" >> "$HISTORY_FILE" || true
+              KEEP_FILE="$(mktemp)"
+              awk '{ last[$0] = NR } END { for (k in last) print last[k], k }' "$HISTORY_FILE" | sort -rn | head -n 3 | cut -d' ' -f2- > "$KEEP_FILE" || true
+              if [ -s "$KEEP_FILE" ]; then
+                docker image ls "$BOT_REPO" --format '{{.Repository}}:{{.Tag}}' \
+                  | grep -E ':sha-[0-9a-f]{12}$' | grep -vxFf "$KEEP_FILE" | xargs -r docker rmi || true
+              fi
+              tail -n 20 "$HISTORY_FILE" > "${HISTORY_FILE}.tmp" && mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE" || true
+              rm -f "$KEEP_FILE"
+              # 방금 게시한 snapshot 만 남기고 오래된 snapshot 태그는 정리한다.
+              if [ -n "$SNAPSHOT_ID" ]; then
+                docker image ls "$SNAPSHOT_REPO" --format '{{.Repository}}:{{.Tag}}' \
+                  | grep -v ":${SNAPSHOT_ID}\$" | xargs -r docker rmi || true
+              fi
+              exit 0
             fi
-            docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie
+
+            echo "Shookie bot did not become ready; container state and startup errors follow"
+            docker compose ps -a || true
+            docker compose logs --no-color --tail=250 bot 2>&1 \
+              | grep -Ei 'Error|Exception|failed|Unable to|could not|invalid|not found|부팅 실패|Caused by' \
+              | tail -n 100 || true
+
+            # 4) 자동 롤백: 이 실행에서 게시한 snapshot 으로 bot 을 되돌린다. 롤백 성공 여부와 무관하게 이 배포는
+            #    실패로 끝난다. 이전 snapshot 이나 포인터에 남은 오래된 이미지는 사용하지 않는다.
+            #    새 버전이 DB 마이그레이션을 이미 적용했다면 이전 이미지가 호환되지 않을 수 있다 (DB 는 되돌리지 않는다).
+            if [ -n "$SNAPSHOT_ID" ] && docker image inspect "${SNAPSHOT_REPO}:${SNAPSHOT_ID}" >/dev/null 2>&1; then
+              echo "Rolling back to rollback snapshot ${SNAPSHOT_ID}"
+              export SHOOKIE_BOT_IMAGE="${SNAPSHOT_REPO}:${SNAPSHOT_ID}"
+              if docker compose up -d --no-build --no-deps bot && wait_ready; then
+                echo "Rollback succeeded; the previous version is serving. This deploy is still marked as failed."
+                # 실패한 새 이미지는 더 이상 쓰이지 않으므로 태그를 정리한다 (디스크 누적 방지).
+                docker rmi "$NEW_BOT_IMAGE" >/dev/null 2>&1 || true
+              else
+                echo "Rollback did not become ready; manual intervention required"
+                docker compose ps -a || true
+              fi
+            else
+              echo "No rollback snapshot available (first deploy, or the previous bot was not running stably); skipping rollback"
+            fi
+            # 롤백 후에도 공유 DB 가 그대로인지 확인해 결과에 남긴다.
+            check_db_unchanged || echo "ERROR: shared PostgreSQL check failed after the failed deploy" >&2
+            exit 1
