@@ -6,14 +6,14 @@ Shookie bot과 공유 PostgreSQL은 서로 다른 Compose 파일로 관리한다
 
 | 대상 | Compose 파일 | 일반 앱 배포에서의 동작 |
 |---|---|---|
-| Shookie bot | `docker-compose.yml` | 빌드하고 `--no-deps`로 교체 |
+| Shookie bot | `docker-compose.yml` (+ 운영은 `docker-compose.deploy.yml`) | CI가 빌드한 이미지를 pull해 `--no-build --no-deps`로 교체 ([deployment.md](deployment.md)) |
 | 공유 PostgreSQL | `docker-compose.db.yml` | 상태만 확인하고 변경하지 않음 |
 | 공유 네트워크 | `shookie_default` | DB Compose가 소유하고 앱 Compose는 external로 사용 |
 | DB 볼륨 | `shookie_pgdata` | DB Compose에서만 참조 |
 
 DB 서비스 이름과 네트워크 별칭은 계속 `db`다. 따라서 `shookie_default`에 연결된 Shookie와 Radar는 모두 기존 `db:5432` 주소를 사용한다. 기존 운영 리소스 이름인 `shookie-db-1`, `shookie_default`, `shookie_pgdata`도 유지된다.
 
-일반 배포는 DB 컨테이너가 실행 중이고 healthy인지 먼저 확인한 뒤 bot만 빌드하고 교체한다. DB가 없거나 unhealthy하면 DB를 자동 생성 또는 재시작하지 않고 배포를 중단한다. DB 시작, 업그레이드, 재시작, 복구는 별도 변경 창과 백업 승인을 거쳐 `docker-compose.db.yml`로만 수행한다.
+일반 배포는 DB 컨테이너가 실행 중이고 healthy인지 먼저 확인한 뒤 CI 이미지를 pull해 bot만 교체한다(서버에서 빌드하지 않는다). DB가 없거나 unhealthy하면 DB를 자동 생성 또는 재시작하지 않고 배포를 중단한다. DB 시작, 업그레이드, 재시작, 복구는 별도 변경 창과 백업 승인을 거쳐 `docker-compose.db.yml`로만 수행한다.
 
 ## 새 환경 초기화
 
@@ -24,7 +24,8 @@ docker compose -f docker-compose.db.yml config --quiet
 docker compose -f docker-compose.db.yml up -d
 docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie
 docker compose config --quiet
-docker compose up -d --no-deps bot
+# 이미지는 CI가 빌드한 SHA 태그를 지정한다 (docs/deployment.md). 서버에서 override 없이 up 하면 빌드가 시작된다.
+COMPOSE_FILE=docker-compose.yml:docker-compose.deploy.yml SHOOKIE_BOT_IMAGE=ghcr.io/yourssu/shookie:sha-<12자> docker compose up -d --no-build --no-deps bot
 ```
 
 실제 `POSTGRES_PASSWORD`는 승인된 secret 전달 경로에서 환경변수로 주입한다. 명령 인자, 셸 추적, 문서, 티켓, 로그에 값을 기록하지 않는다.
@@ -53,7 +54,7 @@ docker compose -f docker-compose.db.yml exec -T db pg_isready -U postgres -d sho
 test "$(docker inspect --format '{{.State.Running}}' "$(docker compose ps -q bot)")" = true
 ```
 
-ID와 `StartedAt`이 모두 같으면 앱 재배포 중 DB 컨테이너가 교체되거나 재시작되지 않은 것이다. workflow도 같은 검사를 수행하며 불일치하면 배포를 실패로 처리한다.
+ID와 `StartedAt`이 모두 같으면 앱 재배포 중 DB 컨테이너가 교체되거나 재시작되지 않은 것이다. workflow도 같은 검사를 성공/실패/자동 롤백 후 모두에서 수행하며 불일치하면 배포를 실패로 처리한다.
 
 ## Shookie와 Radar 연결 확인
 
@@ -70,7 +71,7 @@ docker exec <radar-container> getent hosts db
 ## 앱 롤백
 
 1. 실패한 배포 SHA, 직전 정상 SHA, 위의 DB ID와 `StartedAt`을 기록한다.
-2. `main`에 실패 변경을 revert하는 PR을 병합해 일반 배포 workflow를 다시 실행한다. 긴급 절차가 필요하면 승인된 운영자가 직전 정상 SHA를 체크아웃해 bot 이미지만 다시 빌드하고 `docker compose up -d --no-deps bot`으로 교체한다.
+2. 자동 롤백(교체 직전 bot 이미지로 복귀)이 동작하지 않았다면 Actions → **Deploy to EC2** → Run workflow에 `rollback_sha`(직전 정상 커밋 SHA)를 입력해 GHCR의 해당 이미지를 재배포한다. 또는 `main`에 실패 변경을 revert하는 PR을 병합한다. 서버에서 이미지를 빌드하지 않는다.
 3. 롤백 전후 DB ID와 `StartedAt`이 같은지 위 절차로 다시 비교한다.
 4. Shookie와 Radar의 `db` DNS, DB probe, 애플리케이션 핵심 health check를 확인한다.
 

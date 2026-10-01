@@ -76,13 +76,16 @@ yarn workspace shookie test     # 테스트
 
 - 사용자: `ubuntu`
 - 접속: `ssh -i <SSH_KEY_PATH> ubuntu@<EC2_HOST>` (값은 팀 내부 공유)
-- 배포: main push 시 GitHub Actions가 자동으로 `docker compose` 배포
+- 배포: main push 시 GitHub Actions가 arm64 이미지를 빌드해 GHCR에 푸시하고, EC2는 pull 후 bot만 `docker compose up -d --no-build --no-deps bot`으로 교체 (`docs/deployment.md`)
 
 ## 배포 파이프라인 신뢰성
 
-- `set -e`로 빌드 실패 시 silent success 차단
-- 동시 실행 race condition 방지용 `concurrency` 그룹
-- 매 배포 전 `docker builder prune -af` + `docker image prune -f`로 디스크 누적 방지
+- `set -eu`로 실패 시 silent success 차단, pull 성공 전에는 기존 컨테이너를 건드리지 않음
+- deploy job은 `cancel-in-progress: false` + EC2 `flock`으로 진행 중 배포 취소/동시 실행 방지, 오래된 SHA 재배포 방지
+- 서버에서 빌드/`docker compose down`/전역 `docker builder prune`·`image prune`을 하지 않음 (Radar와 Docker 호스트 공유). 이 저장소의 sha 태그만 성공 이력 기준 최근 3개 유지
+- bot 준비 확인(Socket Mode 시작 로그 + 재시작 없음)과 교체 전 rollback snapshot, 실패 시 자동 롤백
+- 공유 PostgreSQL은 배포 전후 ID/StartedAt/healthy/`pg_isready`만 확인하고 절대 변경하지 않음
+- 새 환경변수를 `docker-compose.yml`에 추가하면 `deploy.yml`의 `DEPLOY_*` env/envs/export에도 추가 (계약 테스트가 검사)
 - 컨테이너 로그는 `max-size: 50m, max-file: 5` 로 로테이션
 
 ## 브랜치명 규칙

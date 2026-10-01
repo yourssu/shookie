@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fake `docker buildx imagetools inspect --format '{{json .Image}}' <ref>` for verify-image-arch tests.
+[ -n "${MOCK_IMAGETOOLS_FAIL:-}" ] && { echo "mock registry error" >&2; exit 1; }
+printf '%s\n' "$MOCK_IMAGE_JSON"
