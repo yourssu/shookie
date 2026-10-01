@@ -5,6 +5,7 @@ import {
   getMentionGroupReplacementConfig,
   getSlackUserOAuthConfig,
   getSlackEventAttendanceConfig,
+  getMeetingReminderConfig,
 } from "./config.js";
 import { setLogLevel, logger } from "./logger.js";
 import { createAgent } from "./agent/index.js";
@@ -22,6 +23,7 @@ import {
 import { RadarMentionGroupCommandClient } from "./slack/mention-groups/command-client.js";
 import { registerAddMentionGroupCommand } from "./slack/mention-groups/add-command.js";
 import { registerUngroupMentionGroupCommand } from "./slack/mention-groups/ungroup-command.js";
+import { registerMeetingReminderScheduler } from "./slack/meeting-reminders.js";
 
 async function main() {
   // 1. 로깅 설정
@@ -31,9 +33,10 @@ async function main() {
   // 2. 사용자 OAuth 초기화 (멘션 그룹 원문 치환용)
   const userOAuthConfig = getSlackUserOAuthConfig();
   const eventAttendanceConfig = getSlackEventAttendanceConfig();
+  const meetingReminderConfig = getMeetingReminderConfig();
   const mentionGroupConfig = getMentionGroupReplacementConfig();
   const mentionGroupCommandConfig = getMentionGroupCommandConfig();
-  if (userOAuthConfig) {
+  if (userOAuthConfig || meetingReminderConfig) {
     const appliedMigrations = await runMigrations();
     if (appliedMigrations.length > 0) {
       logger.info("DB 마이그레이션 완료", { appliedMigrations });
@@ -101,6 +104,10 @@ async function main() {
     logger.info("Slack 행사 참석 반응 동기화 활성화", {
       reactionKinds: Object.keys(eventAttendanceConfig.reactionKinds).length,
     });
+  }
+  if (meetingReminderConfig) {
+    registerMeetingReminderScheduler(app, meetingReminderConfig);
+    logger.info("Radar 미팅 알림 활성화");
   }
 
   // 6. 시작
