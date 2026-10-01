@@ -1,4 +1,10 @@
 export { getPool, closePool } from "./pool.js";
+export {
+  claimMeetingReminder,
+  markMeetingReminderDelivered,
+  markMeetingReminderAcked,
+  releaseUndeliveredMeetingReminder,
+} from "./meeting-reminders.js";
 export { runMigrations } from "./migrate.js";
 export {
   logAgentCall,

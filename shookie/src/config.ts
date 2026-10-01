@@ -48,6 +48,10 @@ const envSchema = z.object({
     .max(10_000)
     .default(10_000),
 
+  // Radar meeting reminders (optional)
+  RADAR_MEETING_REMINDER_API_URL: z.string().default(""),
+  SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY: z.string().default(""),
+
   // Radar mention groups (optional)
   RADAR_MENTION_GROUPS_API_URL: z.string().default(""),
   SHOOKIE_MENTION_GROUPS_API_KEY: z.string().default(""),
@@ -93,6 +97,26 @@ const envSchema = z.object({
 });
 
 export const config = envSchema.parse(process.env);
+
+export function getMeetingReminderConfig() {
+  const apiUrl = config.RADAR_MEETING_REMINDER_API_URL.trim();
+  const apiKey = config.SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY.trim();
+  if (!apiUrl && !apiKey) return null;
+  if (!apiUrl || !apiKey) {
+    throw new Error("Meeting reminders require both RADAR_MEETING_REMINDER_API_URL and SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY");
+  }
+  let parsed: URL;
+  try { parsed = new URL(apiUrl); } catch {
+    throw new Error("RADAR_MEETING_REMINDER_API_URL must be an absolute URL");
+  }
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname))) {
+    throw new Error("RADAR_MEETING_REMINDER_API_URL must use HTTPS outside localhost");
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname.replace(/\/$/u, "") !== "/internal/v1/meeting-reminders") {
+    throw new Error("RADAR_MEETING_REMINDER_API_URL must target /internal/v1/meeting-reminders without credentials, query, or fragment");
+  }
+  return { apiUrl: parsed.toString().replace(/\/$/u, ""), apiKey, requestTimeoutMs: 10_000 };
+}
 
 export function getSlackUserOAuthConfig() {
   if (!config.SLACK_USER_OAUTH_ENABLED) return null;

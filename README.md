@@ -130,6 +130,8 @@ shookie/
 
 ## 로컬 개발
 
+팀·TF 회의 일정의 백엔드·프론트엔드·Shookie 기능별 확인과 전체 연결 절차는 [`docs/team-meeting-local-test.md`](docs/team-meeting-local-test.md)를 참고하세요.
+
 ```bash
 # 의존성 설치
 yarn install
@@ -210,6 +212,10 @@ Slack 앱 설정, 비밀값 분류, 로컬/수동 E2E, 기존 mention-bot 전환
 ### Slack 행사 참석 반응
 
 `SLACK_EVENT_ATTENDANCE_ENABLED=true`로 켜면 `shookie_attend`, `shookie_absent`, `shookie_afterparty` 반응을 Radar 내부 API로 전달합니다. 행사, 멤버 응답과 실제 참석 내역은 Radar가 저장하며, 이벤트별 Slack 연동이 켜져 있고 해당 메시지가 연결된 경우에만 반영됩니다. 설정은 [Slack 행사 참석 문서](docs/slack-event-attendance.md)를 참고하세요. 이모지 PNG는 [`shookie/assets/event-emojis/`](shookie/assets/event-emojis/)에 있습니다.
+
+### Radar 미팅 알림
+
+`RADAR_MEETING_REMINDER_API_URL`과 `SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY`를 모두 설정하면 60초마다 Radar의 pending due 알림만 조회해 해당 Slack 채널에 전송하고 ack합니다. 키는 Radar의 `RADAR_MEETING_REMINDER_INTERNAL_API_KEY`와 같아야 합니다. 전송된 occurrence는 Shookie PostgreSQL에 기록되므로 ack 재시도 시 Slack에 중복 게시하지 않습니다. 환경변수 예시는 `.env.example`을 참고하세요.
 
 ## 기술 스택
 
