@@ -6,6 +6,7 @@ import {
 } from "database";
 import type { App } from "@slack/bolt";
 import { logger } from "../logger.js";
+import type { MentionGroupCatalog } from "./mention-groups/types.js";
 
 export interface MeetingReminderConfig {
   apiUrl: string;
@@ -22,7 +23,12 @@ interface DueReminder {
   endsAt: string;
   isOnline: boolean;
   locationName?: string | null;
+  mentionGroupHandle: string | null;
   mentionUserIds: string[];
+}
+
+export interface MeetingReminderMentionGroupCatalogProvider {
+  getCatalog(): Promise<MentionGroupCatalog>;
 }
 
 function parseReminders(payload: unknown): DueReminder[] {
@@ -44,6 +50,7 @@ function parseReminders(payload: unknown): DueReminder[] {
     const endsAt = value.endsAt ?? value.endAt ?? value.ends_at;
     const isOnline = value.isOnline ?? value.is_online;
     const locationName = value.locationName ?? value.location_name ?? value.location;
+    const mentionGroupHandle = value.mentionGroupHandle ?? value.mention_group_handle ?? null;
     const mentionUserIds = value.mentionUserIds ?? value.mention_user_ids ?? [];
     if ([occurrenceId, channelId, affiliationName, meetingTitle, startsAt, endsAt].some((v) => typeof v !== "string" || !v.trim()) || typeof isOnline !== "boolean") {
       throw new Error("Radar returned a reminder with missing required fields");
@@ -51,20 +58,33 @@ function parseReminders(payload: unknown): DueReminder[] {
     if (!Array.isArray(mentionUserIds) || mentionUserIds.some((id) => typeof id !== "string" || !/^[UW][A-Z0-9]{1,20}$/u.test(id))) {
       throw new Error("Radar returned invalid meeting reminder mention members");
     }
+    if (mentionGroupHandle !== null && (typeof mentionGroupHandle !== "string" || !/^[a-z][a-z0-9_-]{1,31}$/u.test(mentionGroupHandle))) {
+      throw new Error("Radar returned an invalid meeting reminder mention group");
+    }
     if (!Number.isFinite(Date.parse(startsAt as string)) || !Number.isFinite(Date.parse(endsAt as string))) throw new Error("Radar returned an invalid reminder date");
     return { occurrenceId: occurrenceId as string, channelId: channelId as string, affiliationName: affiliationName as string,
       meetingTitle: meetingTitle as string, startsAt: startsAt as string, endsAt: endsAt as string, isOnline,
       locationName: typeof locationName === "string" ? locationName : null,
+      mentionGroupHandle: mentionGroupHandle as string | null,
       mentionUserIds: [...new Set(mentionUserIds as string[])] };
   });
 }
 
-function formatMessage(reminder: DueReminder): string {
+function resolveMentionUserIds(reminder: DueReminder, catalog?: MentionGroupCatalog | null): string[] {
+  const group = reminder.mentionGroupHandle ? catalog?.byHandle.get(reminder.mentionGroupHandle) : undefined;
+  const memberUserIds = group?.memberUserIds.length ? group.memberUserIds : reminder.mentionUserIds;
+  return [...new Set(memberUserIds)];
+}
+
+function formatMessage(reminder: DueReminder, catalog?: MentionGroupCatalog | null): string {
   const date = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).format(new Date(reminder.startsAt));
   const time = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(reminder.startsAt));
   const venue = reminder.isOnline ? "온라인" : `오프라인 · ${reminder.locationName?.trim() || "장소 미정"}`;
-  const mentions = reminder.mentionUserIds.map((userId) => `<@${userId}>`).join(" ");
-  return `${mentions ? `${mentions}\n` : ""}📅 *${reminder.affiliationName}* 미팅 알림\n*${reminder.meetingTitle}*\n${date} ${time} (KST)\n진행 방식: ${venue}`;
+  const mentions = resolveMentionUserIds(reminder, catalog).map((userId) => `<@${userId}>`).join(" ");
+  const groupLabel = reminder.mentionGroupHandle
+    ? `\`@${reminder.mentionGroupHandle}\`${mentions ? `(${mentions})` : ""}`
+    : mentions;
+  return `${groupLabel ? `${groupLabel}\n` : ""}📅 *${reminder.affiliationName}* 미팅 알림\n*${reminder.meetingTitle}*\n${date} ${time} (KST)\n진행 방식: ${venue}`;
 }
 
 async function request(config: MeetingReminderConfig, url: string, method = "GET"): Promise<Response> {
@@ -79,11 +99,22 @@ async function request(config: MeetingReminderConfig, url: string, method = "GET
 export async function pollMeetingRemindersOnce(
   app: App,
   config: MeetingReminderConfig,
+  mentionGroupCatalog?: MeetingReminderMentionGroupCatalogProvider,
 ): Promise<void> {
     try {
       const response = await request(config, `${config.apiUrl}/due`);
       if (!response.ok) throw new Error(`Radar due-reminders request failed (${response.status})`);
       const reminders = parseReminders(await response.json());
+      let catalog: MentionGroupCatalog | null = null;
+      if (mentionGroupCatalog && reminders.some((reminder) => reminder.mentionGroupHandle)) {
+        try {
+          catalog = await mentionGroupCatalog.getCatalog();
+        } catch (error) {
+          logger.warn("미팅 알림 멘션 그룹 조회 실패, Radar 응답 멤버를 사용합니다", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       for (const reminder of reminders) {
         try {
           const state = await claimMeetingReminder(reminder.occurrenceId, reminder.channelId);
@@ -92,10 +123,22 @@ export async function pollMeetingRemindersOnce(
               logger.warn("미팅 알림 claim은 있으나 게시 완료가 확인되지 않아 처리를 보류합니다", { occurrenceId: reminder.occurrenceId });
               continue;
             }
+            const mentionUserIds = resolveMentionUserIds(reminder, catalog);
+            if (reminder.mentionGroupHandle && mentionUserIds.length === 0) {
+              logger.warn("미팅 알림 멘션 그룹에 대상 멤버가 없습니다", {
+                occurrenceId: reminder.occurrenceId,
+                mentionGroupHandle: reminder.mentionGroupHandle,
+              });
+            } else if (!reminder.mentionGroupHandle && mentionUserIds.length === 0) {
+              logger.warn("미팅 알림에 연결된 Radar 멘션 그룹이 없습니다", {
+                occurrenceId: reminder.occurrenceId,
+                affiliationName: reminder.affiliationName,
+              });
+            }
             try {
               const sent = await app.client.chat.postMessage({
                 channel: reminder.channelId,
-                text: formatMessage(reminder),
+                text: formatMessage(reminder, catalog),
                 mrkdwn: true,
                 link_names: false,
               });
@@ -121,12 +164,13 @@ export async function pollMeetingRemindersOnce(
 export function registerMeetingReminderScheduler(
   app: App,
   config: MeetingReminderConfig,
+  mentionGroupCatalog?: MeetingReminderMentionGroupCatalogProvider,
 ): void {
   let running = false;
   const poll = async () => {
     if (running) return;
     running = true;
-    try { await pollMeetingRemindersOnce(app, config); }
+    try { await pollMeetingRemindersOnce(app, config, mentionGroupCatalog); }
     finally { running = false; }
   };
   const timer = setInterval(() => { void poll(); }, 60_000);

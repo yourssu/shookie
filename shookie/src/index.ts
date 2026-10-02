@@ -24,6 +24,7 @@ import { RadarMentionGroupCommandClient } from "./slack/mention-groups/command-c
 import { registerAddMentionGroupCommand } from "./slack/mention-groups/add-command.js";
 import { registerUngroupMentionGroupCommand } from "./slack/mention-groups/ungroup-command.js";
 import { registerMeetingReminderScheduler } from "./slack/meeting-reminders.js";
+import { RadarMentionGroupsClient } from "./slack/mention-groups/radar-client.js";
 
 async function main() {
   // 1. 로깅 설정
@@ -36,6 +37,9 @@ async function main() {
   const meetingReminderConfig = getMeetingReminderConfig();
   const mentionGroupConfig = getMentionGroupReplacementConfig();
   const mentionGroupCommandConfig = getMentionGroupCommandConfig();
+  const mentionGroupCatalog = mentionGroupConfig
+    ? new RadarMentionGroupsClient(mentionGroupConfig)
+    : undefined;
   if (userOAuthConfig || meetingReminderConfig) {
     const appliedMigrations = await runMigrations();
     if (appliedMigrations.length > 0) {
@@ -106,7 +110,7 @@ async function main() {
     });
   }
   if (meetingReminderConfig) {
-    registerMeetingReminderScheduler(app, meetingReminderConfig);
+    registerMeetingReminderScheduler(app, meetingReminderConfig, mentionGroupCatalog);
     logger.info("Radar 미팅 알림 활성화");
   }
 
