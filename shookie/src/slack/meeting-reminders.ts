@@ -22,6 +22,7 @@ interface DueReminder {
   endsAt: string;
   isOnline: boolean;
   locationName?: string | null;
+  mentionUserIds: string[];
 }
 
 function parseReminders(payload: unknown): DueReminder[] {
@@ -43,13 +44,18 @@ function parseReminders(payload: unknown): DueReminder[] {
     const endsAt = value.endsAt ?? value.endAt ?? value.ends_at;
     const isOnline = value.isOnline ?? value.is_online;
     const locationName = value.locationName ?? value.location_name ?? value.location;
+    const mentionUserIds = value.mentionUserIds ?? value.mention_user_ids ?? [];
     if ([occurrenceId, channelId, affiliationName, meetingTitle, startsAt, endsAt].some((v) => typeof v !== "string" || !v.trim()) || typeof isOnline !== "boolean") {
       throw new Error("Radar returned a reminder with missing required fields");
+    }
+    if (!Array.isArray(mentionUserIds) || mentionUserIds.some((id) => typeof id !== "string" || !/^[UW][A-Z0-9]{1,20}$/u.test(id))) {
+      throw new Error("Radar returned invalid meeting reminder mention members");
     }
     if (!Number.isFinite(Date.parse(startsAt as string)) || !Number.isFinite(Date.parse(endsAt as string))) throw new Error("Radar returned an invalid reminder date");
     return { occurrenceId: occurrenceId as string, channelId: channelId as string, affiliationName: affiliationName as string,
       meetingTitle: meetingTitle as string, startsAt: startsAt as string, endsAt: endsAt as string, isOnline,
-      locationName: typeof locationName === "string" ? locationName : null };
+      locationName: typeof locationName === "string" ? locationName : null,
+      mentionUserIds: [...new Set(mentionUserIds as string[])] };
   });
 }
 
@@ -57,7 +63,8 @@ function formatMessage(reminder: DueReminder): string {
   const date = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit", weekday: "short" }).format(new Date(reminder.startsAt));
   const time = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(reminder.startsAt));
   const venue = reminder.isOnline ? "온라인" : `오프라인 · ${reminder.locationName?.trim() || "장소 미정"}`;
-  return `📅 *${reminder.affiliationName}* 미팅 알림\n*${reminder.meetingTitle}*\n${date} ${time} (KST)\n진행 방식: ${venue}`;
+  const mentions = reminder.mentionUserIds.map((userId) => `<@${userId}>`).join(" ");
+  return `${mentions ? `${mentions}\n` : ""}📅 *${reminder.affiliationName}* 미팅 알림\n*${reminder.meetingTitle}*\n${date} ${time} (KST)\n진행 방식: ${venue}`;
 }
 
 async function request(config: MeetingReminderConfig, url: string, method = "GET"): Promise<Response> {
@@ -69,7 +76,10 @@ async function request(config: MeetingReminderConfig, url: string, method = "GET
   } finally { clearTimeout(timeout); }
 }
 
-export async function pollMeetingRemindersOnce(app: App, config: MeetingReminderConfig): Promise<void> {
+export async function pollMeetingRemindersOnce(
+  app: App,
+  config: MeetingReminderConfig,
+): Promise<void> {
     try {
       const response = await request(config, `${config.apiUrl}/due`);
       if (!response.ok) throw new Error(`Radar due-reminders request failed (${response.status})`);
@@ -108,7 +118,10 @@ export async function pollMeetingRemindersOnce(app: App, config: MeetingReminder
     }
 }
 
-export function registerMeetingReminderScheduler(app: App, config: MeetingReminderConfig): void {
+export function registerMeetingReminderScheduler(
+  app: App,
+  config: MeetingReminderConfig,
+): void {
   let running = false;
   const poll = async () => {
     if (running) return;
