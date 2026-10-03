@@ -1,4 +1,5 @@
 import { createGithubReadTool } from "../../../tools/code-explorer/github-read.js";
+import { createRepositoryTools } from "../../../tools/code-explorer/repository-tools.js";
 
 export interface CodeExplorerConfig {
   gitHubToken: string;
@@ -9,5 +10,5 @@ export interface CodeExplorerConfig {
   workspaceMaxGb: number;
 }
 export function createCodeExplorerTools(config: CodeExplorerConfig) {
-  return { github_read: createGithubReadTool(config) };
+  return { github_read: createGithubReadTool(config), ...createRepositoryTools(config) };
 }

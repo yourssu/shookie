@@ -150,7 +150,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
       ref: input.ref ?? null, path: input.path ?? null, page: input.page,
       // Advisory only: we never parse/follow Link URLs with credentials.
       hasNextPage: /rel="next"/.test(response.headers.get("link") ?? ""),
-      message: "GitHub 읽기 전용 조회입니다. 클론·파일 수정·push·PR 생성/병합/삭제는 현재 지원하지 않습니다.",
+      message: "GitHub API 읽기 전용 조회입니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. 파일 수정·push·PR 생성/병합/삭제는 지원하지 않습니다.",
     };
   };
   try { return await Promise.race([work(), deadline]); }
@@ -160,7 +160,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
 export function createGithubReadTool(config: ReadConfig) {
   return createTool({
     id: "github-read",
-    description: "설정된 조직/저장소의 목록·구조(tree)·파일·커밋 이력·PR·이슈를 읽기 전용으로 조회합니다. 명령 실행, 클론, 파일 수정, push, PR 생성/병합/삭제는 지원하지 않습니다. tree는 ref(브랜치 또는 commit SHA)가 필요합니다.",
+    description: "설정된 조직/저장소의 목록·구조(tree)·파일·커밋 이력·PR·이슈를 읽기 전용으로 조회합니다. 이 API 도구는 명령 실행, 클론, 파일 수정, push, PR 생성/병합/삭제를 수행하지 않습니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. tree는 ref(브랜치 또는 commit SHA)가 필요합니다.",
     inputSchema: readInput,
     execute: async (input, context) => {
       try { trustedActor(context?.requestContext); return await readGithub(config, input); }

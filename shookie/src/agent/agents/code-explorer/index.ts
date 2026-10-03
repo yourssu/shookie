@@ -9,6 +9,6 @@ export function createCodeExplorerAgent(model: any, config: CodeExplorerConfig):
     id: "code-explorer", name: "Code Explorer",
     instructions: buildCodeExplorerInstructions(config), description: codeExplorerDescription,
     model, tools: createCodeExplorerTools(config),
-    // Deliberately no Workspace: automatic file/edit tools are not authorized in Wave1.
+    // Deliberately no Workspace: only controlled snapshot reads; no automatic file/edit tools.
   });
 }
