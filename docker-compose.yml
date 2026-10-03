@@ -47,7 +47,7 @@ services:
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_MODEL: ${LLM_MODEL:-deepseek-flash}
-      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      EXA_API_KEY: ${EXA_API_KEY:-}
       POSTHOG_API_KEY: ${POSTHOG_API_KEY:-}
       GITHUB: ${GITHUB:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}

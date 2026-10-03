@@ -76,7 +76,7 @@ const envSchema = z.object({
   LLM_MODEL: z.string().default("deepseek-flash"),
 
   // Public web search (optional; URL reading needs no key)
-  BRAVE_SEARCH_API_KEY: z.string().default(""),
+  EXA_API_KEY: z.string().default(""),
 
   // PostHog (optional)
   POSTHOG_API_KEY: z.string().default(""),

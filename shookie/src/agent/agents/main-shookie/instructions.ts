@@ -96,7 +96,7 @@ export function buildMainShookieInstructions(capabilities: { toolKeys: string[];
 | PostHog Analyst | PostHog 도메인 분석 | ${capabilities.toolKeys.includes('posthog_agent') ? 'posthog_agent 등록됨' : '미등록: 사용 불가'} |
 | Code Explorer | 코드/저장소 탐색 위임 | ${capabilities.toolKeys.includes('code_explorer_agent') ? capabilities.codeExplorerDescription ?? 'code_explorer_agent 등록됨; 실제 도구 범위 확인 필요' : '미등록: 사용 불가'} |
 | 공개 웹 읽기 (메인 직접) | 공개 URL 본문 확인 | ${capabilities.toolKeys.includes('web_fetch') ? 'web_fetch 등록됨 (키 불필요)' : '미등록: 사용 불가'} |
-| 공개 웹 검색 (메인 직접) | 검색 스니펫 조회 | ${capabilities.toolKeys.includes('web_search') ? 'web_search 등록됨 (Brave)' : '미등록: BRAVE_SEARCH_API_KEY 설정 필요; 검색 불가. 결과를 꾸며내거나 스크래핑 대체 금지'} |
+| 공개 웹 검색 (메인 직접) | 검색 스니펫 조회 | ${capabilities.toolKeys.includes('web_search') ? 'web_search 등록됨 (Exa)' : '미등록: EXA_API_KEY 설정 필요; 검색 불가. 결과를 꾸며내거나 스크래핑 대체 금지'} |
 
 실제 등록된 메인 도구: ${capabilities.toolKeys.join(', ') || '없음'}
 클론·로컬 list/read/search는 Code Explorer의 실제 지원 설명에 있을 때만 가능하다. 파일 수정·명령 실행·push·PR 쓰기 권한은 없다.

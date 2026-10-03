@@ -12,9 +12,9 @@ import type { CloneTransport } from '../tools/code-explorer/repository-snapshots
 import { isolatedGitEnv, runBoundedProcess } from '../tools/code-explorer/git-process.js';
 
 const fixture = vi.hoisted(() => ({ source: '', home: '', transport: undefined as CloneTransport | undefined,
-  networkCalls: [] as {url:string;headers:Record<string,string>}[],
+  networkCalls: [] as {url:string;headers:Record<string,string>;method:string;body?:string}[],
   settings: { LLM_API_KEY:'synthetic-llm', LLM_BASE_URL:'https://api.deepseek.com', LLM_MODEL:'deepseek-flash', POSTHOG_API_KEY:'',
-    GITHUB:'synthetic-github', GITHUB_OWNER:'example', BRAVE_SEARCH_API_KEY:'synthetic-brave',
+    GITHUB:'synthetic-github', GITHUB_OWNER:'example', EXA_API_KEY:'synthetic-exa',
     MAX_TOOL_ITERATIONS:8, THREAD_WORKSPACE_BASE_PATH:'', THREAD_WORKSPACE_MAX_GB:1 },
 }));
 vi.mock('../config.js',()=>({config:fixture.settings}));
@@ -35,12 +35,12 @@ vi.mock('../tools/web/tools.js',async(importOriginal)=>{
   const original=await importOriginal<typeof import('../tools/web/tools.js')>();
   return {...original,createWebTools:(options:Parameters<typeof original.createWebTools>[0]={})=>original.createWebTools({...options,network:{
     resolver:async()=>[{address:'93.184.216.34',family:4}],
-    connector:async(url,_address,_signal,headers={})=>{
-      fixture.networkCalls.push({url:url.href,headers});
+    connector:async(url,_address,_signal,headers={},request)=>{
+      fixture.networkCalls.push({url:url.href,headers,method:request?.method??'GET',body:request?.body});
       const stream=new PassThrough();
       const response=stream as unknown as http.IncomingMessage;
-      response.statusCode=200;response.headers={'content-type':url.hostname==='api.search.brave.com'?'application/json':'text/plain'};
-      queueMicrotask(()=>stream.end(url.hostname==='api.search.brave.com'?JSON.stringify({web:{results:[{title:'Public source',url:'https://public-source.org/read',description:'Search snippet'}]}}):'Verified public fixture text\nSecond line'));
+      response.statusCode=200;response.headers={'content-type':url.hostname==='api.exa.ai'?'application/json':'text/plain'};
+      queueMicrotask(()=>stream.end(url.hostname==='api.exa.ai'?JSON.stringify({results:[{title:'Public source',url:'https://public-source.org/read',highlights:['Search snippet']}] }):'Verified public fixture text\nSecond line'));
       return response;
     },
   }})};
@@ -53,7 +53,7 @@ const git=(args:string[])=>runBoundedProcess('/usr/bin/git',args,{env:{...isolat
 beforeEach(async()=>{
   base=await mkdtemp(join(tmpdir(),'combined-web-clone-'));fixture.home=join(base,'home');fixture.source=join(base,'source');fixture.settings.THREAD_WORKSPACE_BASE_PATH=join(base,'workspace');
   await mkdir(fixture.home);await mkdir(fixture.source);await mkdir(fixture.settings.THREAD_WORKSPACE_BASE_PATH);
-  fixture.settings.BRAVE_SEARCH_API_KEY='synthetic-brave';fixture.networkCalls=[];
+  fixture.settings.EXA_API_KEY='synthetic-exa';fixture.networkCalls=[];
   await git(['init','--initial-branch=main','--',fixture.source]);
   await writeFile(join(fixture.source,'code.ts'),'hello combined needle\nsecond line\n');
   await git(['-C',fixture.source,'add','--all']);await git(['-C',fixture.source,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','local fixture']);
@@ -106,7 +106,7 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     expect(tools.code_explorer_agent!.description).toContain('통제된 bare clone');expect(tools.code_explorer_agent!.description).toContain('로컬 파일 목록·읽기·literal 검색');
     expect(instructions).toContain('파일 수정·명령 실행·push·PR 쓰기 권한은 없다');expect(instructions).toContain('공개 웹 검색, 공개 URL 읽기');
     expect(instructions).not.toContain('클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다');
-    fixture.settings.BRAVE_SEARCH_API_KEY='';const noKey=createAgent();
+    fixture.settings.EXA_API_KEY='';const noKey=createAgent();
     const noKeyTools=await noKey.listTools();
     expect(Object.keys(noKeyTools)).toEqual(['web_fetch','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('검색 불가');
     const fetched=await noKeyTools.web_fetch!.execute!({url:'https://public-source.org/read',maxChars:1000} as never,{} as never);
@@ -122,8 +122,11 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     expect(['channel','threadTs','userId','teamId'].map(key=>h.contexts[0].get(key))).toEqual(['C1','123.456','U1','T1']);
     expect(h.results[1].web).toMatchObject({ok:true,evidence:'fetched_text',text:'Verified public fixture text\nSecond line'});
     expect(h.results[1].search).toMatchObject({ok:true,evidence:'search_snippets',results:[expect.objectContaining({snippet:'Search snippet'})]});
-    expect(fixture.networkCalls.filter(call=>call.url.includes('api.search.brave.com'))[0].headers['X-Subscription-Token']).toBe('synthetic-brave');
-    expect(fixture.networkCalls.filter(call=>!call.url.includes('api.search.brave.com')).every(call=>!call.headers.Authorization&&!call.headers.Cookie&&!call.headers['X-Subscription-Token'])).toBe(true);
+    const searches=fixture.networkCalls.filter(call=>call.url==='https://api.exa.ai/search');
+    expect(searches).toHaveLength(2);
+    expect(searches[0]).toMatchObject({method:'POST',headers:{'x-api-key':'synthetic-exa','Content-Type':'application/json'}});
+    expect(JSON.parse(searches[0].body!)).toEqual({query:'combined source',numResults:1,type:'auto',contents:{highlights:{maxCharacters:2000}}});
+    expect(fixture.networkCalls.filter(call=>!call.url.includes('api.exa.ai')).every(call=>call.method==='GET'&&call.body===undefined&&!call.headers.Authorization&&!call.headers.Cookie&&!call.headers['x-api-key']&&!call.headers['Content-Type'])).toBe(true);
   });
   it('drops missing Slack actor and fails closed if delegated trusted actor is removed',async()=>{
     const h=await harness({dropActor:true});await h.deliver(null);expect(h.stream).not.toHaveBeenCalled();expect(h.generate).not.toHaveBeenCalled();
