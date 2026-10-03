@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { App } from "@slack/bolt";
 import type { Agent } from "@mastra/core/agent";
 import type { ConversationRepository, ConversationTurn } from "database";
@@ -16,6 +16,13 @@ vi.mock("database", () => ({
   startInvocation: vi.fn(), completeAgentCall: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn(),
 }));
 import { registerHandlers } from "./handlers.js";
+import { appendTaskUpdate, startPlanStream, stopStreamWithBlocks } from "./streaming.js";
+
+beforeEach(() => {
+  vi.mocked(startPlanStream).mockReset().mockRejectedValue(new Error("synthetic stream unavailable"));
+  vi.mocked(appendTaskUpdate).mockReset().mockResolvedValue(undefined);
+  vi.mocked(stopStreamWithBlocks).mockReset().mockResolvedValue(undefined);
+});
 
 type Delivery = { event: Record<string, unknown>; body: Record<string, unknown>; context: Record<string, unknown> };
 function harness() {
@@ -47,7 +54,7 @@ function harness() {
     event: { channel: "C1", ts: id, thread_ts: "root", user: "U1", text: "<@BOT> hello <@OTHER>" },
     body: { event_id: id, team_id: "T1" }, context: { botUserId: "BOT" }, ...changes,
   });
-  return { deliver, postMessage, repository, turns, events, stream };
+  return { deliver, postMessage, repository, turns, events, stream, client: app.client };
 }
 
 describe("actual Slack handler wiring", () => {
@@ -138,6 +145,72 @@ describe("actual Slack handler wiring", () => {
     expect(h.postMessage.mock.calls.slice(0, 2).every(call => !JSON.stringify(call).includes("SECRET"))).toBe(true);
     const calls = h.stream.mock.calls as unknown as [unknown][];
     expect(calls[1][0]).toEqual([{ role: "user", content: "hello <@OTHER>" }]);
+  });
+
+  it("opens a plan stream, sends matching task updates and finalizes only after durable save", async () => {
+    const h = harness();
+    const session = { channel: "C1", threadTs: "root", messageTs: "plan-stream" };
+    vi.mocked(startPlanStream).mockResolvedValueOnce(session);
+    const result = await h.stream();
+    h.stream.mockClear();
+    h.stream.mockResolvedValueOnce({ ...result, fullStream: new ReadableStream({ start(controller) {
+      controller.enqueue({ type: "tool-call", payload: { toolName: "posthog_agent", toolCallId: "task-1", args: { question: "synthetic" } } });
+      controller.enqueue({ type: "tool-result", payload: { toolName: "posthog_agent", toolCallId: "task-1", result: "synthetic result" } });
+      controller.close();
+    } }) });
+
+    await h.deliver("stream-success");
+    expect(startPlanStream).toHaveBeenCalledWith(h.client, "C1", "root", "T1", "U1");
+    expect(appendTaskUpdate).toHaveBeenCalledTimes(2);
+    expect(appendTaskUpdate).toHaveBeenNthCalledWith(1, session, h.client, {
+      id: "task-1", title: "🔍 PostHog 데이터 분석 중...", status: "in_progress", details: JSON.stringify({ question: "synthetic" }),
+    });
+    expect(appendTaskUpdate).toHaveBeenNthCalledWith(2, session, h.client, {
+      id: "task-1", title: "🔍 PostHog 데이터 분석 중...", status: "complete", output: "synthetic result",
+    });
+    expect(h.repository.complete).toHaveBeenCalledTimes(1);
+    expect(stopStreamWithBlocks).toHaveBeenCalledTimes(1);
+    expect(stopStreamWithBlocks).toHaveBeenCalledWith(session, h.client, expect.stringContaining("answer"), expect.arrayContaining([expect.any(Object)]));
+    expect(vi.mocked(h.repository.complete).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(stopStreamWithBlocks).mock.invocationCallOrder[0]);
+    expect(h.postMessage).not.toHaveBeenCalled();
+    expect(h.events.get("slack-event:stream-success")).toBe("completed");
+  });
+
+  it("falls back to one thread post when final stream stop fails, retaining the successful turn", async () => {
+    const h = harness();
+    const session = { channel: "C1", threadTs: "root", messageTs: "plan-stream" };
+    vi.mocked(startPlanStream).mockResolvedValueOnce(session);
+    vi.mocked(stopStreamWithBlocks).mockRejectedValueOnce(new Error("SECRET synthetic stop failure"));
+    await h.deliver("stop-fallback");
+    expect(stopStreamWithBlocks).toHaveBeenCalledTimes(1);
+    expect(h.postMessage).toHaveBeenCalledTimes(1);
+    expect(h.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: "C1", thread_ts: "root", text: expect.stringContaining("answer"), blocks: expect.any(Array) }));
+    expect(h.repository.complete).toHaveBeenCalledTimes(1);
+    expect(h.events.get("slack-event:stop-fallback")).toBe("completed");
+    expect(JSON.stringify(h.postMessage.mock.calls)).not.toContain("SECRET");
+    await h.deliver("stop-fallback");
+    expect(startPlanStream).toHaveBeenCalledTimes(1);
+    expect(h.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates an opened stream kindly after persistence failure without saving or caching the failed turn", async () => {
+    const h = harness();
+    const session = { channel: "C1", threadTs: "root", messageTs: "plan-stream" };
+    vi.mocked(startPlanStream).mockResolvedValueOnce(session);
+    vi.mocked(h.repository.complete).mockRejectedValueOnce(new Error("SECRET synthetic persistence failure"));
+    await h.deliver("stream-save-failure");
+    expect(stopStreamWithBlocks).toHaveBeenCalledExactlyOnceWith(session, h.client, "요청을 완료하지 못했습니다.", []);
+    expect(h.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ channel: "C1", thread_ts: "root", text: "대화를 안전하게 처리하지 못했습니다. 잠시 후 새 메시지로 다시 시도해주세요." }));
+    expect(h.turns.size).toBe(0);
+    expect(h.events.get("slack-event:stream-save-failure")).toBe("failed");
+    expect(JSON.stringify(vi.mocked(stopStreamWithBlocks).mock.calls)).not.toContain("answer");
+    expect(JSON.stringify(h.postMessage.mock.calls)).not.toContain("SECRET");
+
+    await h.deliver("next-after-save-failure");
+    const calls = h.stream.mock.calls as unknown as [unknown][];
+    expect(calls[1][0]).toEqual([{ role: "user", content: "hello <@OTHER>" }]);
+    expect(h.repository.recent).toHaveBeenCalledTimes(2); // failure invalidates the cache and rehydrates
+    expect([...h.turns.values()].flat()).toEqual([{ userContent: "hello <@OTHER>", assistantContent: "answer" }]);
   });
 
   it("does not persist partial text when the native stream emits an error", async () => {
