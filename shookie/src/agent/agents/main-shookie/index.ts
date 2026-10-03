@@ -11,7 +11,15 @@ export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExp
   return new Agent({
     id: "main-shookie",
     name: "슈키(shookie)",
-    instructions: () => buildMainShookieInstructions({ toolKeys: Object.keys(tools), codeExplorerDescription: subAgents.codeExplorer?.getDescription?.() }),
+    instructions: async () => {
+      const explorer = subAgents.codeExplorer;
+      const explorerTools = explorer?.listTools ? Object.keys(await explorer.listTools()) : [];
+      const description = explorer?.getDescription?.();
+      return buildMainShookieInstructions({
+        toolKeys: Object.keys(tools),
+        codeExplorerDescription: explorer ? `${description ?? '등록된 읽기 도구; 상세 범위는 도구 결과로 확인'} 실제 도구: ${explorerTools.join(', ') || '확인 불가'}` : undefined,
+      });
+    },
     description: mainShookieDescription,
     model,
     tools,
