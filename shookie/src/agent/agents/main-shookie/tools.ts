@@ -2,6 +2,7 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import type { Agent } from "@mastra/core/agent";
 import type { RequestContext } from "@mastra/core/request-context";
+import { createWebTools } from "../../../tools/web/tools.js";
 import { logger } from "../../../logger.js";
 import { getCurrentContext } from "../../invocation-context.js";
 import {
@@ -113,8 +114,8 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
 export function createMainShookieTools(subAgents: {
   posthog?: Agent;
   codeExplorer?: Agent;
-}) {
-  const tools: Record<string, ReturnType<typeof createTool>> = {};
+}, webOptions: Parameters<typeof createWebTools>[0] = {}) {
+  const tools: Record<string, ReturnType<typeof createTool>> = { ...createWebTools(webOptions) };
 
   if (subAgents.posthog) {
     const posthogAgent = subAgents.posthog;
@@ -145,9 +146,8 @@ export function createMainShookieTools(subAgents: {
     tools.code_explorer_agent = createTool({
       id: "code-explorer-agent",
       description:
-        "GitHub 읽기 전용 코드 탐색 서브 에이전트에게 작업을 위임합니다. " +
-        "저장소·구조·파일·커밋 이력·PR·이슈 조회에 사용합니다. 클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다. " +
-        "코드, 리포지토리, PR, 커밋, 브랜치 관련 질문은 반드시 이 에이전트에 위임하세요.",
+        "코드 탐색은 이 서브 에이전트에 위임합니다. 실제 지원 범위: " + (codeExplorerAgent.getDescription?.() ?? "등록된 읽기 도구를 사용합니다. 상세 지원 범위는 도구 결과로 확인하세요.") +
+        " 파일 수정·명령 실행·push·PR 생성/병합/삭제 권한은 없습니다.",
       inputSchema: z.object({
         task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),
       }),
