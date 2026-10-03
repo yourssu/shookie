@@ -3,6 +3,8 @@ export const soongptPostHogProjectId = "308417";
 export const soongptPostHogKnowledge = `
 ## Soongpt (숭피티) 프로젝트 지식
 
+현재 서비스/이벤트/지표에 대한 검증된 도메인 명세가 등록되어 있지 않다. 다른 프로젝트의 정의를 적용하거나 누락된 지식을 추측하지 말고 사용자에게 확인한다.
+
 ### 서비스 개요
 <!-- 서비스 설명을 작성하세요 -->
 
