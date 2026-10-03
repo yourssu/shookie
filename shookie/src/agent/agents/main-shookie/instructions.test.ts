@@ -55,6 +55,10 @@ describe("main-shookie agent instructions", () => {
     expect(instructions).toContain("7.1 도메인 지식 업데이트 워크플로우");
     // 핵심 트리거 키워드 포함 확인
     expect(instructions).toMatch(/기억해줘|저장해줘/);
+    expect(instructions).toContain("변경 제안");
+    expect(instructions).toContain("실제 저장/적용은 수행하지 않았음");
+    expect(instructions).not.toContain("업데이트하고 PR 생성해줘");
+    expect(instructions).not.toContain("반환한 PR URL");
   });
 
   it("includes current timestamp", () => {

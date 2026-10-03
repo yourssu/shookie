@@ -145,8 +145,8 @@ export function createMainShookieTools(subAgents: {
     tools.code_explorer_agent = createTool({
       id: "code-explorer-agent",
       description:
-        "GitHub 리포지토리 코드 탐색 및 PR 생성을 담당하는 서브 에이전트에게 작업을 위임합니다. " +
-        "코드 분석, 파일 수정, PR 생성, git/gh CLI 작업, 리포지토리 구조 파악에 사용합니다. " +
+        "GitHub 읽기 전용 코드 탐색 서브 에이전트에게 작업을 위임합니다. " +
+        "저장소·구조·파일·커밋 이력·PR·이슈 조회에 사용합니다. 클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다. " +
         "코드, 리포지토리, PR, 커밋, 브랜치 관련 질문은 반드시 이 에이전트에 위임하세요.",
       inputSchema: z.object({
         task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),
