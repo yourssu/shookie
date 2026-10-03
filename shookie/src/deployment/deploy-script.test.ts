@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  cleanupCommands,
   deployScript,
   executable,
   existsSync,
@@ -9,19 +10,20 @@ import {
   readdirSync,
   rmSync,
   runBash,
+  runCommand,
   writeFileSync,
   type RunResult,
 } from "./test-helpers.js";
 import path from "node:path";
 import { chmodSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 
 /**
  * Runs the real remote deploy script from the workflow against fake docker/git/flock/sleep binaries
  * (src/deployment/mocks) to verify success and failure flows end to end, including the shared
  * PostgreSQL checks. State of the fake host lives in <sandbox>/state.
  */
-describe("EC2 deploy script (mock docker)", () => {
+// Multi-step history/rollback fixtures can exceed 5s; each child is independently bounded at 15s.
+describe("EC2 deploy script (mock docker)", { timeout: 30_000 }, () => {
   let sandbox: string;
   let state: string;
   let script: string;
@@ -40,11 +42,12 @@ describe("EC2 deploy script (mock docker)", () => {
     writeFileSync(script, deployScript().replaceAll("/home/ubuntu", path.join(sandbox, "home")));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await cleanupCommands();
     rmSync(sandbox, { recursive: true, force: true });
   });
 
-  function run(extra: Record<string, string> = {}): RunResult {
+  function run(extra: Record<string, string> = {}): Promise<RunResult> {
     return runBash(script, {
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       HOME: path.join(sandbox, "home"),
@@ -103,7 +106,7 @@ describe("EC2 deploy script (mock docker)", () => {
 
   // --- scenarios -----------------------------------------------------------------------------
 
-  it("successful deploy pulls first, replaces only the bot, publishes a snapshot and prunes the older one", () => {
+  it("successful deploy pulls first, replaces only the bot, publishes a snapshot and prunes the older one", async () => {
     healthyCurrentBot();
     tag("shookie-rollback/bot:s-old", "sha256:ancientbot");
     writeFileSync(path.join(sandbox, "home/.shookie-rollback-snapshot"), "s-old\n");
@@ -118,7 +121,7 @@ describe("EC2 deploy script (mock docker)", () => {
     tag("ghcr.io/yourssu/radar-backend:sha-000000000001", "sha256:radar");
     tag("ghcr.io/yourssu/shookie-other:sha-000000000001", "sha256:other");
 
-    const result = run();
+    const result = await run();
 
     expect(result.status, result.output).toBe(0);
     const id = pointer()!;
@@ -158,7 +161,7 @@ describe("EC2 deploy script (mock docker)", () => {
       return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : [];
     };
 
-    it("repeated deploys of the same SHA never push earlier distinct successes out of the kept three", () => {
+    it("repeated deploys of the same SHA never push earlier distinct successes out of the kept three", async () => {
       for (const sha of [A, B, C, D]) tag(image(sha), `sha256:${sha}`);
       tag("ghcr.io/yourssu/radar-backend:sha-eeeeeeeeeeee", "sha256:radar");
       tag("ghcr.io/yourssu/shookie-other:sha-eeeeeeeeeeee", "sha256:other");
@@ -168,7 +171,7 @@ describe("EC2 deploy script (mock docker)", () => {
         [image(A), image(B), ...Array.from({ length: 30 }, () => image(C))].map((l) => `${l}\n`).join(""),
       );
 
-      const result = run({ IMAGE_TAG: `sha-${C}` });
+      const result = await run({ IMAGE_TAG: `sha-${C}` });
 
       expect(result.status, result.output).toBe(0);
       // Deduplicated, ordered by last success, bounded; A and B are still among the last three distinct successes.
@@ -180,22 +183,22 @@ describe("EC2 deploy script (mock docker)", () => {
       expect(tagId("ghcr.io/yourssu/shookie-other:sha-eeeeeeeeeeee")).not.toBeNull();
     });
 
-    it("the history stays bounded and ordered by last success across many repeated runs", () => {
+    it("the history stays bounded and ordered by last success across many repeated runs", async () => {
       writeFileSync(
         path.join(sandbox, "home/.shookie-deploy-history"),
         Array.from({ length: 25 }, (_, i) => `${repo}:sha-${String(i).padStart(12, "0")}\n`).join(""),
       );
-      for (let i = 0; i < 3; i++) expect(run({ IMAGE_TAG: `sha-${A}` }).status).toBe(0);
+      for (let i = 0; i < 3; i++) expect((await run({ IMAGE_TAG: `sha-${A}` })).status).toBe(0);
       const lines = history();
       expect(lines).toHaveLength(20);
       expect(lines.at(-1)).toBe(image(A));
       expect(new Set(lines).size).toBe(lines.length);
     });
 
-    it("follows deploy and rollback order: A, B, C, rollback to A, then D keeps C, A, D", () => {
+    it("follows deploy and rollback order: A, B, C, rollback to A, then D keeps C, A, D", async () => {
       for (const sha of [A, B, C, A, D]) {
         tag(image(sha), `sha256:${sha}`); // what `docker pull` does for this deploy
-        const result = run({ IMAGE_TAG: `sha-${sha}` });
+        const result = await run({ IMAGE_TAG: `sha-${sha}` });
         expect(result.status, `${sha}: ${result.output}`).toBe(0);
       }
       expect(history()).toEqual([image(B), image(C), image(A), image(D)]);
@@ -212,7 +215,7 @@ describe("EC2 deploy script (mock docker)", () => {
         writeFileSync(historyPath(), original);
       };
       const shim = (name: string, body: string) => writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
-      const realPath = (name: string) => spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
+      const realPath = async (name: string) => (await runCommand("bash", ["-c", `command -v ${name}`])).stdout.trim();
       const shaRmi = () => dockerLog().split("\n").filter((l) => l.startsWith("docker rmi") && l.includes("ghcr.io/yourssu/shookie:sha-"));
 
       /** The deploy itself succeeded: cleanup is skipped (preserve over delete) and the old history is untouched. */
@@ -227,23 +230,23 @@ describe("EC2 deploy script (mock docker)", () => {
       };
 
       for (const tool of ["awk", "sort", "cut"]) {
-        it(`a failing ${tool} while generating the new history skips cleanup and keeps the old history`, () => {
+        it(`a failing ${tool} while generating the new history skips cleanup and keeps the old history`, async () => {
           seed();
           shim(tool, "echo 'mock generation failure' >&2; exit 1");
-          expectCleanupSkipped(run());
+          expectCleanupSkipped(await run());
         });
       }
 
-      it("a failed publish (rename) skips cleanup and keeps the old history", () => {
+      it("a failed publish (rename) skips cleanup and keeps the old history", async () => {
         seed();
-        shim("mv", `case "\${@: -1}" in *.shookie-deploy-history) echo 'mock publish failure' >&2; exit 1;; esac\nexec ${realPath("mv")} "$@"`);
-        expectCleanupSkipped(run());
+        shim("mv", `case "\${@: -1}" in *.shookie-deploy-history) echo 'mock publish failure' >&2; exit 1;; esac\nexec ${await realPath("mv")} "$@"`);
+        expectCleanupSkipped(await run());
       });
 
-      it("a blocked temporary history path skips cleanup and keeps the old history", () => {
+      it("a blocked temporary history path skips cleanup and keeps the old history", async () => {
         seed();
         mkdirSync(`${historyPath()}.new`);
-        const result = run();
+        const result = await run();
         rmSync(`${historyPath()}.new`, { recursive: true });
         expect(result.status, result.output).toBe(0);
         expect(result.output).toContain("could not update the deploy history");
@@ -251,10 +254,10 @@ describe("EC2 deploy script (mock docker)", () => {
         expect(readFileSync(historyPath(), "utf8")).toBe(original);
       });
 
-      it.skipIf(process.getuid?.() === 0)("a read-only history file is replaced atomically, recording the new success before any cleanup", () => {
+      it.skipIf(process.getuid?.() === 0)("a read-only history file is replaced atomically, recording the new success before any cleanup", async () => {
         seed();
         chmodSync(historyPath(), 0o444);
-        const result = run();
+        const result = await run();
         expect(result.status, result.output).toBe(0);
         // The history is rebuilt in a new file and renamed into place, so a read-only old file does not matter:
         // the new success is recorded, and only then is cleanup done against the last three (B, C, new).
@@ -264,19 +267,19 @@ describe("EC2 deploy script (mock docker)", () => {
       });
     });
 
-    it("a failed deploy does not enter the history and its pulled image is dropped after a successful rollback", () => {
+    it("a failed deploy does not enter the history and its pulled image is dropped after a successful rollback", async () => {
       healthyCurrentBot();
       tag(image(A), "sha256:a");
       writeFileSync(path.join(sandbox, "home/.shookie-deploy-history"), `${image(A)}\n`);
-      const result = run({ IMAGE_TAG: "sha-noready000000" });
+      const result = await run({ IMAGE_TAG: "sha-noready000000" });
       expect(result.status).not.toBe(0);
       expect(history()).toEqual([image(A)]);
       expect(tagId(image(A))).not.toBeNull();
     });
   });
 
-  it("uses only the compose override for the bot and keeps runtime configuration", () => {
-    const result = run({ DEPLOY_SLACK_USER_OAUTH_PORT: "3000", DEPLOY_SLACK_BOT_TOKEN: "xoxb-1", DEPLOY_POSTGRES_PASSWORD: "pg" });
+  it("uses only the compose override for the bot and keeps runtime configuration", async () => {
+    const result = await run({ DEPLOY_SLACK_USER_OAUTH_PORT: "3000", DEPLOY_SLACK_BOT_TOKEN: "xoxb-1", DEPLOY_POSTGRES_PASSWORD: "pg" });
     expect(result.status, result.output).toBe(0);
     const env = read("up_env_1")!;
     expect(env).toContain("COMPOSE_FILE=docker-compose.yml:docker-compose.deploy.yml");
@@ -291,9 +294,9 @@ describe("EC2 deploy script (mock docker)", () => {
     expect(env).toContain("SLACK_USER_OAUTH_PORT=3000");
   });
 
-  it("failed pull leaves the running bot, snapshots and DB untouched", () => {
+  it("failed pull leaves the running bot, snapshots and DB untouched", async () => {
     healthyCurrentBot();
-    const result = run({ MOCK_PULL_FAIL: "1" });
+    const result = await run({ MOCK_PULL_FAIL: "1" });
     expect(result.status).not.toBe(0);
     expect(ups()).toEqual([]);
     expect(pointer()).toBeNull();
@@ -302,9 +305,9 @@ describe("EC2 deploy script (mock docker)", () => {
     expectNoForbiddenDockerCommands();
   });
 
-  it("docker inspect failure aborts before replacement", () => {
+  it("docker inspect failure aborts before replacement", async () => {
     healthyCurrentBot();
-    const result = run({ MOCK_INSPECT_FAIL: "1" });
+    const result = await run({ MOCK_INSPECT_FAIL: "1" });
     expect(result.status).not.toBe(0);
     expect(ups()).toEqual([]);
     expect(botImage()).toBe("sha256:oldbot");
@@ -314,12 +317,12 @@ describe("EC2 deploy script (mock docker)", () => {
   // Only the bot's state inspect fails (DB inspects and the pre-checks keep working), so the snapshot branch itself
   // must tell "could not read the state" apart from "state read, bot is unstable".
   for (const nth of ["1", "2"]) {
-    it(`bot state inspect failing on sample ${nth} aborts before replacement and keeps the previous snapshot`, () => {
+    it(`bot state inspect failing on sample ${nth} aborts before replacement and keeps the previous snapshot`, async () => {
       healthyCurrentBot();
       tag("shookie-rollback/bot:s-old", "sha256:ancientbot");
       writeFileSync(path.join(sandbox, "home/.shookie-rollback-snapshot"), "s-old\n");
 
-      const result = run({ MOCK_BOT_STATE_FAIL_NTH: nth });
+      const result = await run({ MOCK_BOT_STATE_FAIL_NTH: nth });
 
       expect(result.status, result.output).not.toBe(0);
       expect(result.output).toContain("could not inspect the current bot state");
@@ -337,21 +340,21 @@ describe("EC2 deploy script (mock docker)", () => {
     });
   }
 
-  it("a bot state inspect failure while waiting for the new bot is not-ready and rolls back", () => {
+  it("a bot state inspect failure while waiting for the new bot is not-ready and rolls back", async () => {
     healthyCurrentBot();
     // Samples 1 and 2 belong to the snapshot stability check; sample 3 is the first readiness check of the new bot.
-    const result = run({ MOCK_BOT_STATE_FAIL_NTH: "3" });
+    const result = await run({ MOCK_BOT_STATE_FAIL_NTH: "3" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("did not become ready");
     expect(result.output).toContain("Rollback succeeded");
     expect(botImage()).toBe("sha256:oldbot");
   });
 
-  it("snapshot tag failure aborts before replacement and keeps the previous snapshot", () => {
+  it("snapshot tag failure aborts before replacement and keeps the previous snapshot", async () => {
     healthyCurrentBot();
     tag("shookie-rollback/bot:s-old", "sha256:ancientbot");
     writeFileSync(path.join(sandbox, "home/.shookie-rollback-snapshot"), "s-old\n");
-    const result = run({ MOCK_TAG_FAIL: "1" });
+    const result = await run({ MOCK_TAG_FAIL: "1" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("could not tag the bot snapshot");
     expect(ups()).toEqual([]);
@@ -360,19 +363,19 @@ describe("EC2 deploy script (mock docker)", () => {
     expect(tagId("shookie-rollback/bot:s-old")).toBe("sha256:ancientbot");
   });
 
-  it("unresolvable current image aborts before replacement", () => {
+  it("unresolvable current image aborts before replacement", async () => {
     // The container references an image id the daemon no longer knows (not a sha256:/id: pseudo id).
     container("dangling-unknown");
-    const result = run();
+    const result = await run();
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("could not resolve the bot image");
     expect(ups()).toEqual([]);
     expect(pointer()).toBeNull();
   });
 
-  it("failed replacement restores the bot from the snapshot and the deploy still fails", () => {
+  it("failed replacement restores the bot from the snapshot and the deploy still fails", async () => {
     healthyCurrentBot();
-    const result = run({ MOCK_UP_FAIL_FIRST: "1" });
+    const result = await run({ MOCK_UP_FAIL_FIRST: "1" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("Rolling back to rollback snapshot");
     expect(result.output).toContain("Rollback succeeded");
@@ -390,9 +393,9 @@ describe("EC2 deploy script (mock docker)", () => {
     ["crash loops", "sha-crashloop0000"],
     ["restarts right after it reports ready", "sha-flap00000000"],
   ] as const) {
-    it(`a new bot that ${name} is rolled back and the deploy fails`, () => {
+    it(`a new bot that ${name} is rolled back and the deploy fails`, async () => {
       healthyCurrentBot();
-      const result = run({ IMAGE_TAG: imageTag });
+      const result = await run({ IMAGE_TAG: imageTag });
       expect(result.status).not.toBe(0);
       expect(result.output).toContain("did not become ready");
       expect(result.output).toContain("Rollback succeeded");
@@ -403,43 +406,43 @@ describe("EC2 deploy script (mock docker)", () => {
     });
   }
 
-  it("a rollback that does not become ready is reported and the deploy fails", () => {
+  it("a rollback that does not become ready is reported and the deploy fails", async () => {
     healthyCurrentBot("sha256:oldbot-noready");
     // Old snapshot image itself will not report ready either.
-    const result = run({ IMAGE_TAG: "sha-noready000000" });
+    const result = await run({ IMAGE_TAG: "sha-noready000000" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("Rollback did not become ready; manual intervention required");
   });
 
-  it("first conversion from a locally built image preserves and restores it by image ID", () => {
+  it("first conversion from a locally built image preserves and restores it by image ID", async () => {
     container("sha256:localbot", "shookie-bot");
-    const result = run({ IMAGE_TAG: "sha-noready000000" });
+    const result = await run({ IMAGE_TAG: "sha-noready000000" });
     expect(result.status).not.toBe(0);
     const id = pointer()!;
     expect(tagId(`shookie-rollback/bot:${id}`)).toBe("sha256:localbot");
     expect(botImage()).toBe("sha256:localbot");
   });
 
-  it("first ever deploy has no snapshot, and a failing first deploy has nothing to roll back to", () => {
-    const ok = run();
+  it("first ever deploy has no snapshot, and a failing first deploy has nothing to roll back to", async () => {
+    const ok = await run();
     expect(ok.status, ok.output).toBe(0);
     expect(ok.output).toContain("first deploy");
     expect(pointer()).toBeNull();
 
     rmSync(state, { recursive: true, force: true });
     mkdirSync(state, { recursive: true });
-    const failed = run({ IMAGE_TAG: "sha-noready000000" });
+    const failed = await run({ IMAGE_TAG: "sha-noready000000" });
     expect(failed.status).not.toBe(0);
     expect(failed.output).toContain("No rollback snapshot available");
     expect(ups()).toHaveLength(1);
   });
 
-  it("an already crash-looping bot is replaced without a snapshot and stale snapshots are never used", () => {
+  it("an already crash-looping bot is replaced without a snapshot and stale snapshots are never used", async () => {
     container("sha256:crashloopbot");
     tag("shookie-rollback/bot:s-old", "sha256:ancientbot");
     writeFileSync(path.join(sandbox, "home/.shookie-rollback-snapshot"), "s-old\n");
 
-    const ok = run();
+    const ok = await run();
     expect(ok.status, ok.output).toBe(0);
     expect(ok.output).toContain("not running stably");
     expect(pointer()).toBe("s-old");
@@ -447,7 +450,7 @@ describe("EC2 deploy script (mock docker)", () => {
 
     container("sha256:crashloopbot");
     rmSync(path.join(state, "ups"));
-    const failed = run({ IMAGE_TAG: "sha-noready000000" });
+    const failed = await run({ IMAGE_TAG: "sha-noready000000" });
     expect(failed.status).not.toBe(0);
     expect(failed.output).toContain("No rollback snapshot available");
     expect(ups()).toHaveLength(1);
@@ -455,7 +458,7 @@ describe("EC2 deploy script (mock docker)", () => {
 
   // --- shared PostgreSQL ------------------------------------------------------------------------
 
-  it("aborts before pulling when the shared DB container is missing, unhealthy, or not accepting connections", () => {
+  it("aborts before pulling when the shared DB container is missing, unhealthy, or not accepting connections", async () => {
     healthyCurrentBot();
     for (const [flag, message] of [
       ["MOCK_DB_MISSING", "not running"],
@@ -465,7 +468,7 @@ describe("EC2 deploy script (mock docker)", () => {
       rmSync(state, { recursive: true, force: true });
       mkdirSync(state, { recursive: true });
       healthyCurrentBot();
-      const result = run({ [flag]: "1" });
+      const result = await run({ [flag]: "1" });
       expect(result.status, flag).not.toBe(0);
       expect(result.output).toContain(message);
       expect(dockerLog(), flag).not.toContain("docker pull");
@@ -473,9 +476,9 @@ describe("EC2 deploy script (mock docker)", () => {
     }
   });
 
-  it("fails the deploy when the shared DB identity changes during the deploy and keeps the success record unwritten", () => {
+  it("fails the deploy when the shared DB identity changes during the deploy and keeps the success record unwritten", async () => {
     healthyCurrentBot();
-    const result = run({ MOCK_DB_BOUNCE_ON_UP: "1" });
+    const result = await run({ MOCK_DB_BOUNCE_ON_UP: "1" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("Shared PostgreSQL identity or start time changed");
     expect(existsSync(path.join(sandbox, "home/.shookie-deploy-state"))).toBe(false);
@@ -483,16 +486,16 @@ describe("EC2 deploy script (mock docker)", () => {
     expectNoForbiddenDockerCommands();
   });
 
-  it("still checks the shared DB after a failed deploy and rollback", () => {
+  it("still checks the shared DB after a failed deploy and rollback", async () => {
     healthyCurrentBot();
-    const result = run({ IMAGE_TAG: "sha-noready000000", MOCK_DB_BOUNCE_ON_UP: "1" });
+    const result = await run({ IMAGE_TAG: "sha-noready000000", MOCK_DB_BOUNCE_ON_UP: "1" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("Rollback succeeded");
     expect(result.output).toContain("Shared PostgreSQL identity or start time changed");
   });
 
-  it("checks DB identity, health and pg_isready both before and after a successful deploy", () => {
-    const result = run();
+  it("checks DB identity, health and pg_isready both before and after a successful deploy", async () => {
+    const result = await run();
     expect(result.status, result.output).toBe(0);
     const log = dockerLog().split("\n");
     const execs = log.filter((l) => l.includes("-f docker-compose.db.yml exec -T db pg_isready -U postgres -d shookie"));
@@ -503,16 +506,16 @@ describe("EC2 deploy script (mock docker)", () => {
 
   // --- host hygiene / secrets ---------------------------------------------------------------------
 
-  it("refuses to run while another deploy holds the lock", () => {
+  it("refuses to run while another deploy holds the lock", async () => {
     healthyCurrentBot();
-    const result = run({ MOCK_FLOCK_BUSY: "1" });
+    const result = await run({ MOCK_FLOCK_BUSY: "1" });
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("Another deploy is already running");
     expect(dockerLog()).toBe("");
   });
 
-  it("removes the temporary docker auth dir and git askpass helper, and logs in only into the temporary config", () => {
-    const result = run();
+  it("removes the temporary docker auth dir and git askpass helper, and logs in only into the temporary config", async () => {
+    const result = await run();
     expect(result.status, result.output).toBe(0);
     const loginConfig = read("login_env")!.replace("docker-config=", "");
     expect(loginConfig).not.toBe("unset");
@@ -521,7 +524,7 @@ describe("EC2 deploy script (mock docker)", () => {
     expect(readdirSync(path.join(sandbox, "home")).filter((f) => f.startsWith(".shookie-git-askpass."))).toEqual([]);
   });
 
-  it("secret values with shell metacharacters reach compose literally and are never executed", () => {
+  it("secret values with shell metacharacters reach compose literally and are never executed", async () => {
     const canary = path.join(sandbox, "pwned");
     const hostile: Record<string, string> = {
       DEPLOY_POSTGRES_PASSWORD: `pa$$ w'o"rd; touch ${canary}-1 #`,
@@ -531,7 +534,7 @@ describe("EC2 deploy script (mock docker)", () => {
       DEPLOY_GITHUB: `ghp_$x"y'z\``,
       DEPLOY_SHOOKIE_MENTION_GROUPS_API_KEY: `$(touch ${canary}-5)`,
     };
-    const result = run(hostile);
+    const result = await run(hostile);
     expect(result.status, result.output).toBe(0);
     const recorded = read("up_env_1")!;
     expect(recorded).toContain(`POSTGRES_PASSWORD=${hostile.DEPLOY_POSTGRES_PASSWORD}`);
@@ -544,8 +547,8 @@ describe("EC2 deploy script (mock docker)", () => {
     expect(result.output).not.toContain("pa$$ w'o");
   });
 
-  it("matches the Korean readiness marker byte-wise even under the C locale", () => {
-    const result = run({ LC_ALL: "C", LANG: "C" });
+  it("matches the Korean readiness marker byte-wise even under the C locale", async () => {
+    const result = await run({ LC_ALL: "C", LANG: "C" });
     expect(result.status, result.output).toBe(0);
   });
 
