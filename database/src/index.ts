@@ -1,3 +1,4 @@
+export { conversationRepository, type ConversationRepository, type ConversationEvent, type ConversationTurn } from "./conversations.js";
 export { getPool, closePool } from "./pool.js";
 export {
   claimMeetingReminder,

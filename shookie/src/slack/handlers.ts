@@ -2,8 +2,9 @@ import type { App } from "@slack/bolt";
 import type { KnownBlock } from "@slack/types";
 import type { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
-import { InMemoryConversationStore, type Message } from "../services/memory/in-memory.js";
-import { buildSessionId, extractText } from "./thread-context.js";
+import { createHash } from "node:crypto";
+import type { Message } from "../services/memory/in-memory.js";
+import { ConversationRuntime, ConversationBusyError, ConversationInputError } from "./conversation-runtime.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
 import {
   startPlanStream,
@@ -17,6 +18,9 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { ensureThreadCapacity } from "../tools/code-explorer/workspace-manager.js";
 import {
+  conversationRepository,
+  type ConversationEvent,
+  type ConversationRepository,
   logAgentCall,
   startAgentCall,
   completeAgentCall,
@@ -25,8 +29,6 @@ import {
   logToolCall,
 } from "database";
 import { invocationStorage } from "../agent/invocation-context.js";
-
-const store = new InMemoryConversationStore();
 
 const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   posthog_agent: "🔍 PostHog 데이터 분석 중...",
@@ -52,46 +54,67 @@ async function postToThread(
   });
 }
 
-export function registerHandlers(app: App, agent: Agent): void {
-  app.event("app_mention", async ({ event, client }) => {
-    if ("bot_id" in event && event.bot_id) return;
-
-    const text = extractText(event.text);
-    if (!text) {
-      await client.chat.postMessage({
-        channel: event.channel,
-        thread_ts: event.thread_ts ?? event.ts,
-        text: "네, 무엇을 도와드릴까요?",
+export function registerHandlers(
+  app: App,
+  agent: Agent,
+  repository: ConversationRepository = conversationRepository,
+): void {
+  const runtime = new ConversationRuntime(repository);
+  const receive = async (kind: "app_mention" | "message", raw: unknown, body: unknown, context: unknown) => {
+    const event = raw as { channel?: string; channel_type?: string; ts?: string; thread_ts?: string;
+      user?: string; team?: string; text?: string; bot_id?: string; subtype?: string };
+    // Only original human messages. Edits/deletes and bot/system subtypes cannot trigger runs.
+    if (event.bot_id || event.subtype || !event.user || !event.channel || !event.ts) return;
+    if (kind === "message" && event.channel_type !== "im") return;
+    const envelope = body as { event_id?: string; team_id?: string };
+    const trusted = context as { botUserId?: string; teamId?: string };
+    const teamId = envelope.team_id ?? event.team ?? trusted.teamId;
+    const threadTs = event.thread_ts ?? event.ts;
+    const sessionId = JSON.stringify([teamId ?? null, event.channel, threadTs]);
+    const requestId = envelope.event_id
+      ? `slack-event:${envelope.event_id}`
+      : `slack-fallback:${createHash("sha256").update(JSON.stringify([teamId ?? null, event.channel, event.ts, event.user])).digest("hex")}`;
+    // Remove only this bot's mention; preserve other users' identities.
+    const rawText = event.text ?? "";
+    const text = (trusted.botUserId ? rawText.split(`<@${trusted.botUserId}>`).join("") : rawText).trim();
+    if (!text && kind === "message") return;
+    const identity: ConversationEvent = {
+      sessionId, requestId, channel: event.channel, threadTs, userId: event.user,
+      ...(teamId ? { teamId } : {}), ...(envelope.event_id ? { eventId: envelope.event_id } : {}),
+    };
+    try {
+      await runtime.run(identity, text, async (messages, commit) => {
+        if (!text) {
+          const greeting = "네, 무엇을 도와드릴까요?";
+          await commit(greeting);
+          await postToThread(app, identity.channel, threadTs, greeting);
+          return;
+        }
+        await handleConversation(app, agent, text, identity, messages, commit);
       });
-      return;
+    } catch (error) {
+      logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
+      const errorText = error instanceof ConversationBusyError
+        ? "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
+        : error instanceof ConversationInputError
+          ? "메시지가 너무 깁니다. 내용을 나누어 보내주세요."
+          : "대화를 안전하게 처리하지 못했습니다. 잠시 후 새 메시지로 다시 시도해주세요.";
+      await postToThread(app, identity.channel, threadTs, errorText);
     }
-
-    const team = (event as { team?: string }).team;
-    await handleConversation(app, agent, text, event.channel, event.thread_ts ?? event.ts, event.user ?? "unknown", team);
-  });
-
-  app.event("message", async ({ event, client }) => {
-    if ("bot_id" in event && event.bot_id) return;
-    if ("channel_type" in event && event.channel_type !== "im") return;
-
-    const text = extractText((event as { text?: string }).text);
-    if (!text) return;
-
-    const msgEvent = event as { channel: string; thread_ts?: string; ts: string; user?: string; team?: string };
-    await handleConversation(app, agent, text, msgEvent.channel, msgEvent.thread_ts ?? msgEvent.ts, msgEvent.user ?? "unknown", msgEvent.team);
-  });
+  };
+  app.event("app_mention", async ({ event, body, context }) => receive("app_mention", event, body, context));
+  app.event("message", async ({ event, body, context }) => receive("message", event, body, context));
 }
 
 async function handleConversation(
   app: App,
   agent: Agent,
   userText: string,
-  channel: string,
-  threadTs: string,
-  userId: string,
-  teamId?: string,
+  identity: ConversationEvent,
+  messages: Message[],
+  commit: (answer: string) => Promise<void>,
 ): Promise<void> {
-  const sessionId = buildSessionId(channel, threadTs);
+  const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
   let streamSession: StreamSession | null = null;
 
@@ -100,16 +123,7 @@ async function handleConversation(
 
     await ensureThreadCapacity(config.THREAD_WORKSPACE_BASE_PATH, config.THREAD_WORKSPACE_MAX_GB);
 
-    store.add(sessionId, { role: "user", content: userText });
-
-    const history = store.buildMessages(sessionId);
     const currentChannel = getCurrentChannel(threadTs);
-    const channelContextPrefix = currentChannel
-      ? `[사용자가 현재 보고 있는 채널 ID: ${currentChannel}]\n\n`
-      : "";
-    const prompt =
-      channelContextPrefix +
-      history.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
 
     const callCtx = await startAgentCall({ userId, channel, threadTs, question: userText });
     mainInvocationId = callCtx
@@ -139,8 +153,16 @@ async function handleConversation(
       const requestContext = new RequestContext([
         ["channel", channel],
         ["threadTs", threadTs],
+        ["userId", userId],
+        ["requestId", requestId],
+        ...(teamId ? [["teamId", teamId] as [string, string]] : []),
       ]);
-      const streamResult = await agent.stream([{ role: "user", content: prompt }], {
+      // Preserve Assistant current-view hints without flattening conversation roles.
+      // This is a hint, never an actor identity or authorization source (the legacy map is threadTs-only).
+      const modelMessages = currentChannel && /^[A-Z][A-Z0-9]{1,63}$/.test(currentChannel)
+        ? [{ role: "system" as const, content: `[사용자가 현재 보고 있는 채널 ID (참고 정보): ${currentChannel}]` }, ...messages]
+        : messages;
+      const streamResult = await agent.stream(modelMessages, {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         requestContext,
       });
@@ -153,6 +175,7 @@ async function handleConversation(
           const { done, value } = await reader.read();
           if (done) break;
 
+          if (value.type === "error") throw new Error("Agent stream failed");
           if (value.type === "tool-call") {
             const payload = (value as {
               payload: { toolName: string; id?: string; toolCallId?: string; args?: unknown };
@@ -236,10 +259,12 @@ async function handleConversation(
 
       logger.info("🤖 응답 스트리밍 완료");
 
-      const responseText = (await streamResult.text) || "응답을 생성하지 못했습니다.";
+      const responseText = await streamResult.text;
+      if (!responseText) throw new Error("Agent returned no answer");
       const usage = await streamResult.usage;
       const steps = await streamResult.steps;
       const finishReason = await streamResult.finishReason;
+      if (finishReason === "error") throw new Error("Agent run failed");
 
       return { streamResult, responseText, usage, steps, finishReason, toolNamesSeen };
     };
@@ -253,6 +278,9 @@ async function handleConversation(
       : await runConversation();
 
     const { responseText, usage, steps, finishReason, toolNamesSeen } = conv;
+    // Save the complete successful turn before ancillary logging or final Slack delivery.
+    // Neither delivery nor logging failures may discard an already generated answer.
+    await commit(responseText);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
 
@@ -346,8 +374,6 @@ async function handleConversation(
       withFeedback: true,
     });
 
-    store.add(sessionId, { role: "assistant", content: responseText });
-
     if (streamSession) {
       try {
         await stopStreamWithBlocks(streamSession, app.client, fallbackText, blocks);
@@ -363,30 +389,17 @@ async function handleConversation(
       await postToThread(app, channel, threadTs, fallbackText, blocks);
     }
   } catch (error) {
-    logger.error("Error processing message:", error);
-    if (error instanceof Error) {
-      logger.error("Error message:", error.message);
-      logger.error("Error stack:", error.stack);
-      if ("cause" in error) {
-        logger.error("Error cause:", JSON.stringify(error.cause, null, 2));
-      }
-    }
+    logger.error("대화 실행 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
     if (mainInvocationId) {
       await completeInvocation(mainInvocationId, {
         status: "error",
-        error: error instanceof Error ? error.message : String(error),
+        error: "Conversation execution failed",
         finishReason: "error",
       });
     }
-    const errorText = "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.";
     if (streamSession) {
-      try {
-        await stopStreamWithBlocks(streamSession, app.client, errorText, []);
-      } catch {
-        await postToThread(app, channel, threadTs, errorText);
-      }
-    } else {
-      await postToThread(app, channel, threadTs, errorText);
+      try { await stopStreamWithBlocks(streamSession, app.client, "요청을 완료하지 못했습니다.", []); } catch { /* outer handler posts friendly error */ }
     }
+    throw error;
   }
 }
