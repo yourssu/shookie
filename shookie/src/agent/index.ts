@@ -43,7 +43,7 @@ export function createAgent() {
     logger.info("GitHub 토큰이 없어 Code Explorer 서브 에이전트를 등록하지 않습니다");
   }
 
-  const mainShookie = createMainShookieAgent(subAgents, model);
+  const mainShookie = createMainShookieAgent(subAgents, model, { braveSearchApiKey: config.BRAVE_SEARCH_API_KEY });
   logger.info("메인 에이전트 생성 완료");
 
   return mainShookie;

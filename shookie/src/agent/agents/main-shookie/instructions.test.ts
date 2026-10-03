@@ -32,8 +32,11 @@ describe("main-shookie agent instructions", () => {
     expect(instructions).toContain("직접 답하지 않는다");
   });
 
-  it("limits same tool calls to 3", () => {
-    expect(instructions).toContain("3회 이상");
+  it("uses progress and step budgets instead of arbitrary call limits", () => {
+    expect(instructions).toContain("maxSteps");
+    expect(instructions).toContain("새로운 근거 없이");
+    expect(instructions).not.toContain("3회 이상");
+    expect(instructions).not.toContain("2턴 이내");
   });
 
   it("forbids echoing user messages at response start", () => {

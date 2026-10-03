@@ -29,6 +29,14 @@ afterEach(() => {
   vi.resetModules();
 });
 
+describe("optional public web search config", () => {
+  it("defaults to no search key while permitting explicit synthetic configuration", async () => {
+    vi.stubEnv("BRAVE_SEARCH_API_KEY", undefined);
+    expect((await loadConfig()).config.BRAVE_SEARCH_API_KEY).toBe("");
+    expect((await loadConfig({ BRAVE_SEARCH_API_KEY: "synthetic-brave-key" })).config.BRAVE_SEARCH_API_KEY).toBe("synthetic-brave-key");
+  });
+});
+
 describe("Slack user OAuth config", () => {
   it("유효한 보안 설정을 정규화한다", async () => {
     const { getSlackUserOAuthConfig } = await loadConfig();
