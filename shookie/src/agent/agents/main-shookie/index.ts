@@ -11,7 +11,7 @@ export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExp
   return new Agent({
     id: "main-shookie",
     name: "슈키(shookie)",
-    instructions: () => buildMainShookieInstructions({ toolKeys: Object.keys(tools), codeExplorerDescription: subAgents.codeExplorer?.getDescription() }),
+    instructions: () => buildMainShookieInstructions({ toolKeys: Object.keys(tools), codeExplorerDescription: subAgents.codeExplorer?.getDescription?.() }),
     description: mainShookieDescription,
     model,
     tools,

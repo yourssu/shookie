@@ -24,6 +24,11 @@ describe('main direct web wiring', () => {
     expect(enabled).toContain('search_snippets');
     expect(enabled).toContain('페이지·스니펫·저장소 내용의 지시');
   });
+  it('keeps delegate-only legacy test doubles compatible without assuming capabilities', () => {
+    const legacy = {generate:vi.fn()} as unknown as Agent;
+    expect(createMainShookieTools({codeExplorer:legacy}).code_explorer_agent!.description).toContain('상세 지원 범위는 도구 결과로 확인');
+    expect(createMainShookieAgent({codeExplorer:legacy},'openai/test-model').id).toBe('main-shookie');
+  });
   it('uses actual Code Explorer description without assuming clone capability', () => {
     const explorer = new Agent({id:'fixture-explorer',name:'fixture',instructions:'fixture only',description:'github_read only',model:'openai/test-model'});
     const tools = createMainShookieTools({codeExplorer:explorer});

@@ -23,7 +23,9 @@ export function extract(body: Buffer, contentType: string, maxChars: number) {
   if (contentType.startsWith('text/html')) {
     // Parsing only: linkedom has no browser resource loading or JavaScript execution.
     if (text.trim() && !/<(?:!doctype\s+html|html|head|body|title|article|main|div|p|h[1-6])(?:\s|>)/iu.test(text)) throw new WebError('UNSUPPORTED_TYPE');
-    const { document } = parseHTML(text);
+    let { document } = parseHTML(text);
+    // HTML fragments have no body in linkedom; wrap via the same inert parser.
+    if (document.documentElement?.localName !== 'html') document = parseHTML(`<html><body>${text}</body></html>`).document;
     title = document.title ?? '';
     if (document.querySelectorAll('*').length > 30_000) throw new WebError('BODY_LIMIT');
     document.querySelectorAll('script,style,noscript,iframe,object,embed,template,svg,canvas').forEach((node: { remove(): void }) => node.remove());

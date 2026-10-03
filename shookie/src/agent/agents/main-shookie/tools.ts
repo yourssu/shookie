@@ -146,7 +146,7 @@ export function createMainShookieTools(subAgents: {
     tools.code_explorer_agent = createTool({
       id: "code-explorer-agent",
       description:
-        "코드 탐색은 이 서브 에이전트에 위임합니다. 실제 지원 범위: " + codeExplorerAgent.getDescription() +
+        "코드 탐색은 이 서브 에이전트에 위임합니다. 실제 지원 범위: " + (codeExplorerAgent.getDescription?.() ?? "등록된 읽기 도구를 사용합니다. 상세 지원 범위는 도구 결과로 확인하세요.") +
         " 파일 수정·명령 실행·push·PR 생성/병합/삭제 권한은 없습니다.",
       inputSchema: z.object({
         task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),

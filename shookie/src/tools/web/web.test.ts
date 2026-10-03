@@ -122,6 +122,7 @@ describe('deadlines, bytes, types and extraction', () => {
   it('extracts useful HTML without scripts, labels partial and empty results',()=>{
     const html='<html><head><title>Fixture</title></head><body><article><p>'+ 'Useful content. '.repeat(100)+'</p><script>danger()</script></article></body></html>';
     const result=extract(Buffer.from(html),'text/html',100);
+    expect(extract(Buffer.from('<p>Fragment text</p>'),'text/html',100).text).toBe('Fragment text');
     expect(result.title).toBe('Fixture'); expect(result.text).toContain('Useful'); expect(result.text).not.toContain('danger'); expect(result.truncated).toBe(true); expect(result.complete).toBe(false);
     expect(extract(Buffer.from(''),'text/plain',100)).toMatchObject({text:'',complete:true,lines:{start:0,end:0}});
     expect(()=>extract(Buffer.from('%PDF-1.7'),'text/plain',100)).toThrow();
