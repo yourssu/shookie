@@ -49,21 +49,23 @@ export function runBoundedProcess(executable: string, args: string[], options: P
     if (options.signal?.aborted) { reject(new Error("cancelled")); return; }
     const child = spawn(executable, args, { env: options.env, cwd: options.env.HOME,
       detached: true, stdio: ["ignore", "pipe", "pipe"] });
-    let failure = false, bytes = 0, checking = false;
+    let failure = false, settled = false, bytes = 0, checking = false;
     const chunks: Buffer[] = [];
-    const kill = () => {
+    const signalGroup = () => {
       if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { /* group already gone */ } }
     };
-    const fail = () => { failure = true; kill(); };
+    const kill = () => { if (!settled) signalGroup(); };
+    const fail = () => { if (settled) return; failure = true; kill(); };
     const timer = setTimeout(fail, options.timeoutMs);
     const interval = options.monitor ? setInterval(async () => {
-      if (checking) return;
+      if (settled || checking) return;
       checking = true;
       try { await options.monitor!(); } catch { fail(); }
-      finally { checking = false; }
+      finally { if (!settled) checking = false; }
     }, 100) : undefined;
     options.signal?.addEventListener("abort", fail, { once: true });
     const collect = (data: Buffer, stdout: boolean) => {
+      if (settled) return;
       bytes += data.length;
       if (bytes > options.maxOutputBytes) fail();
       else if (stdout) chunks.push(data);
@@ -73,8 +75,11 @@ export function runBoundedProcess(executable: string, args: string[], options: P
     child.stderr.on("data", data => collect(data, false));
     child.on("error", fail);
     child.on("close", code => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer); clearInterval(interval);
-      options.signal?.removeEventListener("abort", fail); kill();
+      // One initial close cleanup is intentional; late callbacks cannot signal this group.
+      options.signal?.removeEventListener("abort", fail); signalGroup();
       if (failure || code !== 0) reject(new Error("controlled subprocess failed"));
       else resolve(Buffer.concat(chunks));
     });
