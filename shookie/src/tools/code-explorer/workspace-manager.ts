@@ -1,130 +1,53 @@
-import { mkdir, rm, readdir, stat } from "fs/promises";
-import { existsSync } from "fs";
-import { resolve, join } from "path";
-import { createTool } from "@mastra/core/tools";
-import { z } from "zod";
-import { logger } from "../../logger.js";
-import type { ToolExecutionContext } from "@mastra/core/tools";
-import type { RequestContext } from "@mastra/core/request-context";
+import { mkdir, readdir, lstat, realpath } from "fs/promises";
+import { resolve, relative, isAbsolute, join } from "path";
 
-function threadDir(basePath: string, channel: string, threadTs: string): string {
-  return resolve(basePath, `threads/${channel}_${threadTs}`);
-}
-
-async function getTotalSize(dir: string): Promise<number> {
-  if (!existsSync(dir)) return 0;
-  let total = 0;
-  const entries = await readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      total += await getTotalSize(fullPath);
-    } else if (entry.isFile()) {
-      const s = await stat(fullPath);
-      total += s.size;
-    }
+interface Context { get(key: string): unknown }
+export function trustedActor(context?: Context) {
+  const channel = context?.get("channel"), threadTs = context?.get("threadTs"), userId = context?.get("userId"), requestId = context?.get("requestId"), teamId = context?.get("teamId");
+  if (typeof channel !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(channel) ||
+      typeof userId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(userId) ||
+      typeof threadTs !== "string" || !/^\d{1,20}\.\d{1,20}$/.test(threadTs) ||
+      typeof requestId !== "string" || !/^[A-Za-z0-9_.:-]{1,200}$/.test(requestId) ||
+      (teamId !== undefined && (typeof teamId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(teamId)))) {
+    throw new Error("신뢰된 요청 정보가 필요합니다.");
   }
-  return total;
+  return { channel, threadTs, userId, teamId, requestId };
+}
+export function within(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`));
 }
 
-async function evictOldWorkspaces(basePath: string, maxGb: number): Promise<void> {
-  const threadsDir = resolve(basePath, "threads");
-  if (!existsSync(threadsDir)) return;
-
-  const maxBytes = maxGb * 1024 * 1024 * 1024;
-  const currentSize = await getTotalSize(threadsDir);
-
-  if (currentSize <= maxBytes) return;
-
-  const entries = await readdir(threadsDir, { withFileTypes: true });
-  const dirs = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => ({ name: e.name, path: join(threadsDir, e.name) }));
-
-  const withAtime = await Promise.all(
-    dirs.map(async (d) => {
-      const s = await stat(d.path);
-      return { ...d, atime: s.atimeMs };
-    }),
-  );
-
-  withAtime.sort((a, b) => a.atime - b.atime);
-
-  let freed = 0;
-  const toFree = currentSize - maxBytes;
-  for (const d of withAtime) {
-    if (freed >= toFree) break;
-    const dirSize = await getTotalSize(d.path);
-    await rm(d.path, { recursive: true, force: true });
-    freed += dirSize;
-    logger.info(`워크스페이스 LRU 정리: ${d.name} (${(dirSize / 1024 / 1024).toFixed(1)}MB)`);
-  }
+// No leases exist for legacy workspaces. Never delete them or their local edits.
+async function totalSize(dir: string): Promise<number> {
+  const s = await lstat(dir);
+  if (s.isSymbolicLink()) throw new Error("워크스페이스 심볼릭 링크는 허용되지 않습니다.");
+  if (!s.isDirectory()) return s.size;
+  let size = 0;
+  for (const entry of await readdir(dir)) size += await totalSize(join(dir, entry));
+  return size;
 }
-
-export async function ensureThreadCapacity(
-  basePath: string,
-  maxGb: number,
-): Promise<void> {
+export async function ensureThreadCapacity(basePath: string, maxGb: number): Promise<void> {
+  if (!Number.isFinite(maxGb) || maxGb <= 0) throw new Error("워크스페이스 용량 설정을 확인하세요.");
   await mkdir(basePath, { recursive: true });
-  await evictOldWorkspaces(basePath, maxGb);
-}
-
-function getContextIds(context?: ToolExecutionContext): { channel: string; threadTs: string } {
-  const channel = context?.requestContext?.get("channel") as string | undefined;
-  const threadTs = context?.requestContext?.get("threadTs") as string | undefined;
-  if (!channel || !threadTs) {
-    throw new Error("requestContext에 channel/threadTs가 없습니다. ensure_thread_workspace는 스레드 컨텍스트에서만 사용할 수 있습니다.");
+  if (await totalSize(basePath) >= maxGb * 1024 ** 3) {
+    throw new Error("워크스페이스 용량이 부족합니다. 기존 작업은 삭제하지 않았습니다. 관리자에게 보존 후 정리를 요청하세요.");
   }
-  return { channel, threadTs };
 }
 
-export function createWorkspaceManagerTools(
-  workspaceBasePath: string,
-  workspaceMaxGb: number,
-) {
-  const ensureThreadWorkspace = createTool({
-    id: "ensure-thread-workspace",
-    description:
-      "현재 스레드의 워크스페이스 디렉토리를 준비합니다. 리포지토리 클론 전에 반드시 호출해야 합니다. channel/threadTs는 자동으로 주입되므로 입력 인수는 필요 없습니다.",
-    inputSchema: z.object({}),
-    outputSchema: z.object({
-      path: z.string(),
-      created: z.boolean(),
-    }),
-    execute: async (_input, context) => {
-      const { channel, threadTs } = getContextIds(context);
-
-      await mkdir(workspaceBasePath, { recursive: true });
-      await evictOldWorkspaces(workspaceBasePath, workspaceMaxGb);
-
-      const dir = threadDir(workspaceBasePath, channel, threadTs);
-      const created = !existsSync(dir);
-      if (created) {
-        await mkdir(dir, { recursive: true });
-      }
-      return { path: dir, created };
-    },
-  });
-
-  const finishThreadWorkspace = createTool({
-    id: "finish-thread-workspace",
-    description:
-      "현재 스레드의 워크스페이스를 정리합니다. 작업 완료 후 호출합니다. channel/threadTs는 자동으로 주입됩니다.",
-    inputSchema: z.object({}),
-    outputSchema: z.object({
-      cleaned: z.boolean(),
-    }),
-    execute: async (_input, context) => {
-      const { channel, threadTs } = getContextIds(context);
-
-      const dir = threadDir(workspaceBasePath, channel, threadTs);
-      if (existsSync(dir)) {
-        await rm(dir, { recursive: true, force: true });
-        return { cleaned: true };
-      }
-      return { cleaned: false };
-    },
-  });
-
-  return { ensure_thread_workspace: ensureThreadWorkspace, finish_thread_workspace: finishThreadWorkspace };
+// Reserved for a future isolated coding lifecycle; not exposed as an agent tool.
+export async function validateThreadPath(basePath: string, context: Context, target: string): Promise<string> {
+  const actor = trustedActor(context);
+  const base = await realpath(basePath);
+  const thread = resolve(base, "actors", actor.teamId ?? "no-team", actor.userId, actor.channel, actor.threadTs);
+  // Reject symlinks even when their current target happens to be inside the base.
+  let current = base;
+  for (const component of relative(base, thread).split("/")) {
+    current = join(current, component);
+    if ((await lstat(current)).isSymbolicLink()) throw new Error("심볼릭 링크는 허용되지 않습니다.");
+  }
+  const root = await realpath(thread);
+  const actual = await realpath(resolve(root, target));
+  if (!within(base, root) || !within(root, actual) || !(await lstat(actual)).isDirectory()) throw new Error("현재 사용자/스레드 경로만 허용됩니다.");
+  return actual;
 }
