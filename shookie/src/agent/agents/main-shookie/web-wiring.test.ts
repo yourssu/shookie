@@ -8,14 +8,15 @@ import { buildMainShookieInstructions } from './instructions.js';
 describe('main direct web wiring', () => {
   it('preserves old constructors and always registers direct fetch', () => {
     expect(Object.keys(createMainShookieTools({}))).toEqual(['web_fetch']);
+    expect(Object.keys(createMainShookieTools({}, {exaApiKey:' \t '}))).toEqual(['web_fetch']);
     const agent = createMainShookieAgent({}, 'openai/test-model');
     expect(agent.id).toBe('main-shookie');
   });
   it('registers search only with a key and derives truthful main catalogue', () => {
-    const tools = createMainShookieTools({}, {braveSearchApiKey:'synthetic'});
+    const tools = createMainShookieTools({}, {exaApiKey:'synthetic'});
     expect(Object.keys(tools)).toEqual(['web_fetch','web_search']);
     const enabled = buildMainShookieInstructions({toolKeys:Object.keys(tools)});
-    expect(enabled).toContain('web_search 등록됨 (Brave)');
+    expect(enabled).toContain('web_search 등록됨 (Exa)');
     const disabled = buildMainShookieInstructions({toolKeys:['web_fetch']});
     expect(disabled).toContain('검색 불가');
     expect(disabled).toContain('web_fetch 등록됨 (키 불필요)');

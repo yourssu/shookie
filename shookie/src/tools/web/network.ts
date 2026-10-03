@@ -6,6 +6,15 @@ import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import ipaddr from "ipaddr.js";
 
 export const LIMITS = { deadlineMs: 12_000, bodyBytes: 1_000_000, redirects: 3, textChars: 30_000 } as const;
+const EXA_SEARCH_URL = 'https://api.exa.ai/search';
+export const REQUEST_BODY_BYTES = 4096;
+// Internal only; never exposed as model-controlled HTTP options.
+export type SearchRequest = { method: 'POST'; body: string };
+function validateRequest(url: URL, request?: SearchRequest) {
+  if (request && (url.href !== EXA_SEARCH_URL || request.method !== 'POST' || Buffer.byteLength(request.body) > REQUEST_BODY_BYTES)) {
+    throw new WebError('INVALID_REQUEST');
+  }
+}
 export class WebError extends Error {
   constructor(public code: string, public retryable = false) { super(code); }
 }
@@ -51,10 +60,11 @@ export async function verifiedAddress(url: URL, resolver: Resolver): Promise<Add
 // The URL hostname remains the HTTP Host / TLS servername and certificate identity.
 // Only this verified address is supplied to the real socket's lookup. No second DNS
 // lookup, pooled socket, proxy agent, ambient cookies, or environment credentials.
-export function pinnedRequest(url: URL, address: Address, signal: AbortSignal, headers: Record<string, string> = {}): Promise<http.IncomingMessage> {
+export function pinnedRequest(url: URL, address: Address, signal: AbortSignal, headers: Record<string, string> = {}, searchRequest?: SearchRequest): Promise<http.IncomingMessage> {
+  validateRequest(url, searchRequest);
   return new Promise((resolve, reject) => {
     const request = (url.protocol === 'https:' ? https : http).request(url, {
-      method: 'GET', agent: false, signal, maxHeaderSize: 16_384,
+      method: searchRequest?.method ?? 'GET', agent: false, signal, maxHeaderSize: 16_384,
       headers: { Accept: 'text/html, text/plain, application/json', 'Accept-Encoding': 'gzip, deflate, br', 'User-Agent': 'Shookie-PublicReader/1.0', ...headers },
       lookup: (_hostname, options, callback) => {
         if (typeof options === 'object' && options.all) callback(null, [address]);
@@ -63,7 +73,7 @@ export function pinnedRequest(url: URL, address: Address, signal: AbortSignal, h
       ...(url.protocol === 'https:' ? { rejectUnauthorized: true, servername: isIP(url.hostname.replace(/^\[|\]$/gu, '')) ? undefined : url.hostname } : {}),
     }, resolve);
     request.on('error', reject);
-    request.end();
+    request.end(searchRequest?.body);
   });
 }
 export type Connector = typeof pinnedRequest;
@@ -99,7 +109,7 @@ export async function readBody(response: http.IncomingMessage, signal: AbortSign
   }
 }
 
-export async function download(raw: string, dependencies: NetworkDependencies = {}, headers: Record<string, string> = {}, redirects: number = LIMITS.redirects): Promise<{ body: Buffer; finalUrl: string; contentType: string }> {
+export async function download(raw: string, dependencies: NetworkDependencies = {}, headers: Record<string, string> = {}, redirects: number = LIMITS.redirects, searchRequest?: SearchRequest): Promise<{ body: Buffer; finalUrl: string; contentType: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), dependencies.deadlineMs ?? LIMITS.deadlineMs);
   const signal = controller.signal;
@@ -111,10 +121,12 @@ export async function download(raw: string, dependencies: NetworkDependencies = 
   });
   const operation = async () => {
     let url = publicUrl(raw);
+    validateRequest(url, searchRequest);
+    if (searchRequest && redirects !== 0) throw new WebError('INVALID_REQUEST');
     for (let hop = 0; ; hop++) {
       const address = await verifiedAddress(url, dependencies.resolver ?? resolvePublic);
       if (signal.aborted) throw new WebError('TIMEOUT', true);
-      const response = await (dependencies.connector ?? pinnedRequest)(url, address, signal, headers);
+      const response = await (dependencies.connector ?? pinnedRequest)(url, address, signal, headers, searchRequest);
       if (signal.aborted) { response.destroy(); throw new WebError('TIMEOUT', true); }
       const status = response.statusCode ?? 0;
       if ([301, 302, 303, 307, 308].includes(status)) {
@@ -126,7 +138,8 @@ export async function download(raw: string, dependencies: NetworkDependencies = 
       }
       if (status < 200 || status >= 300) {
         response.destroy();
-        throw new WebError(status === 429 ? 'RATE_LIMIT' : 'HTTP_ERROR', status === 429 || status >= 500);
+        const code = searchRequest && status === 402 ? 'CREDIT_EXHAUSTED' : searchRequest && status === 401 ? 'AUTH_ERROR' : status === 429 ? 'RATE_LIMIT' : 'HTTP_ERROR';
+        throw new WebError(code, status === 429 || status >= 500);
       }
       const contentType = String(response.headers['content-type'] ?? '').toLowerCase();
       if (!/^(text\/html|text\/plain|application\/json)(?:;|$)/u.test(contentType) ||

@@ -117,6 +117,14 @@ describe("deployment contract", () => {
     for (const name of envsLine.filter((n) => n.startsWith("DEPLOY_"))) expect(envNames, name).toContain(name);
   });
 
+  it("delivers the optional Exa secret end-to-end without shell interpolation", () => {
+    expect(deploy).toContain('DEPLOY_EXA_API_KEY: ${{ secrets.EXA_API_KEY }}');
+    expect(deploy.match(/^ {10}envs: (.*)$/m)![1]!.split(',')).toContain('DEPLOY_EXA_API_KEY');
+    expect(script).toContain('export EXA_API_KEY="${DEPLOY_EXA_API_KEY:-}"');
+    expect(readRepoFile('docker-compose.yml')).toContain('EXA_API_KEY: ${EXA_API_KEY:-}');
+    expect(readRepoFile('.env.example')).toContain('EXA_API_KEY=');
+  });
+
   it("preserves the previous fixed runtime values", () => {
     for (const line of [
       "export LLM_BASE_URL=https://api.deepseek.com",

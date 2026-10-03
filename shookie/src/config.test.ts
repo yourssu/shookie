@@ -31,9 +31,9 @@ afterEach(() => {
 
 describe("optional public web search config", () => {
   it("defaults to no search key while permitting explicit synthetic configuration", async () => {
-    vi.stubEnv("BRAVE_SEARCH_API_KEY", undefined);
-    expect((await loadConfig()).config.BRAVE_SEARCH_API_KEY).toBe("");
-    expect((await loadConfig({ BRAVE_SEARCH_API_KEY: "synthetic-brave-key" })).config.BRAVE_SEARCH_API_KEY).toBe("synthetic-brave-key");
+    vi.stubEnv("EXA_API_KEY", undefined);
+    expect((await loadConfig()).config.EXA_API_KEY).toBe("");
+    expect((await loadConfig({ EXA_API_KEY: "synthetic-exa-key" })).config.EXA_API_KEY).toBe("synthetic-exa-key");
   });
 });
 
