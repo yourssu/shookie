@@ -40,11 +40,10 @@ async function main() {
   const mentionGroupCatalog = mentionGroupConfig
     ? new RadarMentionGroupsClient(mentionGroupConfig)
     : undefined;
-  if (userOAuthConfig || meetingReminderConfig) {
-    const appliedMigrations = await runMigrations();
-    if (appliedMigrations.length > 0) {
-      logger.info("DB 마이그레이션 완료", { appliedMigrations });
-    }
+  // Dialogue persistence is mandatory, independent of OAuth/reminder feature flags.
+  const appliedMigrations = await runMigrations();
+  if (appliedMigrations.length > 0) {
+    logger.info("DB 마이그레이션 완료", { appliedMigrations });
   }
   let resumePendingMention: ((state: ConsumedSlackOAuthState) => Promise<void>) | null = null;
   const userOAuth = userOAuthConfig
