@@ -60,6 +60,48 @@ export function buildReadUrl(config: ReadConfig, input: ReadInput): URL {
   return url;
 }
 
+const sha = z.string().regex(/^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/);
+const repository = z.object({ name, full_name: z.string(), owner: z.object({ login: name }) }).passthrough();
+const detail = z.object({ number: z.number().int().positive(), title: z.string(), state: z.enum(["open", "closed"]) }).passthrough();
+const history = z.array(z.object({ sha, commit: z.object({ message: z.string() }).passthrough() }).passthrough());
+const tree = z.object({ sha, truncated: z.boolean(), tree: z.array(z.object({
+  path: z.string().min(1), mode: z.string().regex(/^\d{6}$/), type: z.enum(["blob", "tree", "commit"]), sha,
+}).passthrough()) }).passthrough();
+
+export function validateResponse(config: ReadConfig, input: ReadInput, raw: unknown): any {
+  const scopedRepository = (value: unknown) => {
+    const repo = repository.parse(value);
+    if (repo.owner.login.toLowerCase() !== config.owner.toLowerCase() ||
+        repo.full_name.toLowerCase() !== `${config.owner}/${repo.name}`.toLowerCase() ||
+        (input.repo && repo.name.toLowerCase() !== input.repo.toLowerCase())) throw new Error("response scope");
+    return repo;
+  };
+  switch (input.operation) {
+    case "repositories": return z.array(z.unknown()).parse(raw).map(scopedRepository);
+    case "repository": return scopedRepository(raw);
+    case "tree": return tree.parse(raw);
+    case "history": return history.parse(raw);
+    case "pull_requests": case "issues": return z.array(detail).parse(raw);
+    case "pull_request": case "issue": {
+      const data = detail.parse(raw);
+      if (data.number !== input.number) throw new Error("response number");
+      return data;
+    }
+    case "file": {
+      const data = z.object({ type: z.literal("file"), encoding: z.literal("base64"), content: z.string(),
+        size: z.number().int().nonnegative(), sha, path: z.string(),
+      }).passthrough().parse(raw);
+      if (data.path !== input.path || data.target !== undefined || data.submodule_git_url != null) throw new Error("unsupported file variant");
+      const encoded = data.content.replace(/[\r\n]/g, "");
+      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("invalid base64");
+      const decoded = Buffer.from(encoded, "base64");
+      if (decoded.toString("base64") !== encoded || decoded.length !== data.size) throw new Error("unavailable file content");
+      if (decoded.includes(0)) throw new Error("binary content unavailable");
+      return { ...data, content: new TextDecoder("utf-8", { fatal: true }).decode(decoded), encoding: "utf8" };
+    }
+  }
+}
+
 export async function readGithub(config: ReadConfig, raw: unknown, fetcher: typeof fetch = fetch) {
   const input = readInput.parse(raw);
   const url = buildReadUrl(config, input);
@@ -89,22 +131,21 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
         chunks.push(value);
       }
     } finally { await reader.cancel().catch(() => {}); }
-    let data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    let data = validateResponse(config, input, JSON.parse(Buffer.concat(chunks).toString("utf8")));
     if (input.operation === "repositories" && config.repositories) {
       if (!Array.isArray(data)) throw new Error("invalid response");
       data = data.filter((r: { name?: string; owner?: { login?: string } }) => r.owner?.login?.toLowerCase() === config.owner.toLowerCase() && config.repositories!.some(n => n.toLowerCase() === r.name?.toLowerCase()));
-    }
-    // Only inline contents from the authenticated fixed-host response; never follow response URLs.
-    if (input.operation === "file" && data.encoding === "base64" && typeof data.content === "string") {
-      data.content = Buffer.from(data.content, "base64").toString("utf8"); data.encoding = "utf8";
     }
     let text = JSON.stringify(data);
     for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
       for (const representation of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) text = text.split(representation).join("[REDACTED]");
     }
-    const output = Buffer.from(text);
+    const outputTruncated = Buffer.byteLength(text) > MAX_OUTPUT_BYTES;
+    const truncated = outputTruncated || data.truncated === true;
+    // Preserve valid JSON, even when the model-facing budget requires a preview.
+    if (outputTruncated) text = JSON.stringify({ incomplete: true, reason: "model_output_byte_limit", preview: text.slice(0, 4096) });
     return {
-      data: output.subarray(0, MAX_OUTPUT_BYTES - 3).toString("utf8"), truncated: output.length > MAX_OUTPUT_BYTES - 3 || data.truncated === true,
+      data: text, truncated, complete: !truncated,
       source: url.toString(), owner: config.owner, repo: input.repo ?? null,
       ref: input.ref ?? null, path: input.path ?? null, page: input.page,
       // Advisory only: we never parse/follow Link URLs with credentials.

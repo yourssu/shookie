@@ -18,7 +18,7 @@ URL을 도구 입력으로 받거나 download_url/raw/avatar/next 등의 응답 
 실제 사용자 ID·이메일·토큰 등 민감 정보를 답변에 복사하지 않는다. 인증 정보나 오류 원문을 출력하지 않는다.
 ## 7. 응답 규칙
 한국어로 답하고 출처 저장소/ref/path/commit 또는 permalink를 표시한다. 파일 응답의 sha는 blob SHA이며 commit SHA와 구별한다.
-잘림 및 페이지 상태를 명시한다. 잘린 결과를 완전한 결과라고 주장하지 않는다.
+잘림 및 페이지 상태를 명시한다. complete=false 또는 data의 incomplete preview는 일부 결과일 뿐이며 완전한 결과라고 주장하지 않는다. inline 내용이 없는 파일, 디렉터리·symlink/submodule·바이너리는 조회 오류가 날 수 있으며 빈 파일로 취급하지 않는다.
 읽기 전용 한계와 쓰기 미지원을 명확히 설명한다.
 `;
 }

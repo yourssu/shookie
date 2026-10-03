@@ -39,7 +39,9 @@ Code Explorer는 고정 `https://api.github.com`의 typed GET 조회만 제공�
 - HTTP 요청과 body 읽기에 총 10초 deadline 및 abort 적용. 오류 원문/응답 오류 본문/credential은 출력하지 않는다.
 - 출처 API URL, owner/repo/ref/path, page, hasNextPage, truncated를 반환한다. 응답 내 sha/permalink도 유지한다.
   파일 sha는 blob SHA다. 일관된 스냅샷을 원하면 commit SHA를 ref로 전달해야 한다.
-- oversized 응답은 오류로 거절하며 출력 잘림은 truncated로 표시한다. 잘린 data 문자열은 완전한 JSON이 아닐 수 있다.
+- 작업별 응답 구조를 검사한다: 저장소 identity/scope, 목록 배열, PR/이슈 번호·제목·상태, 커밋 sha/message, tree 엔트리 등. 잘못된 HTTP 200 응답도 성공으로 취급하지 않는다.
+- file은 type=file, encoding=base64, content/size/sha/path가 유효한 inline UTF-8 파일만 지원한다. base64 canonical encoding과 decoded byte size를 검증한다. 실제 size=0/content="" 빈 파일은 지원하지만 encoding=none, 누락 내용, 비어 있으면서 size>0, 디렉터리·symlink/submodule·바이너리 등은 친화적 오류로 거절한다. download_url fallback은 없다.
+- oversized 응답은 오류로 거절하며 출력 잘림은 truncated/complete=false로 표시한다. 모델 예산 초과 시 data는 유효한 JSON preview envelope(incomplete/reason/preview)다. tree의 서버 측 truncated도 complete=false로 표시한다.
 - 코드/이슈/PR 내용은 untrusted data다. 일반 데이터 내부의 다른 비밀까지 완벽히 탐지하는 DLP는 제공하지 않는다.
 
 ## 기존 워크스페이스 보존
