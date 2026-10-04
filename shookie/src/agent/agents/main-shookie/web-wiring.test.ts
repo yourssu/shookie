@@ -7,12 +7,12 @@ import { buildMainShookieInstructions } from './instructions.js';
 // No generate() or real provider/network call in these registration tests.
 describe('main direct web wiring', () => {
   it('preserves old constructors and always registers direct fetch', () => {
-    expect(Object.keys(createMainShookieTools({}))).toEqual(['web_fetch']);
-    expect(Object.keys(createMainShookieTools({}, {exaApiKey:' \t '}))).toEqual(['web_fetch']);
+    expect(Object.keys(createMainShookieTools({}))).toEqual(['web_fetch','web_search']);
+    expect(Object.keys(createMainShookieTools({}, {exaApiKey:' \t '}))).toEqual(['web_fetch','web_search']);
     const agent = createMainShookieAgent({}, 'openai/test-model');
     expect(agent.id).toBe('main-shookie');
   });
-  it('registers search only with a key and derives truthful main catalogue', () => {
+  it('always registers search and derives truthful main catalogue', () => {
     const tools = createMainShookieTools({}, {exaApiKey:'synthetic'});
     expect(Object.keys(tools)).toEqual(['web_fetch','web_search']);
     const enabled = buildMainShookieInstructions({toolKeys:Object.keys(tools)});

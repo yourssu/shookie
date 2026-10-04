@@ -7,11 +7,12 @@ import ipaddr from "ipaddr.js";
 
 export const LIMITS = { deadlineMs: 12_000, bodyBytes: 1_000_000, redirects: 3, textChars: 30_000 } as const;
 const EXA_SEARCH_URL = 'https://api.exa.ai/search';
+export const EXA_MCP_URL = 'https://mcp.exa.ai/mcp?tools=web_search_exa';
 export const REQUEST_BODY_BYTES = 4096;
 // Internal only; never exposed as model-controlled HTTP options.
 export type SearchRequest = { method: 'POST'; body: string };
 function validateRequest(url: URL, request?: SearchRequest) {
-  if (request && (url.href !== EXA_SEARCH_URL || request.method !== 'POST' || Buffer.byteLength(request.body) > REQUEST_BODY_BYTES)) {
+  if (request && (![EXA_SEARCH_URL, EXA_MCP_URL].includes(url.href) || request.method !== 'POST' || Buffer.byteLength(request.body) > REQUEST_BODY_BYTES)) {
     throw new WebError('INVALID_REQUEST');
   }
 }
@@ -62,6 +63,7 @@ export async function verifiedAddress(url: URL, resolver: Resolver): Promise<Add
 // lookup, pooled socket, proxy agent, ambient cookies, or environment credentials.
 export function pinnedRequest(url: URL, address: Address, signal: AbortSignal, headers: Record<string, string> = {}, searchRequest?: SearchRequest): Promise<http.IncomingMessage> {
   validateRequest(url, searchRequest);
+  if (url.href === EXA_MCP_URL && Object.keys(headers).some((key) => !['accept', 'content-type'].includes(key.toLowerCase()))) throw new WebError('INVALID_REQUEST');
   return new Promise((resolve, reject) => {
     const request = (url.protocol === 'https:' ? https : http).request(url, {
       method: searchRequest?.method ?? 'GET', agent: false, signal, maxHeaderSize: 16_384,
@@ -142,7 +144,10 @@ export async function download(raw: string, dependencies: NetworkDependencies = 
         throw new WebError(code, status === 429 || status >= 500);
       }
       const contentType = String(response.headers['content-type'] ?? '').toLowerCase();
-      if (!/^(text\/html|text\/plain|application\/json)(?:;|$)/u.test(contentType) ||
+      const allowedType = searchRequest && url.href === EXA_MCP_URL
+        ? /^(application\/json|text\/event-stream)(?:;|$)/u
+        : /^(text\/html|text\/plain|application\/json)(?:;|$)/u;
+      if (!allowedType.test(contentType) ||
           /charset\s*=\s*"?(?!utf-8\b|us-ascii\b)[^;\s"]+/u.test(contentType)) {
         response.destroy(); throw new WebError('UNSUPPORTED_TYPE');
       }
