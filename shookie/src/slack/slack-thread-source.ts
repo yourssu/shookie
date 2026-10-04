@@ -3,7 +3,7 @@ import type { Message } from "../services/memory/in-memory.js";
 import { conversationLimits } from "../services/memory/limits.js";
 
 export class SlackThreadContextError extends Error {}
-export const THREAD_CONTEXT_ERROR_TEXT = "스레드 전체 맥락을 확인하지 못해 답변하지 않았습니다. 잠시 후 새 멘션으로 다시 시도해주세요. 계속 실패하면 관리자에게 스레드 조회 토큰·채널 접근 권한·history 권한 설정을 확인해 달라고 요청해주세요.";
+export const THREAD_CONTEXT_ERROR_TEXT = "스레드 전체 맥락을 확인하지 못해 답변하지 않았습니다. 잠시 후 새 멘션으로 다시 시도해주세요. 계속 실패하면 관리자에게 Slack 앱의 채널 접근 권한·history 권한 설정을 확인해 달라고 요청해주세요.";
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 export const messageBytes = (messages: Message[]) => messages.reduce((sum, m) => sum + bytes(m.content), 0);
 export type ThreadSummarizer = (messages: Message[], maxBytes: number) => Promise<string>;
@@ -18,7 +18,7 @@ function fail(): never { throw new SlackThreadContextError("Slack thread context
 
 /** Only call for a trusted bot-mention event, never from model-supplied channel/thread IDs. */
 export async function readSlackThread(
-  client: Pick<WebClient, "conversations">, mention: ThreadMention, token?: string,
+  client: Pick<WebClient, "conversations">, mention: ThreadMention,
 ): Promise<Message[]> {
   try {
     if (!validTs(mention.threadTs) || !validTs(mention.currentTs) || !mention.botUserId) fail();
@@ -29,7 +29,7 @@ export async function readSlackThread(
     for (let page = 0; ; page++) {
       if (page >= 1000) fail();
       const response = await client.conversations.replies({ channel: mention.channel, ts: mention.threadTs,
-        limit: 15, ...(cursor ? { cursor } : {}), ...(token ? { token } : {}) });
+        limit: 15, ...(cursor ? { cursor } : {}) });
       if (!response.ok || response.error || (response as { warning?: string }).warning || response.response_metadata?.warnings?.length ||
           !response.messages?.length) fail();
       for (const message of response.messages) {

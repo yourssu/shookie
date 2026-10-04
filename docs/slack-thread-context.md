@@ -16,25 +16,18 @@ cursor를 끝까지 읽고 root/current 존재, reply_count, 중복 일관성, �
 
 root/현재 원문 보존이 불가능하거나 오래된 개별 댓글이 38,000 byte를 초과하여 안전하게 요약하지 못하는 경우, 요약 실패/잘린 출력/빈 출력/크기 초과, 조회 실패/부분조회 시 **답변용 모델 및 plan 스트림 실행을 차단**하고 한국어 안내만 보낸다. 조용히 일부 댓글을 버리거나 불완전 맥락으로 답하지 않는다.
 
-## Slack 권한 및 선택적 운영 설정
+## Slack 앱 권한과 실제 환경 검증
 
-공식 근거: [conversations.replies](https://docs.slack.dev/reference/methods/conversations.replies/), [pagination](https://docs.slack.dev/apis/web-api/pagination/), [tokens](https://docs.slack.dev/authentication/tokens/).
+공식 근거: [conversations.replies](https://docs.slack.dev/reference/methods/conversations.replies/), [pagination](https://docs.slack.dev/apis/web-api/pagination/).
 
-현재 공식 method Facts는 Bot token/User token 모두에 `channels:history`, `groups:history`, `im:history`, `mpim:history`를 표시하고, usage info에는 과거의 bot DM-only 설명이 없다. 과거 설명과 상충하므로 **bot token으로 채널 스레드가 항상 가능/불가능하다고 단정하지 않는다**. 기본은 기존 bot client로 실제 조회를 시도한다. 환경에 따라 `not_allowed_token_type`, `missing_scope`, `no_permission`, 멤버십/접근 제한이 발생할 수 있으며 모두 fail-closed 안내 처리한다. 실제 설치 환경의 E2E 검증이 필요하다.
+조회는 **기존 `app.client`의 bot token만** 사용하며 별도 인증 설정이나 인증 전환 경로를 추가하지 않는다. 조회 대상은 trusted bot-mention event의 channel/thread만이다. 토큰/원본 Slack response를 로그·사용자 안내에 출력하지 않는다.
 
-필요한 경우 운영자가 별도 **선택적** `SLACK_THREAD_HISTORY_USER_TOKEN`을 설정할 수 있다:
+현재 공식 method Facts의 Bot token 항목은 `channels:history`, `groups:history`, `im:history`, `mpim:history`를 표시하고 usage info에는 과거의 bot DM-only 설명이 없다. 과거 설명과 상충하므로 **bot token으로 채널 스레드가 항상 가능/불가능하다고 단정하지 않는다**. 환경에 따라 `not_allowed_token_type`, `missing_scope`, `no_permission`, 멤버십/접근 제한이 발생할 수 있으며 모두 fail-closed 안내 처리한다. 실제 설치 환경의 E2E 검증이 필요하다.
 
-- 비회전 `xoxp-` user token. 최소 권한은 공개 채널 `channels:history`; 비공개 채널이 필요할 때만 `groups:history` 추가. 광범위한 search/write/admin 권한 불필요. 전용 계정/앱으로 접근 가능한 채널을 최소화하고 비공개 채널은 해당 계정 멤버십 확인.
-- 설정하면 trusted **채널 bot-mention event**의 해당 channel/thread 조회에 사용한다. bot 조회 실패 후 자동 재시도/다른 계정 전환은 하지 않는다. 토큰 권한이 더 넓더라도 다른 채널/스레드를 탐색하거나 모델의 조회 요청에 사용하지 않는다.
-- 기존 per-user OAuth는 다른 목적의 권한일 수 있으므로 **자동 재사용하지 않는다**. OAuth DB/schema는 변경하지 않는다.
-- 미설정은 기능 비활성화 조건이 아니다. 기존 bot client 조회를 계속 시도한다.
-- 토큰 만료/폐기/회전 refresh는 지원하지 않는다. 운영자가 갱신해야 하며 실패 시 부분 답변 대신 안내한다.
-- 로컬은 커밋하지 않는 `.env`, 배포는 GitHub **Secret** `SLACK_THREAD_HISTORY_USER_TOKEN` 사용. config → compose → deploy의 `DEPLOY_*` env/envs/export 계약에 포함된다. 빈 Secret 허용. 토큰/원본 Slack response를 로그·사용자 안내에 출력하지 않는다.
-
-이 PR은 토큰 발급, 앱 권한/운영 설정 변경, DB 변경을 수행하지 않는다. 내부 앱은 공식 Tier 3 적용 여부를 확인해야 한다. 상업적 비-Marketplace 신규 설치의 경우 1회/분 및 페이지 최대 15개 제한이 있으므로 다중 페이지 실제 동작/ratelimit를 운영에서 확인해야 한다. 요청 limit은 15로 설정한다.
+Slack 앱 권한 설정은 사용자가 직접 담당한다. 공개 채널은 `channels:history`, 비공개 채널은 필요할 때만 `groups:history` 및 앱의 해당 채널 접근을 확인한다. 이 PR은 앱 권한/운영 설정이나 DB를 변경하지 않으며 환경변수·Secret·배포 계약을 추가하지 않는다. 내부 앱은 공식 Tier 3 적용 여부를 확인해야 한다. 상업적 비-Marketplace 신규 설치의 경우 1회/분 및 페이지 최대 15개 제한이 있으므로 다중 페이지 실제 동작/ratelimit를 실제 환경에서 확인해야 한다. 요청 limit은 15로 설정한다.
 
 ## 검증 구분
 
-구현자 검증: synthetic Slack API 페이지/권한오류/부분조회, 실제 handler/runtime 연결, native 역할/작성자, current/root 중복 방지, DB 저장/dedupe/DM 회귀, Unicode byte budget, 요약 실패 차단, 설정/배포 계약 및 TypeScript 빌드.
+구현자 검증: synthetic Slack API 페이지/권한오류/부분조회, 실제 handler/runtime 연결, native 역할/작성자, current/root 중복 방지, DB 저장/dedupe/DM 회귀, Unicode byte budget, 요약 실패 차단 및 TypeScript 빌드.
 
-**실제 Slack E2E 미실행**: 운영 bot/user token으로 공개/비공개 채널 조회, 앱 scope/멤버십, pagination/rate limit, Slack UI 출력 및 실제 LLM 요약 품질은 검증하지 않았다. 실제 LLM 네트워크 호출도 실행하지 않았다. 배포 전 대상 설치 환경에서 확인해야 한다.
+**실제 Slack E2E 미실행**: 기존 bot token으로 공개/비공개 채널 조회, 앱 scope/멤버십, pagination/rate limit, Slack UI 출력 및 실제 LLM 요약 품질은 검증하지 않았다. 실제 LLM 네트워크 호출도 실행하지 않았다. 배포 전 대상 설치 환경에서 확인해야 한다.

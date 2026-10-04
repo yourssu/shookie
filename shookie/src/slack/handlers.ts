@@ -93,7 +93,7 @@ export function registerHandlers(
       const source = await readSlackThread(app.client, {
         channel: identity.channel, threadTs, currentTs: event.ts!, userId: identity.userId,
         botUserId: trusted.botUserId, botId: trusted.botId,
-      }, config.SLACK_THREAD_HISTORY_USER_TOKEN || undefined);
+      });
       return budgetSlackThread(source, summarize);
     } : undefined;
     try {

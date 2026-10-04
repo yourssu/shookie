@@ -37,17 +37,6 @@ describe("optional public web search config", () => {
   });
 });
 
-describe("dedicated Slack thread history token config", () => {
-  it("is optional and independent of the per-user OAuth switch", async () => {
-    vi.stubEnv("SLACK_THREAD_HISTORY_USER_TOKEN", undefined);
-    expect((await loadConfig()).config.SLACK_THREAD_HISTORY_USER_TOKEN).toBe("");
-    expect((await loadConfig({ SLACK_USER_OAUTH_ENABLED: "false", SLACK_THREAD_HISTORY_USER_TOKEN: "xoxp-synthetic" })).config.SLACK_THREAD_HISTORY_USER_TOKEN).toBe("xoxp-synthetic");
-  });
-  it.each(["xoxb-bot", "xoxe.xoxp-rotating", "xoxp-with space", "xoxp-" + "a".repeat(8192)])("rejects wrong token form without echoing credentials", async token => {
-    await expect(loadConfig({ SLACK_THREAD_HISTORY_USER_TOKEN: token })).rejects.toThrow("non-rotating xoxp");
-  });
-});
-
 describe("Slack user OAuth config", () => {
   it("유효한 보안 설정을 정규화한다", async () => {
     const { getSlackUserOAuthConfig } = await loadConfig();

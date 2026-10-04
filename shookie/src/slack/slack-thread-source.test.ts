@@ -31,10 +31,10 @@ describe("authoritative Slack thread reader", () => {
     expect(result.filter(m => JSON.parse(m.content).ts === mention.currentTs)).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain("url_private");
   });
-  it("passes explicitly configured token only for the trusted event's thread", async () => {
+  it("uses the supplied bot client without an authentication override for the trusted event's thread", async () => {
     const h = client(page());
-    await readSlackThread(h.api, mention, "xoxp-synthetic");
-    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: mention.threadTs, limit: 15, token: "xoxp-synthetic" });
+    await readSlackThread(h.api, mention);
+    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: mention.threadTs, limit: 15 });
   });
   it("uses trusted bot ID for an own bot message lacking user, not another bot", async () => {
     const items = messages.map(m => ({ ...m }));

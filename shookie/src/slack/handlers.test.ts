@@ -3,7 +3,7 @@ import type { App } from "@slack/bolt";
 import type { Agent } from "@mastra/core/agent";
 import type { ConversationRepository, ConversationTurn } from "database";
 
-vi.mock("../config.js", () => ({ config: { MAX_TOOL_ITERATIONS: 5, THREAD_WORKSPACE_BASE_PATH: "/synthetic", THREAD_WORKSPACE_MAX_GB: 1, SLACK_THREAD_HISTORY_USER_TOKEN: "" } }));
+vi.mock("../config.js", () => ({ config: { MAX_TOOL_ITERATIONS: 5, THREAD_WORKSPACE_BASE_PATH: "/synthetic", THREAD_WORKSPACE_MAX_GB: 1 } }));
 vi.mock("../logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 vi.mock("../tools/code-explorer/workspace-manager.js", () => ({ ensureThreadCapacity: vi.fn() }));
 vi.mock("./assistant.js", () => ({ getCurrentChannel: () => undefined }));
@@ -16,12 +16,10 @@ vi.mock("database", () => ({
   startInvocation: vi.fn(), completeAgentCall: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn(),
 }));
 import { registerHandlers } from "./handlers.js";
-import { config } from "../config.js";
 import type { ThreadSummarizer } from "./slack-thread-source.js";
 import { appendTaskUpdate, startPlanStream, stopStreamWithBlocks } from "./streaming.js";
 
 beforeEach(() => {
-  config.SLACK_THREAD_HISTORY_USER_TOKEN = "";
   vi.mocked(startPlanStream).mockReset().mockRejectedValue(new Error("synthetic stream unavailable"));
   vi.mocked(appendTaskUpdate).mockReset().mockResolvedValue(undefined);
   vi.mocked(stopStreamWithBlocks).mockReset().mockResolvedValue(undefined);
@@ -273,13 +271,12 @@ describe("actual Slack handler wiring", () => {
       { ts: "1.000003", text: "old Shookie answer", user: "BOT", bot_id: "BSH", thread_ts: "1.000001" },
       { ts: "1.000004", text: "<@BOT> current", user: "U1", thread_ts: "1.000001" },
     ] });
-    config.SLACK_THREAD_HISTORY_USER_TOKEN = "xoxp-synthetic-history";
     vi.mocked(h.repository.recent).mockRejectedValue(new Error("DB hydration should not occur"));
     const changes = { event: { channel: "C1", ts: "1.000004", thread_ts: "1.000001", user: "U1", text: "<@BOT> current" } };
     await Promise.all([h.deliver("thread", changes, "app_mention"), h.deliver("thread", changes, "app_mention")]);
     await h.deliver("thread", changes, "app_mention");
     expect(h.replies).toHaveBeenCalledTimes(1);
-    expect(h.replies).toHaveBeenCalledWith(expect.objectContaining({ channel: "C1", ts: "1.000001", token: "xoxp-synthetic-history" }));
+    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "1.000001", limit: 15 });
     expect(h.stream).toHaveBeenCalledTimes(1);
     const dialogue = (h.stream.mock.calls as unknown as [{ role: string; content: string }[]][])[0][0];
     expect(dialogue.map(m => JSON.parse(m.content).text)).toEqual(["root", "other opinion", "old Shookie answer", "<@BOT> current"]);

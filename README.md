@@ -165,7 +165,6 @@ yarn workspace shookie test
 | `EC2_SSH_KEY` | SSH 프라이빗 키 |
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth Token |
 | `SLACK_APP_TOKEN` | Slack App-Level Token (Socket Mode) |
-| `SLACK_THREAD_HISTORY_USER_TOKEN` | 선택적 전용 비회전 user token. 미설정 시 bot client로 스레드 조회 시도. [권한·맥락 처리·E2E 주의](docs/slack-thread-context.md) |
 | `LLM_API_KEY` | LLM API 키 |
 | `LLM_BASE_URL` | LLM API 엔드포인트 (기본: DeepSeek) |
 | `POSTHOG_API_KEY` | PostHog Personal API Key |
