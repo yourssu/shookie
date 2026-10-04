@@ -94,6 +94,31 @@ describe("conversation runtime", () => {
     expect(order).toEqual(["first", "other", "second"]);
   });
 
+  it("resolves authoritative sources only after claim and inside same-thread serialization", async () => {
+    const { repository } = fakeRepository();
+    const runtime = new ConversationRuntime(repository);
+    const hold = gate();
+    const sourceA = vi.fn(async () => [{ role: "user" as const, content: "root + current A" }]);
+    const sourceB = vi.fn(async () => [{ role: "user" as const, content: "root + Slack answer A + current B" }]);
+    const first = runtime.run(event("a"), "current A", async (messages, commit) => {
+      expect(messages).toEqual(await sourceA.mock.results[0].value);
+      await hold.promise; await commit("answer A");
+    }, sourceA);
+    const second = runtime.run(event("b"), "current B", async (messages, commit) => {
+      expect(messages).toEqual([{ role: "user", content: "root + Slack answer A + current B" }]);
+      await commit("answer B");
+    }, sourceB);
+    const duplicate = runtime.run(event("a"), "current A", vi.fn(), sourceA);
+    await tick();
+    expect(sourceB).not.toHaveBeenCalled();
+    hold.resolve();
+    await Promise.all([first, second, duplicate]);
+    expect(sourceA).toHaveBeenCalledTimes(1);
+    expect(sourceB).toHaveBeenCalledTimes(1);
+    expect(repository.recent).not.toHaveBeenCalled();
+    expect(repository.complete).toHaveBeenNthCalledWith(2, event("b"), { userContent: "current B", assistantContent: "answer B" });
+  });
+
   it("bounds admission, thread queues and active global runs and releases maps", async () => {
     const { repository } = fakeRepository();
     const runtime = new ConversationRuntime(repository);
