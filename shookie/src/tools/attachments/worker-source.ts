@@ -130,6 +130,10 @@ try {
       if (token !== 'stream') { previous = read(token); continue; }
       if (!previous?.dict || pushed.length) fail('INVALID_PDF');
       const dict = previous.dict, count = dict['/Length'];
+      // PDF.js prefers F over Filter and DP over DecodeParms. Predictors may allocate
+      // far beyond raw inflate output. This subset forbids these keys outright, even
+      // null/array/indirect values, before inflate or the PDF.js import (no normalization).
+      if (['/F', '/DP', '/DecodeParms'].some(key => Object.hasOwn(dict, key))) fail('UNSUPPORTED_TYPE');
       if (!Number.isSafeInteger(count) || count < 0) fail('PARSER_LIMIT');
       const newline = /^(?:\r\n|\n)/u.exec(raw.slice(position));
       if (!newline) fail('PARSER_LIMIT');

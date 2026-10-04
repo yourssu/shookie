@@ -1,6 +1,6 @@
 import { deflateSync } from 'node:zlib';
 /** Synthetic minimal PDF, never a credentialed Slack fixture. */
-export function pdfFixture(pages: string[], options: { compressed?: boolean; encrypted?: boolean; scanned?: boolean } = {}) {
+export function pdfFixture(pages: string[], options: { compressed?: boolean; encrypted?: boolean; scanned?: boolean; streamFilter?: string; streamExtras?: string } = {}) {
   const objects: Buffer[] = [];
   const add = (value: string | Buffer) => objects.push(Buffer.isBuffer(value) ? value : Buffer.from(value));
   add('<< /Type /Catalog /Pages 2 0 R >>');
@@ -10,7 +10,7 @@ export function pdfFixture(pages: string[], options: { compressed?: boolean; enc
     add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >>${options.scanned ? ` /XObject << /Im1 ${4 + pages.length * 2} 0 R >>` : ''} >> /Contents ${5 + i * 2} 0 R >>`);
     const content = Buffer.from(options.scanned ? 'q 200 0 0 200 72 400 cm /Im1 Do Q' : text ? `BT /F1 12 Tf 72 720 Td (${text}) Tj ET` : '');
     const stream = options.compressed ? deflateSync(content) : content;
-    add(Buffer.concat([Buffer.from(`<< /Length ${stream.length}${options.compressed ? ' /Filter /FlateDecode' : ''} >>\nstream\n`), stream, Buffer.from('\nendstream')]));
+    add(Buffer.concat([Buffer.from(`<< /Length ${stream.length}${options.compressed ? ` /Filter ${options.streamFilter ?? '/FlateDecode'}` : ''}${options.streamExtras ? ` ${options.streamExtras}` : ''} >>\nstream\n`), stream, Buffer.from('\nendstream')]));
   });
   if (options.scanned) {
     const image = deflateSync(Buffer.from([0, 0, 0]));
