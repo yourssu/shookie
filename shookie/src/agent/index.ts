@@ -7,8 +7,10 @@ import { getPostHogProjects } from "../projects/index.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import type { Agent } from "@mastra/core/agent";
+import { WebClient } from "@slack/web-api";
+import type { SlackReadClient } from "../tools/slack/client.js";
 
-export function createAgent() {
+export function createAgent(options: { slackClient?: SlackReadClient } = {}) {
   const provider = createDeepSeek({
     apiKey: config.LLM_API_KEY,
     baseURL: config.LLM_BASE_URL,
@@ -43,7 +45,11 @@ export function createAgent() {
     logger.info("GitHub 토큰이 없어 Code Explorer 서브 에이전트를 등록하지 않습니다");
   }
 
-  const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY });
+  // Dedicated bot-only read client: no user-OAuth lookup, SDK retries or long 429 waits.
+  const slackClient = options.slackClient ?? (config.SLACK_BOT_TOKEN
+    ? new WebClient(config.SLACK_BOT_TOKEN, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000 })
+    : undefined);
+  const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY }, slackClient);
   logger.info("메인 에이전트 생성 완료");
 
   return mainShookie;

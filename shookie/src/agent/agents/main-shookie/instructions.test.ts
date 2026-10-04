@@ -64,6 +64,18 @@ describe("main-shookie agent instructions", () => {
     expect(instructions).not.toContain("반환한 PR URL");
   });
 
+  it("advertises Slack reads only when registered and keeps bot-only search/permission boundaries honest", () => {
+    const enabled = buildMainShookieInstructions({ toolKeys: ["slack_read_thread", "slack_read_channel", "slack_search"] });
+    expect(enabled).toContain("slack_read_thread / slack_read_channel 등록됨");
+    expect(enabled).toContain("bot token 검색은 unsupported");
+    expect(enabled).toContain("요청자 접근 검증");
+    expect(enabled).toContain("다른 채널·공유 채널 불가");
+    expect(enabled).toContain("빈결과가 아니라 지원 불가");
+    expect(enabled).toContain("권한으로 승격하지 않는다");
+    expect(enabled).toContain("complete/truncated/textTruncated");
+    expect(instructions).not.toContain("slack_read_thread / slack_read_channel 등록됨");
+  });
+
   it("includes current timestamp", () => {
     expect(instructions).toMatch(/\d{4}-\d{2}-\d{2}/);
   });

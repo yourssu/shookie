@@ -32,11 +32,20 @@ import { invocationStorage } from "../agent/invocation-context.js";
 import { budgetSlackThread, readSlackThread, SlackThreadContextError, THREAD_CONTEXT_ERROR_TEXT,
   type ThreadSummarizer } from "./slack-thread-source.js";
 import { summarizeThread } from "./thread-summarizer.js";
+import { bindSlackReadContext } from "../tools/slack/context.js";
 
 const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   posthog_agent: "🔍 PostHog 데이터 분석 중...",
   code_explorer_agent: "🔬 코드 탐색 중...",
+  slack_read_thread: "💬 현재 채널 스레드 읽는 중...",
+  slack_read_channel: "💬 현재 채널 기록 읽는 중...",
+  slack_search: "💬 Slack 검색 지원 확인 중...",
 };
+
+// Do not persist/debug-log Slack read arguments, opaque cursors or fetched participant text.
+const isSlackReadTool = (toolName: string) => ["slack_search", "slack_read_thread", "slack_read_channel"].includes(toolName);
+const safeToolLog = (toolName: string, value: unknown): unknown =>
+  isSlackReadTool(toolName) ? { redacted: true } : value;
 
 /**
  * chat.postMessage 래퍼 — 스트리밍 실패 시 폴백 등 여러 곳에서 중복 사용.
@@ -173,6 +182,9 @@ async function handleConversation(
         ["requestId", requestId],
         ...(teamId ? [["teamId", teamId] as [string, string]] : []),
       ]);
+      // Only authenticated event metadata authorizes explicit Slack reads, never model/user text
+      // or the threadTs-only Assistant view hint. Missing team fails closed for read tools.
+      if (teamId) bindSlackReadContext(requestContext, { channel, userId, teamId, requestId });
       // Preserve Assistant current-view hints without flattening conversation roles.
       // This is a hint, never an actor identity or authorization source (the legacy map is threadTs-only).
       const modelMessages = currentChannel && /^[A-Z][A-Z0-9]{1,63}$/.test(currentChannel)
@@ -300,7 +312,8 @@ async function handleConversation(
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
 
-    logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
+    if (toolNamesSeen.some(isSlackReadTool)) logger.info("📤 Slack 조회 응답 전송", { textLen: responseText.length });
+    else logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
     // 진단용 INFO 한 줄 — 잘림 원인 파악 (LOG_LEVEL=info에서도 보임)
     // finishReason=length → LLM 토큰 한도, =steps → maxSteps 도달, =stop → 정상, =error → 예외
     const finishReasonLabel = typeof finishReason === "string" ? finishReason : String(finishReason ?? "?");
@@ -318,10 +331,11 @@ async function handleConversation(
       logger.debug(`step[${i}] text length:`, step.text?.length ?? 0);
 
       for (const tc of step.toolCalls ?? []) {
-        logger.debug(`step[${i}] toolCall: ${tc.payload.toolName}`, JSON.stringify(tc.payload.args));
+        logger.debug(`step[${i}] toolCall: ${tc.payload.toolName}`, JSON.stringify(safeToolLog(tc.payload.toolName, tc.payload.args)));
       }
       for (const tr of step.toolResults ?? []) {
-        const r = typeof tr.payload.result === "string" ? tr.payload.result : JSON.stringify(tr.payload.result);
+        const safe = safeToolLog(tr.payload.toolName, tr.payload.result);
+        const r = typeof safe === "string" ? safe : JSON.stringify(safe);
         logger.debug(`step[${i}] toolResult:`, r.slice(0, 500));
       }
     }
@@ -346,8 +360,8 @@ async function handleConversation(
             invocationId: mainInvocationId,
             stepIndex: i,
             toolName,
-            input,
-            output,
+            input: safeToolLog(toolName, input),
+            output: safeToolLog(toolName, output),
           });
         }
       }
