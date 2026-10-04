@@ -2,11 +2,11 @@ export const ATTACHMENT_LIMITS = Object.freeze({ fileBytes: 4 * 1024 * 1024, dow
   redirects: 2, parserMs: 5_000, parserHeapMb: 128, inflatedStreamBytes: 2 * 1024 * 1024,
   inflatedTotalBytes: 8 * 1024 * 1024, pdfPages: 50, csvRows: 10_000, csvCols: 100,
   cellBytes: 16_384, units: 100_000, parsedBytes: 1024 * 1024, outputBytes: 32_768 });
-export type AttachmentCode = 'ACCESS_DENIED' | 'MISSING_SCOPE' | 'DOWNLOAD_FAILED' | 'UNSAFE_URL' |
+export type AttachmentCode = 'ACCESS_DENIED' | 'MISSING_SCOPE' | 'RATE_LIMIT' | 'DOWNLOAD_FAILED' | 'UNSAFE_URL' |
   'FILE_LIMIT' | 'UNSUPPORTED_TYPE' | 'INVALID_UTF8' | 'INVALID_CSV' | 'ENCRYPTED_PDF' |
   'NO_TEXT_PDF' | 'PARSER_LIMIT' | 'INVALID_PDF';
 export class AttachmentError extends Error {
-  constructor(public readonly code: AttachmentCode) { super(code); }
+  constructor(public readonly code: AttachmentCode, public readonly retryAfterSeconds?: number) { super(code); }
 }
 export type AttachmentKind = 'text' | 'csv' | 'pdf';
 export function attachmentKind(mime: string): AttachmentKind {
@@ -30,6 +30,7 @@ export function failure(error: unknown) {
   const messages: Record<AttachmentCode, string> = {
     ACCESS_DENIED: '현재 요청 채널의 메시지 첨부와 요청자 접근 권한을 확인하지 못했습니다.',
     MISSING_SCOPE: 'Slack 앱의 files:read 등 읽기 권한이 필요합니다. 운영자에게 권한 확인을 요청해 주세요.',
+    RATE_LIMIT: 'Slack 호출 한도에 도달했습니다. 잠시 후 다시 시도해 주세요. 자동 재시도하지 않았습니다.',
     DOWNLOAD_FAILED: 'Slack 첨부를 읽지 못했습니다. 잠시 후 다시 시도해 주세요.',
     UNSAFE_URL: '허용된 Slack 다운로드 주소가 아니므로 파일을 읽지 않았습니다.',
     FILE_LIMIT: '파일이 최대 4 MiB 한도를 초과합니다. 작은 파일로 나눠 주세요.',
@@ -41,5 +42,6 @@ export function failure(error: unknown) {
     PARSER_LIMIT: '안전한 파싱 시간·압축 해제·페이지·행·열·셀·텍스트 한도를 초과했습니다. 파일을 나눠 주세요.',
     INVALID_PDF: '지원하는 텍스트 PDF로 해석하지 못했습니다.',
   };
-  return { ok: false as const, error: { code, message: messages[code] }, limits: ATTACHMENT_LIMITS };
+  return { ok: false as const, error: { code, message: messages[code],
+    ...(error instanceof AttachmentError && error.retryAfterSeconds !== undefined ? { retryAfterSeconds: error.retryAfterSeconds } : {}) }, limits: ATTACHMENT_LIMITS };
 }

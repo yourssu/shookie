@@ -4,7 +4,7 @@
 
 `slack_read_attachment`는 **현재 요청 채널에서 요청자가 접근 가능한 메시지에 실제 첨부된 파일**만 읽는다. 입력은 `fileId`, `messageTs` 및 스레드 댓글의 경우 루트 `threadTs`이며 채널·사용자·토큰·URL을 모델이 지정할 수 없다. 신뢰된 Slack actor/client bridge가 요청자의 현재 채널 접근과 최신 메시지→파일 관계를 검증한 뒤 `files.info` 메타데이터를 얻는다. 봇의 파일 접근 권한만으로 임의 fileId를 읽어서는 안 된다. 다른 채널 검색/파일 읽기를 허용하지 않는다.
 
-기존 `SLACK_BOT_TOKEN`만 사용한다. 별도 user token이나 파일용 토큰이 없다. 운영자가 Slack 앱에 최소 `files:read`와 선행 Slack 읽기 도구가 요구하는 채널/history 읽기 권한이 있는지 확인해야 한다. 첨부 전용 bridge는 선행 `verifyCurrentSlackChannelAccess`를 주입받아 live current-channel scope를 얻고, 해당 채널에서 정확한 `messageTs`의 파일 관계를 검증한 후 메타데이터 조회 직전과 다운로드 직전에 scope를 재검증한다. `threadTs`는 같은 현재 채널의 정확한 댓글 조회에만 사용하며 별도 채널 권한을 부여하지 않는다. 새 scope가 필요하면 **사용자가 직접** Slack 앱의 권한 설정과 재설치를 수행해야 한다. 이 PR은 토큰 추가·운영 권한 변경·자동 재설치를 수행하지 않는다. 파일 보관/캐시 API 및 공개 web 도구와 결합하지 않는다.
+기존 `SLACK_BOT_TOKEN`만 사용한다. 별도 user token이나 파일용 토큰이 없다. 운영자가 Slack 앱에 최소 `files:read`와 선행 Slack 읽기 도구가 요구하는 채널/history 읽기 권한이 있는지 확인해야 한다. 첨부 전용 bridge는 선행 `readAuthorizedSlackMessage`를 주입받아 live current-channel의 정확한 메시지 첨부 ID 목록을 검증하고 `authorizeCurrentSlackChannel`로 메타데이터 조회 직전과 다운로드 직전에 scope를 재검증한다. 선행의 sanitized rate-limit status 및 retry hint는 안전한 첨부 오류로 변환하며 raw Slack 오류/credential을 전달하지 않는다. `threadTs`는 같은 현재 채널의 정확한 댓글 조회에만 사용하며 별도 채널 권한을 부여하지 않는다. 새 scope가 필요하면 **사용자가 직접** Slack 앱의 권한 설정과 재설치를 수행해야 한다. 이 PR은 토큰 추가·운영 권한 변경·자동 재설치를 수행하지 않는다. 파일 보관/캐시 API 및 공개 web 도구와 결합하지 않는다.
 
 ## 지원 형식
 
