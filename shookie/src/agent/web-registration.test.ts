@@ -13,13 +13,13 @@ afterEach(()=>{settings.EXA_API_KEY='';});
 describe('production agent registration',()=>{
   it('makes web_fetch usable without any search/domain key',async()=>{
     const agent=createAgent();
-    expect(Object.keys(await agent.listTools())).toEqual(['web_fetch','web_search']);
+    expect(Object.keys(await agent.listTools())).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content']);
     expect(await agent.getInstructions()).toContain('키 없으면 무료 MCP/속도 제한');
   });
   it('passes optional configured key to main direct search registration',async()=>{
     settings.EXA_API_KEY='synthetic-exa';
     const agent=createAgent();
-    expect(Object.keys(await agent.listTools())).toEqual(['web_fetch','web_search']);
+    expect(Object.keys(await agent.listTools())).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content']);
     expect(await agent.getInstructions()).toContain('web_search 등록됨 (Exa)');
   });
 });
