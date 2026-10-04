@@ -140,6 +140,7 @@ workflow는 `docker compose -f docker-compose.db.yml ps -q db` / `exec -T db pg_
 - `GITHUB_TOKEN` 권한은 workflow의 `permissions`로만 선언한다(workflow 기본 `contents: read`; build job `packages: write`;
   deploy job `packages: read`). 저장소 기본 workflow 권한 변경은 필요 없다. `GITHUB_TOKEN`은 git fetch(`contents: read`),
   main HEAD 조회(`gh api`), GHCR pull(`packages: read`)에 쓰이며 배포 중에만 유효하다.
+- 선택적 `SLACK_THREAD_HISTORY_USER_TOKEN` GitHub Secret은 채널 스레드 조회 전용 비회전 user token이다. 미설정 시 bot client 조회를 시도하며, 권한/부분조회 실패는 답변 없이 안내한다. 기존 per-user OAuth 재사용이나 자동 refresh는 하지 않는다. [최소권한 및 실제 Slack E2E 체크](slack-thread-context.md)를 참고한다.
 - 기존 secrets/vars는 모두 그대로다: `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `LLM_API_KEY`,
   `POSTHOG_API_KEY`, `GITHUB`, `POSTGRES_PASSWORD`, `SLACK_CLIENT_ID/SECRET`, `SLACK_TOKEN_ENCRYPTION_KEY`, `SHOOKIE_*_API_KEY` 및 `SLACK_*`/`RADAR_*` variables.
   `LLM_BASE_URL`/`LLM_MODEL`/`THREAD_WORKSPACE_*`/`LOG_LEVEL`은 이전과 같이 스크립트에 고정되어 있다. 새 환경변수를 `docker-compose.yml`에 추가하면

@@ -8,6 +8,12 @@ const envSchema = z.object({
   // Slack
   SLACK_BOT_TOKEN: z.string().min(1),
   SLACK_APP_TOKEN: z.string().min(1),
+  // Optional dedicated non-rotating user token for trusted channel thread mentions only.
+  // Never reuse the separate per-user OAuth token store.
+  SLACK_THREAD_HISTORY_USER_TOKEN: z.string().default("").refine(
+    value => value === "" || (value.startsWith("xoxp-") && value.length > 5 && value.length <= 8192 && !/\s/u.test(value)),
+    { message: "SLACK_THREAD_HISTORY_USER_TOKEN must be empty or a non-rotating xoxp user token" },
+  ),
   SLACK_USER_OAUTH_ENABLED: z
     .enum(["true", "false"])
     .default("false")

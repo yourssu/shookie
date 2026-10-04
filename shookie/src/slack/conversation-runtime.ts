@@ -19,6 +19,7 @@ export class ConversationRuntime {
     event: ConversationEvent,
     text: string,
     execute: (messages: Message[], commit: (answer: string) => Promise<void>) => Promise<void>,
+    authoritativeContext?: () => Promise<Message[]>,
   ): Promise<void> {
     const duplicate = this.pending.get(event.requestId);
     // The original delivery owns error reporting; retries must not emit duplicate errors.
@@ -38,7 +39,7 @@ export class ConversationRuntime {
       try {
         claimed = await this.repository.claim(event);
         if (!claimed) return;
-        let history = this.cache.get(event.sessionId);
+        let history = authoritativeContext ? [] : this.cache.get(event.sessionId);
         if (!history) {
           const turns = await this.repository.recent(event.sessionId, limits.recentTurns);
           history = turns.flatMap(turn => [
@@ -46,14 +47,16 @@ export class ConversationRuntime {
             { role: "assistant" as const, content: turn.assistantContent },
           ]);
         }
-        const messages = budgetMessages(history, text);
+        // Slack source is resolved inside claim + thread serialization and replaces DB/cache history entirely.
+        const messages = authoritativeContext ? await authoritativeContext() : budgetMessages(history, text);
         let committed = false;
         await execute(messages, async answer => {
           if (committed) throw new Error("Conversation already committed");
           await this.repository.complete(event, { userContent: text, assistantContent: answer });
           committed = true;
           // Cache only the bounded context, not potentially huge model outputs.
-          this.cache.set(event.sessionId, budgetMessages([...messages, { role: "assistant", content: answer }], "").slice(0, -1));
+          if (authoritativeContext) this.cache.clear(event.sessionId);
+          else this.cache.set(event.sessionId, budgetMessages([...messages, { role: "assistant", content: answer }], "").slice(0, -1));
         });
         if (!committed) throw new Error("Conversation did not commit");
       } catch (error) {
