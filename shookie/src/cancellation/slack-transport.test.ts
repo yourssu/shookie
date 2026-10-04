@@ -151,6 +151,36 @@ describe("dedicated Slack transport (real localhost HTTP, no Slack E2E)", () => 
     expect(shared.signal.aborted).toBe(false);
   });
 
+  it("preserves a tighter existing read/search timeout rather than relaxing it", async () => {
+    let timeout: number | undefined;
+    const h = await fixture((_req, res) => { res.setHeader("content-type", "application/json"); res.end('{"ok":true}'); });
+    const original = source({ ...h.options, timeout: 10_000, requestInterceptor: config => { timeout = config.timeout; return config; } });
+    await createCancellationSlackClient(original, new AbortController().signal).apiCall("auth.test");
+    expect(timeout).toBe(10_000);
+  });
+
+  it("does not log search action tokens or response data even when inherited SDK logging is DEBUG", async () => {
+    const inheritedLogger = {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      setLevel: vi.fn(), setName: vi.fn(), getLevel: () => LogLevel.DEBUG,
+    };
+    const actionToken = "synthetic-search-action-token";
+    const h = await fixture((req, res) => {
+      req.resume();
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, results: { messages: [{ content: actionToken }] },
+        response_metadata: { warnings: [actionToken], messages: [`[ERROR] ${actionToken}`] } }));
+    });
+    const original = source({ ...h.options, logger: inheritedLogger, logLevel: LogLevel.DEBUG });
+    for (const method of ["debug", "info", "warn", "error", "setLevel", "setName"] as const) inheritedLogger[method].mockClear();
+    const client = createCancellationSlackClient(original, new AbortController().signal);
+    await client.apiCall("assistant.search.context", { action_token: actionToken, query: "test" });
+    for (const method of ["debug", "info", "warn", "error", "setLevel", "setName"] as const) {
+      expect(inheritedLogger[method]).not.toHaveBeenCalled();
+    }
+    expect(original.webClientOptions.logger).toBe(inheritedLogger); // shared client config unchanged
+  });
+
   it("does not allow dynamic absolute URLs to bypass the inherited Slack endpoint", async () => {
     const paths: (string | undefined)[] = [];
     const h = await fixture((req, res) => {
