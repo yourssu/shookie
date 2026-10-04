@@ -39,8 +39,8 @@ vi.mock('../tools/web/tools.js',async(importOriginal)=>{
       fixture.networkCalls.push({url:url.href,headers,method:request?.method??'GET',body:request?.body});
       const stream=new PassThrough();
       const response=stream as unknown as http.IncomingMessage;
-      response.statusCode=200;response.headers={'content-type':url.hostname==='api.exa.ai'?'application/json':'text/plain'};
-      queueMicrotask(()=>stream.end(url.hostname==='api.exa.ai'?JSON.stringify({results:[{title:'Public source',url:'https://public-source.org/read',highlights:['Search snippet']}] }):'Verified public fixture text\nSecond line'));
+      response.statusCode=200;response.headers={'content-type':['api.exa.ai','mcp.exa.ai'].includes(url.hostname)?'application/json':'text/plain'};
+      queueMicrotask(()=>stream.end(url.hostname==='mcp.exa.ai'?JSON.stringify({jsonrpc:'2.0',id:1,result:{content:[{type:'text',text:'Title: Public source\nURL: https://public-source.org/read\nPublished: N/A\nAuthor: N/A\nHighlights:\nSearch snippet'}]}}):url.hostname==='api.exa.ai'?JSON.stringify({results:[{title:'Public source',url:'https://public-source.org/read',highlights:['Search snippet']}] }):'Verified public fixture text\nSecond line'));
       return response;
     },
   }})};
@@ -108,7 +108,12 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     expect(instructions).not.toContain('클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다');
     fixture.settings.EXA_API_KEY='';const noKey=createAgent();
     const noKeyTools=await noKey.listTools();
-    expect(Object.keys(noKeyTools)).toEqual(['web_fetch','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('검색 불가');
+    expect(Object.keys(noKeyTools)).toEqual(['web_fetch','web_search','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
+    const searched=await noKeyTools.web_search!.execute!({query:'public source',count:1} as never,{} as never);
+    expect(searched).toMatchObject({ok:true,evidence:'search_snippets',results:[{snippet:'Search snippet'}]});
+    expect(fixture.networkCalls).toHaveLength(1);
+    expect(fixture.networkCalls[0]).toMatchObject({url:'https://mcp.exa.ai/mcp?tools=web_search_exa',method:'POST'});
+    expect(fixture.networkCalls[0].headers['x-api-key']).toBeUndefined();
     const fetched=await noKeyTools.web_fetch!.execute!({url:'https://public-source.org/read',maxChars:1000} as never,{} as never);
     expect(fetched).toMatchObject({ok:true,evidence:'fetched_text'});
   });
