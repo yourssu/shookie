@@ -178,6 +178,10 @@ yarn workspace shookie test
 
 채널 메시지를 수신하고 OAuth 후 대기 메시지를 다시 읽으려면 Slack 앱에 공개/비공개 채널의 message event 구독과 해당 history scope가 필요합니다. 실제 Slack Redirect URL, 앱 scope/event 설정, 메시지 편집 정책과 알림 동작 검증은 자격증명이 있는 배포 환경에서 진행해야 합니다.
 
+### Slack 첨부 텍스트 읽기
+
+현재 요청 채널의 메시지에 첨부된 UTF-8 텍스트/Markdown, CSV, 텍스트 PDF는 메인의 `slack_read_attachment`로 읽을 수 있어요. 요청자 접근 권한과 정확한 메시지 첨부 관계를 검증하며, 다른 채널의 임의 fileId나 URL로는 읽지 않습니다. 기존 bot token만 사용하며 최소 `files:read` 등 앱 읽기 권한은 운영자가 수동으로 확인해야 합니다. OCR·이미지·영상·Office·암호화 PDF는 미지원입니다. 형식·구간/검색·출처·잘림·보안 한도와 합성/실제 E2E 구분은 [Slack 첨부 읽기 문서](docs/slack-attachments.md)를 참고하세요.
+
 ### Slack `/group` 빠른 생성
 
 Slack 앱에 `/group` Slash Command를 등록하고 Shookie의 명령어 플래그를 켜면 다음 형식으로 Radar에 멘션 그룹을 만들 수 있어요.

@@ -10,8 +10,11 @@ import type { Agent } from "@mastra/core/agent";
 import { WebClient, LogLevel } from "@slack/web-api";
 import { silentSlackLogger } from "../tools/slack/sdk-logger.js";
 import type { SlackReadClient } from "../tools/slack/client.js";
+import { createSlackAttachmentOptions } from "../tools/attachments/slack-authorization.js";
+import type { DownloadDependencies } from "../tools/attachments/download.js";
 
-export function createAgent(options: { slackClient?: SlackReadClient } = {}) {
+export function createAgent(options: { slackClient?: SlackReadClient & Partial<Pick<WebClient, "files">>;
+  attachmentDownloadDependencies?: DownloadDependencies } = {}) {
   const provider = createDeepSeek({
     apiKey: config.LLM_API_KEY,
     baseURL: config.LLM_BASE_URL,
@@ -50,7 +53,11 @@ export function createAgent(options: { slackClient?: SlackReadClient } = {}) {
   const slackClient = options.slackClient ?? (config.SLACK_BOT_TOKEN
     ? new WebClient(config.SLACK_BOT_TOKEN, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000, logger: silentSlackLogger, logLevel: LogLevel.ERROR })
     : undefined);
-  const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY }, slackClient);
+  const attachments = slackClient?.files && config.SLACK_BOT_TOKEN
+    ? createSlackAttachmentOptions(slackClient as SlackReadClient & Pick<WebClient, "files">,
+        config.SLACK_BOT_TOKEN, options.attachmentDownloadDependencies)
+    : undefined;
+  const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY }, slackClient, attachments);
   logger.info("메인 에이전트 생성 완료");
 
   return mainShookie;

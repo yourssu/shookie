@@ -4,6 +4,7 @@ import type { Agent } from "@mastra/core/agent";
 import type { RequestContext } from "@mastra/core/request-context";
 import { createWebTools } from "../../../tools/web/tools.js";
 import { createSlackReadTools } from "../../../tools/slack/tools.js";
+import { createAttachmentTools, type AttachmentToolOptions } from "../../../tools/attachments/tools.js";
 import type { SlackReadClient } from "../../../tools/slack/client.js";
 import { logger } from "../../../logger.js";
 import { getCurrentContext } from "../../invocation-context.js";
@@ -116,10 +117,11 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
 export function createMainShookieTools(subAgents: {
   posthog?: Agent;
   codeExplorer?: Agent;
-}, webOptions: Parameters<typeof createWebTools>[0] = {}, slackClient?: SlackReadClient) {
+}, webOptions: Parameters<typeof createWebTools>[0] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions) {
   const tools: Record<string, ReturnType<typeof createTool>> = {
     ...createWebTools(webOptions),
     ...(slackClient ? createSlackReadTools(slackClient) : {}),
+    ...(attachments ? createAttachmentTools(attachments) : {}),
   };
 
   if (subAgents.posthog) {
