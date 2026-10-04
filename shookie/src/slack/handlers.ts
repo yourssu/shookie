@@ -33,6 +33,7 @@ import { budgetSlackThread, readSlackThread, SlackThreadContextError, THREAD_CON
   type ThreadSummarizer } from "./slack-thread-source.js";
 import { summarizeThread } from "./thread-summarizer.js";
 import { bindSlackReadContext } from "../tools/slack/context.js";
+import { projectEventAttachments, type AttachmentCandidates } from "../tools/attachments/event-metadata.js";
 
 const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   posthog_agent: "🔍 PostHog 데이터 분석 중...",
@@ -40,10 +41,11 @@ const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   slack_read_thread: "💬 현재 채널 스레드 읽는 중...",
   slack_read_channel: "💬 현재 채널 기록 읽는 중...",
   slack_search: "💬 Slack 검색 지원 확인 중...",
+  slack_read_attachment: "📎 Slack 첨부 텍스트 읽는 중...",
 };
 
 // Do not persist/debug-log Slack read arguments, opaque cursors or fetched participant text.
-const isSlackReadTool = (toolName: string) => ["slack_search", "slack_read_thread", "slack_read_channel"].includes(toolName);
+const isSlackReadTool = (toolName: string) => ["slack_search", "slack_read_thread", "slack_read_channel", "slack_read_attachment"].includes(toolName);
 const safeToolLog = (toolName: string, value: unknown): unknown =>
   isSlackReadTool(toolName) ? { redacted: true } : value;
 
@@ -75,7 +77,7 @@ export function registerHandlers(
   const runtime = new ConversationRuntime(repository);
   const receive = async (kind: "app_mention" | "message", raw: unknown, body: unknown, context: unknown) => {
     const event = raw as { channel?: string; channel_type?: string; ts?: string; thread_ts?: string;
-      user?: string; team?: string; text?: string; bot_id?: string; subtype?: string; action_token?: unknown };
+      user?: string; team?: string; text?: string; bot_id?: string; subtype?: string; action_token?: unknown; files?: unknown };
     // Only original human messages. Edits/deletes and bot/system subtypes cannot trigger runs.
     if (event.bot_id || event.subtype || !event.user || !event.channel || !event.ts) return;
     if (kind === "message" && event.channel_type !== "im") return;
@@ -89,7 +91,9 @@ export function registerHandlers(
       : `slack-fallback:${createHash("sha256").update(JSON.stringify([teamId ?? null, event.channel, event.ts, event.user])).digest("hex")}`;
     // Remove only this bot's mention; preserve other users' identities.
     const rawText = event.text ?? "";
-    const text = (trusted.botUserId ? rawText.split(`<@${trusted.botUserId}>`).join("") : rawText).trim();
+    const attachments = projectEventAttachments(event.files, { channelId: event.channel, messageTs: event.ts, threadTs });
+    const text = (trusted.botUserId ? rawText.split(`<@${trusted.botUserId}>`).join("") : rawText).trim() ||
+      (attachments.files.length ? "첨부 파일을 확인해 주세요." : "");
     if (!text && kind === "message") return;
     const identity: ConversationEvent = {
       sessionId, requestId, channel: event.channel, threadTs, userId: event.user,
@@ -113,7 +117,7 @@ export function registerHandlers(
           await postToThread(app, identity.channel, threadTs, greeting);
           return;
         }
-        await handleConversation(app, agent, text, identity, messages, commit, event.action_token);
+        await handleConversation(app, agent, text, identity, messages, commit, event.action_token, attachments);
       }, slackContext);
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
@@ -139,6 +143,7 @@ async function handleConversation(
   messages: Message[],
   commit: (answer: string) => Promise<void>,
   actionToken?: unknown,
+  attachments?: AttachmentCandidates,
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
@@ -191,7 +196,11 @@ async function handleConversation(
       const modelMessages = currentChannel && /^[A-Z][A-Z0-9]{1,63}$/.test(currentChannel)
         ? [{ role: "system" as const, content: `[사용자가 현재 보고 있는 채널 ID (참고 정보): ${currentChannel}]` }, ...messages]
         : messages;
-      const streamResult = await agent.stream(modelMessages, {
+      // Candidate metadata is ephemeral user data, never trusted identity or a persisted file grant.
+      const withAttachments = attachments?.files.length
+        ? [...modelMessages, { role: "user" as const, content: JSON.stringify(attachments) }]
+        : modelMessages;
+      const streamResult = await agent.stream(withAttachments, {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         requestContext,
       });
@@ -255,7 +264,9 @@ async function handleConversation(
               // output 필드로 긴 결과 본문 전송 (rich_text, ~3000자).
               // 도구 결과가 JSON/문자열 혼합이라 문자열로 정규화 후 슬라이스.
               const rawResult = payload.result;
-              const resultStr = rawResult
+              const resultStr = toolName === "slack_read_attachment"
+                ? "첨부 읽기 결과를 확인했습니다. 출처·지원 여부·잘림은 최종 답변에 반영합니다."
+                : rawResult
                 ? (typeof rawResult === "string"
                     ? rawResult
                     : JSON.stringify(rawResult)

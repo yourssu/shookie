@@ -32,7 +32,7 @@ export async function readAttachment(input: z.input<typeof attachmentInput>, opt
     if (attachmentKind(download.contentType) !== kind) throw new AttachmentError('UNSUPPORTED_TYPE');
     if (download.body.length !== file.size) throw new AttachmentError('DOWNLOAD_FAILED');
     const parsed = await parseAttachment(download.body, kind);
-    const source = { fileId: file.id, name: prefix(file.name, 512), channelId, messageTs };
+    const source = { fileId: file.id, name: prefix(file.name, 512), nameTruncated: Buffer.byteLength(file.name) > 512, channelId, messageTs };
     const query = args.query?.toLocaleLowerCase('en-US');
     const matches = parsed.units.map((unit, index) => ({ ...unit, unit: index + 1 })).filter(unit =>
       !query || (unit.text ?? unit.cells?.join('\n') ?? '').toLocaleLowerCase('en-US').includes(query));

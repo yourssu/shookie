@@ -16,10 +16,13 @@ const add = unit => {
 };
 try {
   if (kind !== 'pdf') {
-    if (body.subarray(0, 5).toString() === '%PDF-' || body.subarray(0, 2).toString() === 'PK') fail('UNSUPPORTED_TYPE');
+    const signature = body.subarray(0, 8);
+    if (signature.subarray(0, 5).toString() === '%PDF-' || signature.subarray(0, 2).toString() === 'PK' ||
+        /^(?:GIF87a|GIF89a)/u.test(signature.toString('ascii')) || signature.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])) ||
+        signature.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]))) fail('UNSUPPORTED_TYPE');
     let text;
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(body); } catch { fail('INVALID_UTF8'); }
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(text)) fail('UNSUPPORTED_TYPE');
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(text) || /^\s*%PDF-/u.test(text)) fail('UNSUPPORTED_TYPE');
     text = text.replace(/\r\n?/gu, '\n');
     if (kind === 'text') {
       const lines = text ? text.split('\n') : [];
@@ -62,7 +65,7 @@ try {
     const lex = () => {
       if (pushed.length) return pushed.pop();
       while (position < raw.length) {
-        if (/\s/u.test(raw[position])) { position++; continue; }
+        if (/[\x00\t\n\f\r ]/u.test(raw[position])) { position++; continue; }
         if (raw[position] === '%') { while (position < raw.length && !/[\r\n]/u.test(raw[position])) position++; continue; }
         break;
       }
@@ -88,7 +91,7 @@ try {
       if (c === '>' && raw[position] === '>') { position++; return '>>'; }
       if ('[]{}>'.includes(c)) return c;
       const start = position - 1;
-      while (position < raw.length && !/[\s()[\]{}<>/%]/u.test(raw[position])) position++;
+      while (position < raw.length && !/[\x00\t\n\f\r ()[\]{}<>/%]/u.test(raw[position])) position++;
       const token = raw.slice(start, position);
       if (token.startsWith('/') && token.includes('#')) fail('PARSER_LIMIT');
       return /^[-+]?\d+(?:\.\d+)?$/u.test(token) ? Number(token) : token;

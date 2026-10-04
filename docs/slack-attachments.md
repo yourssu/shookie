@@ -16,7 +16,7 @@
 
 ## 구간·검색·출처
 
-`unitStart` (1부터), `unitCount` (최대 200)는 텍스트 줄·CSV 논리 행·PDF 페이지 구간이다. `query`는 정규식이 아닌 대소문자 무시 리터럴 검색이며 매칭된 원문 단위 번호를 유지한다. 매 요청은 접근을 다시 확인하고 다운로드/파싱한다. 큰 파일은 최대 4 MiB 범위에서 구간·검색으로 읽으며 전체 결과 캐시는 없다.
+`unitStart` (1부터), `unitCount` (최대 200)는 텍스트 줄·CSV 논리 행·PDF 페이지 구간이다. `query`는 정규식이 아닌 대소문자 무시 리터럴 검색이며 매칭된 원문 단위 번호를 유지한다. 매 요청은 접근을 다시 확인하고 다운로드/파싱한다. 큰 파일은 최대 4 MiB 범위에서 구간·검색으로 읽되 파싱 JSON 1 MiB 한도를 함께 적용하므로 원문/줄 수에 따라 4 MiB보다 작은 파일도 거부될 수 있다. 전체 결과 캐시는 없다. 현재 이벤트의 파일 후보는 handler가 URL/미리보기 없이 최대 20개·8,000 UTF-8 bytes로 투영하고 비신뢰 user 데이터로 해당 호출에만 전달한다. 메타데이터 잘림은 명시하며 DB 대화 맥락/권한 grant로 저장하지 않는다. 텍스트 없는 첨부-only DM도 처리한다.
 
 결과는 `source.fileId/name/channelId/messageTs`, 단위별 `start/end` 및 PDF `page`를 가진다. 답변은 이 출처를 함께 인용해야 한다. `complete`는 전체 원문 반환에만 true이다. `truncated`는 요청 구간이 출력 byte 한도로 잘렸다는 뜻이며 범위 선택만으로는 true가 아니다. `nextUnit`으로 다음 구간을 요청한다. 단일 너무 큰 단위가 잘리면 같은 unit을 표시하며, 원본을 나누도록 안내한다. CSV 출력 셀도 잘릴 수 있으므로 단위 `truncated`/`omittedCells`를 반드시 확인한다. 원문이나 파일명의 지시를 실행하거나 승인으로 간주하지 않는다.
 
@@ -37,10 +37,10 @@
 | 파싱 결과 JSON/단위 수 | 1 MiB / 100,000 |
 | 사용자 도구 결과 JSON UTF-8 | 32,768 bytes |
 
-모든 파싱은 메인 이벤트 루프가 아닌 별도 Node 프로세스에서 수행한다. stdin/stdout 크기를 제한하고 stderr는 반환하지 않는다. 자식 env에는 PATH/LANG만 전달해 bot/API 토큰 및 NODE_OPTIONS 등을 제거한다. PDF.js에는 바이너리 data만 제공하고 font/network/eval/XFA/render 사용을 비활성화한다. PDF stream 사전 검사는 literal string/comment/hex를 무시하는 bounded lexer로 수행하고 bounded zlib inflate를 통해 parser에 넘기기 전 압축폭탄을 거부한다. PDF.js의 object stream에서 stream object를 허용하지 않는 구조와 동일한 direct-stream 정책을 사용한다.
+모든 파싱은 메인 이벤트 루프가 아닌 별도 Node 프로세스에서 수행한다. stdin/stdout 크기를 제한하고 stderr는 반환하지 않는다. 자식 env에는 PATH/LANG만 전달해 bot/API 토큰 및 NODE_OPTIONS 등을 제거한다. PDF.js에는 바이너리 data만 제공하고 font/network/eval/XFA/render 사용을 비활성화한다. PDF stream 사전 검사는 literal string/comment/hex를 무시하고 NUL을 포함한 PDF whitespace를 처리하는 bounded lexer로 수행하고 bounded zlib inflate를 통해 parser에 넘기기 전 압축폭탄을 거부한다. PDF.js의 object stream에서 stream object를 허용하지 않는 구조와 동일한 direct-stream 정책을 사용한다.
 
 **격리는 OS sandbox를 뜻하지 않는다.** V8 heap 제한은 RSS/전체 native memory의 hard rlimit가 아니며, 이 구현은 bounded 입력·해제·출력·페이지·이미지렌더 금지와 kill deadline을 함께 적용한다. 미래 parser 교체/새 filter 허용 시 별도 보안 검토가 필요하다. 에러는 한국어 안내와 안전한 code만 반환하며 토큰, URL, Slack 원본 오류, 파일 본문을 로그/에러로 노출하지 않는다. 요청 전체 timeout/cancel/budget 작업은 포함하지 않는다.
 
 ## 검증 구분
 
-`src/tools/attachments/*.test.ts`는 합성 Slack capability/HTTP/DNS 응답과 직접 생성한 여러 페이지 텍스트 PDF로 검증한다. credential redirect 차단, 사설 DNS, body/deadline, Unicode/잘못된 encoding, CSV multiline/formula/한도, PDF 암호화 marker/빈 페이지/압축폭탄/페이지 한도, parser wall kill/concurrency/token-free env, 도구 호출과 출처/출력 한도를 포함한다. **실제 Slack credential·실제 Slack 첨부 E2E는 실행하지 않았다.** 암호화 테스트는 qpdf로 AES-256 암호화한 합성 PDF fixture와 Encrypt marker를 함께 검증한다. 이미지-only 합성 PDF 및 빈 PDF의 텍스트 없음도 검증하지만 실제 스캔 문서 OCR을 실행한 것은 아니다. Node 20.20.2와 로컬 Node 24에서 같은 첨부 테스트를 실행한다.
+`src/tools/attachments/*.test.ts`는 합성 Slack capability/HTTP/DNS 응답과 직접 생성한 여러 페이지 텍스트 PDF로 검증한다. 병합된 Slack WeakMap bridge를 사용하는 실제 createAgent/main 도구와 handler→첨부 metadata→live exact relation→files.info→hardened download→격리 parser 합성 통합도 검증한다. 현재 private 채널과 DM 읽기, 다른 채널/팀/임의 fileId/위조 context 차단, 다운로드 전 membership 철회, 부모가 아닌 정확한 댓글 관계, web/Slack 도구 등록 합집합, URL/credential 없는 후보 투영과 도구 로그 redaction을 포함한다. credential redirect 차단, 사설 DNS, body/deadline, Unicode/잘못된 encoding, CSV multiline/formula/한도, PDF 암호화 marker/빈 페이지/압축폭탄/페이지 한도, parser wall kill/concurrency/token-free env, 도구 호출과 출처/출력 한도를 포함한다. **실제 Slack credential·실제 Slack 첨부 E2E는 실행하지 않았다.** 암호화 테스트는 qpdf로 AES-256 암호화한 합성 PDF fixture와 Encrypt marker를 함께 검증한다. 이미지-only 합성 PDF 및 빈 PDF의 텍스트 없음도 검증하지만 실제 스캔 문서 OCR을 실행한 것은 아니다. Node 20.20.2와 로컬 Node 24에서 같은 첨부 테스트를 실행한다.

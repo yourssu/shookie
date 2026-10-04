@@ -32,6 +32,11 @@ describe('attachment tool capability contract and bounded citations', () => {
       file: { id: 'FOTHER', name: 'bad', mimetype: 'text/plain', size: 6, url_private_download: 'https://evil.test' } });
     expect(await readAttachment(input, opts)).toMatchObject({ ok: false, error: { code: 'ACCESS_DENIED' } });
     expect(opts.downloadDependencies.requests).toHaveLength(0);
+    const oversize = options(Buffer.from('small'));
+    oversize.authorize.mockResolvedValue({ channelId: 'C123', messageTs: input.messageTs,
+      file: { id: 'F123', name: 'large.txt', mimetype: 'text/plain', size: L.fileBytes + 1, url_private_download: 'https://files.slack.com/files-pri/T1-F123/file' } });
+    expect(await readAttachment(input, oversize)).toMatchObject({ ok: false, error: { code: 'FILE_LIMIT' } });
+    expect(oversize.downloadDependencies.requests).toHaveLength(0);
     expect(await readAttachment(input, options(Buffer.from('PK\x03\x04')))).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED_TYPE' } });
     expect(await readAttachment(input, options(Buffer.from('word'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED_TYPE' } });
     expect(await readAttachment(input, options(Buffer.from('ascii'), 'text/plain; charset=iso-8859-1'))).toMatchObject({ ok: false, error: { code: 'INVALID_UTF8' } });

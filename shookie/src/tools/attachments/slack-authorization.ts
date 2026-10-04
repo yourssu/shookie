@@ -1,12 +1,14 @@
 import type { WebClient } from '@slack/web-api';
 import { z } from 'zod';
 import { ATTACHMENT_LIMITS as L, AttachmentError, attachmentKind, type AuthorizedAttachment } from './policy.js';
+import { authorizeCurrentSlackChannel, readAuthorizedSlackMessage,
+  type CurrentSlackAccess, type AuthorizedSlackMessage } from '../slack/authorization.js';
+import type { AttachmentToolOptions } from './tools.js';
+import type { DownloadDependencies } from './download.js';
 
 export type AttachmentSlackClient = Pick<WebClient, 'auth' | 'conversations' | 'files'>;
-// Structural DI contracts mirror the approved predecessor API. No shared imports before merge.
-export type AttachmentScope = Readonly<{ identity: Readonly<{ userId: string; teamId: string; channel: string; requestId: string }>;
-  channelId: string; kind: 'public_channel' | 'private_channel' | 'im'; workspaceHost?: string }>;
-export type AttachmentMessage = Readonly<{ channelId: string; messageTs: string; threadTs?: string; fileIds: readonly string[] }>;
+export type AttachmentScope = CurrentSlackAccess;
+export type AttachmentMessage = AuthorizedSlackMessage;
 export type AttachmentAuthorizationDependencies = {
   client: AttachmentSlackClient;
   authorizeCurrentSlackChannel: (client: AttachmentSlackClient, requestContext: object | undefined,
@@ -33,6 +35,13 @@ function safeError(error: unknown): AttachmentError {
     return new AttachmentError('RATE_LIMIT', typeof retry === 'number' && Number.isFinite(retry) && retry > 0 ? Math.min(3600, retry) : undefined);
   }
   return new AttachmentError(safe?.data?.error === 'missing_scope' ? 'MISSING_SCOPE' : 'ACCESS_DENIED');
+}
+/** Production adapter: existing bot client/token + predecessor's live trusted WeakMap bridge. */
+export function createSlackAttachmentOptions(client: AttachmentSlackClient, botToken: string,
+  downloadDependencies?: DownloadDependencies): AttachmentToolOptions {
+  const deps: AttachmentAuthorizationDependencies = { client, authorizeCurrentSlackChannel, readAuthorizedSlackMessage };
+  return { botToken, downloadDependencies,
+    authorize: (fileId, messageTs, requestContext, threadTs) => authorizeSlackAttachment(deps, requestContext, { fileId, messageTs, threadTs }) };
 }
 /** Exact live current-channel attachment relation first; files.info alone NEVER grants access. */
 export async function authorizeSlackAttachment(

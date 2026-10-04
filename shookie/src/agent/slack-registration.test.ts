@@ -7,7 +7,7 @@ import { bindSlackReadContext } from "../tools/slack/context.js";
 
 const fixture = vi.hoisted(() => ({
   settings: { LLM_API_KEY: "synthetic", LLM_BASE_URL: "https://api.deepseek.com", LLM_MODEL: "deepseek-flash", POSTHOG_API_KEY: "", GITHUB: "", EXA_API_KEY: "", SLACK_BOT_TOKEN: "synthetic-bot-token", MAX_TOOL_ITERATIONS: 5, THREAD_WORKSPACE_BASE_PATH: "/synthetic", THREAD_WORKSPACE_MAX_GB: 1 },
-  client: { auth: { test: vi.fn() }, conversations: { info: vi.fn(), members: vi.fn(), history: vi.fn(), replies: vi.fn() }, apiCall: vi.fn() },
+  client: { auth: { test: vi.fn() }, conversations: { info: vi.fn(), members: vi.fn(), history: vi.fn(), replies: vi.fn() }, files: { info: vi.fn() }, apiCall: vi.fn() },
   makeClient: vi.fn(),
 }));
 vi.mock("../config.js", () => ({ config: fixture.settings }));
@@ -32,7 +32,7 @@ const execute = (tool: unknown, input: unknown, requestContext?: RequestContext)
 describe("actual main Slack tool registration", () => {
   it("defaults to the existing bot config only, with bounded SDK timeout/no retries, and advertises honest capabilities", async () => {
     const main = createAgent(); const tools = await main.listTools();
-    expect(Object.keys(tools)).toEqual(["web_fetch", "web_search", "web_read_more", "web_find_in_content", "slack_search", "slack_read_thread", "slack_read_channel"]);
+    expect(Object.keys(tools)).toEqual(["web_fetch", "web_search", "web_read_more", "web_find_in_content", "slack_search", "slack_read_thread", "slack_read_channel", "slack_read_attachment"]);
     expect(fixture.makeClient).toHaveBeenCalledWith("synthetic-bot-token", expect.objectContaining({ rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000, logLevel: "error", logger: expect.objectContaining({ debug: expect.any(Function), error: expect.any(Function) }) }));
     const instructions = String(await main.getInstructions());
     expect(instructions).toContain("slack_read_thread / slack_read_channel 등록됨");
