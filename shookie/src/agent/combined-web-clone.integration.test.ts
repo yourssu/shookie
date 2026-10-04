@@ -110,13 +110,13 @@ describe('combined production main + Slack delegation + controlled snapshots + p
   it('advertises actual registered clone/read/search and direct web capabilities, never writes',async()=>{
     const main=createAgent(),tools=await main.listTools(),instructions=String(await main.getInstructions());
     for(const key of ['github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search'])expect(instructions).toContain(key);
-    expect(Object.keys(tools)).toEqual(['web_fetch','web_search','code_explorer_agent']);
+    expect(Object.keys(tools)).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent']);
     expect(tools.code_explorer_agent!.description).toContain('통제된 bare clone');expect(tools.code_explorer_agent!.description).toContain('로컬 파일 목록·읽기·literal 검색');
     expect(instructions).toContain('파일 수정·명령 실행·push·PR 쓰기 권한은 없다');expect(instructions).toContain('공개 웹 검색, 공개 URL 읽기');
     expect(instructions).not.toContain('클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다');
     fixture.settings.EXA_API_KEY='';const noKey=createAgent();
     const noKeyTools=await noKey.listTools();
-    expect(Object.keys(noKeyTools)).toEqual(['web_fetch','web_search','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
+    expect(Object.keys(noKeyTools)).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
     const searched=await noKeyTools.web_search!.execute!({query:'public source',count:1} as never,{} as never);
     expect(searched).toMatchObject({ok:true,evidence:'search_snippets',results:[{snippet:'Search snippet'}]});
     expect(fixture.networkCalls).toHaveLength(1);
