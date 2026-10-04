@@ -32,7 +32,7 @@ const execute = (tool: unknown, input: unknown, requestContext?: RequestContext)
 describe("actual main Slack tool registration", () => {
   it("defaults to the existing bot config only, with bounded SDK timeout/no retries, and advertises honest capabilities", async () => {
     const main = createAgent(); const tools = await main.listTools();
-    expect(Object.keys(tools)).toEqual(["web_fetch", "web_search", "slack_search", "slack_read_thread", "slack_read_channel"]);
+    expect(Object.keys(tools)).toEqual(["web_fetch", "web_search", "web_read_more", "web_find_in_content", "slack_search", "slack_read_thread", "slack_read_channel"]);
     expect(fixture.makeClient).toHaveBeenCalledWith("synthetic-bot-token", expect.objectContaining({ rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000, logLevel: "error", logger: expect.objectContaining({ debug: expect.any(Function), error: expect.any(Function) }) }));
     const instructions = String(await main.getInstructions());
     expect(instructions).toContain("slack_read_thread / slack_read_channel 등록됨");
@@ -100,10 +100,10 @@ describe("actual main Slack tool registration", () => {
     } finally { spy.mockRestore(); }
   });
   it("keeps prior factory signatures/no-client tools compatible", async () => {
-    expect(Object.keys(createMainShookieTools({}))).toEqual(["web_fetch", "web_search"]);
+    expect(Object.keys(createMainShookieTools({}))).toEqual(["web_fetch", "web_search", "web_read_more", "web_find_in_content"]);
     const prior = fixture.settings.SLACK_BOT_TOKEN; fixture.settings.SLACK_BOT_TOKEN = "";
     try {
-      const main = createAgent(); expect(Object.keys(await main.listTools())).toEqual(["web_fetch", "web_search"]);
+      const main = createAgent(); expect(Object.keys(await main.listTools())).toEqual(["web_fetch", "web_search", "web_read_more", "web_find_in_content"]);
       expect(String(await main.getInstructions())).toContain("Slack 읽기");
       expect(String(await main.getInstructions())).not.toContain("slack_read_thread / slack_read_channel 등록됨");
     } finally { fixture.settings.SLACK_BOT_TOKEN = prior; }
