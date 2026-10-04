@@ -16,6 +16,7 @@ vi.mock("database", () => ({
   startInvocation: vi.fn(), completeAgentCall: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn(),
 }));
 import { registerHandlers } from "./handlers.js";
+import type { ThreadSummarizer } from "./slack-thread-source.js";
 import { appendTaskUpdate, startPlanStream, stopStreamWithBlocks } from "./streaming.js";
 
 beforeEach(() => {
@@ -25,7 +26,7 @@ beforeEach(() => {
 });
 
 type Delivery = { event: Record<string, unknown>; body: Record<string, unknown>; context: Record<string, unknown> };
-function harness() {
+function harness(summarize?: ThreadSummarizer) {
   const callbacks = new Map<string, (args: Delivery) => Promise<void>>();
   const postMessage = vi.fn(async () => ({ ok: true, ts: "reply" }));
   const app = { event: (kind: string, callback: (args: Delivery) => Promise<void>) => callbacks.set(kind, callback),
@@ -49,12 +50,18 @@ function harness() {
     text: Promise.resolve("answer"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }),
     steps: Promise.resolve([]), finishReason: Promise.resolve("stop"),
   }));
-  registerHandlers(app, { stream } as unknown as Agent, repository);
-  const deliver = (id: string, changes: Partial<Delivery> = {}, kind = "app_mention") => callbacks.get(kind)!({
-    event: { channel: "C1", ts: id, thread_ts: "root", user: "U1", text: "<@BOT> hello <@OTHER>" },
-    body: { event_id: id, team_id: "T1" }, context: { botUserId: "BOT" }, ...changes,
-  });
-  return { deliver, postMessage, repository, turns, events, stream, client: app.client };
+  registerHandlers(app, { stream } as unknown as Agent, repository, summarize);
+  const replies = vi.fn();
+  (app.client as unknown as { conversations: unknown }).conversations = { replies };
+  const deliver = (id: string, changes: Partial<Delivery> = {}, kind?: string) => {
+    const delivery = {
+      event: { channel: "C1", ts: id, thread_ts: "root", user: "U1", text: "<@BOT> hello <@OTHER>" },
+      body: { event_id: id, team_id: "T1" }, context: { botUserId: "BOT" }, ...changes,
+    };
+    if (!kind) delivery.event = { channel_type: "im", ...delivery.event };
+    return callbacks.get(kind ?? "message")!(delivery);
+  };
+  return { deliver, postMessage, repository, turns, events, stream, replies, client: app.client };
 }
 
 describe("actual Slack handler wiring", () => {
@@ -247,11 +254,83 @@ describe("actual Slack handler wiring", () => {
     expect(h.turns.size).toBe(0);
   });
 
+  it("uses top-level mention event alone, ignoring DB history and not fetching replies", async () => {
+    const h = harness();
+    await h.deliver("dm-prior");
+    await h.deliver("top", { event: { channel: "C1", ts: "root", user: "U1", text: "<@BOT> top original <@OTHER>" } }, "app_mention");
+    expect((h.stream.mock.calls as unknown as [unknown][]).at(-1)?.[0]).toEqual([{ role: "user", content: "top original <@OTHER>" }]);
+    expect(h.replies).not.toHaveBeenCalled();
+    expect(h.repository.recent).toHaveBeenCalledTimes(1); // DM only
+  });
+
+  it("uses Slack history once rather than DB turns or appended current input, and persists only current pair", async () => {
+    const h = harness();
+    h.replies.mockResolvedValue({ ok: true, messages: [
+      { ts: "1.000001", text: "root", user: "U0", reply_count: 3 },
+      { ts: "1.000002", text: "other opinion", user: "U2", thread_ts: "1.000001" },
+      { ts: "1.000003", text: "old Shookie answer", user: "BOT", bot_id: "BSH", thread_ts: "1.000001" },
+      { ts: "1.000004", text: "<@BOT> current", user: "U1", thread_ts: "1.000001" },
+    ] });
+    vi.mocked(h.repository.recent).mockRejectedValue(new Error("DB hydration should not occur"));
+    const changes = { event: { channel: "C1", ts: "1.000004", thread_ts: "1.000001", user: "U1", text: "<@BOT> current" } };
+    await Promise.all([h.deliver("thread", changes, "app_mention"), h.deliver("thread", changes, "app_mention")]);
+    await h.deliver("thread", changes, "app_mention");
+    expect(h.replies).toHaveBeenCalledTimes(1);
+    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "1.000001", limit: 15 });
+    expect(h.stream).toHaveBeenCalledTimes(1);
+    const dialogue = (h.stream.mock.calls as unknown as [{ role: string; content: string }[]][])[0][0];
+    expect(dialogue.map(m => JSON.parse(m.content).text)).toEqual(["root", "other opinion", "old Shookie answer", "<@BOT> current"]);
+    expect(dialogue.map(m => m.role)).toEqual(["user", "user", "assistant", "user"]);
+    expect(h.repository.recent).not.toHaveBeenCalled();
+    expect([...h.turns.values()].flat()).toEqual([{ userContent: "current", assistantContent: "answer" }]);
+  });
+
+  it.each([
+    { ok: false, error: "missing_scope" }, { ok: true, messages: [] },
+    { ok: true, messages: [{ ts: "1.000001", text: "root", user: "U1", reply_count: 2 }] },
+  ])("blocks answer/stream/save for failed or partial Slack context", async response => {
+    const h = harness();
+    h.replies.mockResolvedValue(response);
+    await h.deliver("context-failed", { event: { channel: "C1", ts: "1.000003", thread_ts: "1.000001", user: "U1", text: "<@BOT>" } }, "app_mention");
+    expect(h.stream).not.toHaveBeenCalled();
+    expect(startPlanStream).not.toHaveBeenCalled();
+    expect(h.repository.complete).not.toHaveBeenCalled();
+    expect(h.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: expect.stringContaining("스레드 전체 맥락") }));
+    expect(JSON.stringify(h.postMessage.mock.calls)).not.toContain("missing_scope");
+  });
+
+  it.each([true, false])("long thread summary failure=%s blocks or delivers bounded authoritative context", async failed => {
+    const summarize = vi.fn(async () => { if (failed) throw new Error("SECRET summary error"); return "older participants and bots discussion"; });
+    const h = harness(summarize);
+    const rootTs = "100.000001", currentTs = "100.000012";
+    h.replies.mockResolvedValue({ ok: true, messages: [
+      { ts: rootTs, user: "U0", text: "root original", reply_count: 11 },
+      ...Array.from({ length: 10 }, (_, i) => ({ ts: `100.${String(i + 2).padStart(6, "0")}`, thread_ts: rootTs, user: "U2", text: `${i}: ${"한😀".repeat(1500)}` })),
+      { ts: currentTs, user: "U1", thread_ts: rootTs, text: "<@BOT> current" },
+    ] });
+    await h.deliver("long", { event: { channel: "C1", ts: currentTs, thread_ts: rootTs, user: "U1", text: "<@BOT> current" } }, "app_mention");
+    expect(summarize).toHaveBeenCalled();
+    if (failed) {
+      expect(h.stream).not.toHaveBeenCalled();
+      expect(h.repository.complete).not.toHaveBeenCalled();
+      expect(startPlanStream).not.toHaveBeenCalled();
+      expect(JSON.stringify(h.postMessage.mock.calls)).not.toContain("SECRET");
+    } else {
+      const dialogue = (h.stream.mock.calls as unknown as [{ role: string; content: string }[]][])[0][0];
+      expect(JSON.parse(dialogue[0].content).text).toBe("root original");
+      expect(JSON.parse(dialogue[1].content)).toMatchObject({ summarized: true });
+      expect(dialogue[1].role).toBe("user");
+      expect(JSON.parse(dialogue.at(-1)!.content).text).toBe("<@BOT> current");
+      expect(dialogue.reduce((sum, m) => sum + Buffer.byteLength(m.content), 0)).toBeLessThanOrEqual(48_000);
+      expect(h.repository.complete).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("dedupes empty mentions and keeps greeting behavior", async () => {
     const h = harness();
     const changes = { event: { channel: "C1", ts: "empty", user: "U1", text: "<@BOT>" } };
-    await h.deliver("empty", changes);
-    await h.deliver("empty", changes);
+    await h.deliver("empty", changes, "app_mention");
+    await h.deliver("empty", changes, "app_mention");
     expect(h.stream).not.toHaveBeenCalled();
     expect(h.postMessage).toHaveBeenCalledTimes(1);
     expect(h.postMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "네, 무엇을 도와드릴까요?" }));

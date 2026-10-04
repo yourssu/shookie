@@ -29,6 +29,9 @@ import {
   logToolCall,
 } from "database";
 import { invocationStorage } from "../agent/invocation-context.js";
+import { budgetSlackThread, readSlackThread, SlackThreadContextError, THREAD_CONTEXT_ERROR_TEXT,
+  type ThreadSummarizer } from "./slack-thread-source.js";
+import { summarizeThread } from "./thread-summarizer.js";
 
 const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   posthog_agent: "🔍 PostHog 데이터 분석 중...",
@@ -58,6 +61,7 @@ export function registerHandlers(
   app: App,
   agent: Agent,
   repository: ConversationRepository = conversationRepository,
+  summarize: ThreadSummarizer = summarizeThread,
 ): void {
   const runtime = new ConversationRuntime(repository);
   const receive = async (kind: "app_mention" | "message", raw: unknown, body: unknown, context: unknown) => {
@@ -67,7 +71,7 @@ export function registerHandlers(
     if (event.bot_id || event.subtype || !event.user || !event.channel || !event.ts) return;
     if (kind === "message" && event.channel_type !== "im") return;
     const envelope = body as { event_id?: string; team_id?: string };
-    const trusted = context as { botUserId?: string; teamId?: string };
+    const trusted = context as { botUserId?: string; botId?: string; teamId?: string };
     const teamId = envelope.team_id ?? event.team ?? trusted.teamId;
     const threadTs = event.thread_ts ?? event.ts;
     const sessionId = JSON.stringify([teamId ?? null, event.channel, threadTs]);
@@ -82,19 +86,31 @@ export function registerHandlers(
       sessionId, requestId, channel: event.channel, threadTs, userId: event.user,
       ...(teamId ? { teamId } : {}), ...(envelope.event_id ? { eventId: envelope.event_id } : {}),
     };
+    const isMention = kind === "app_mention" && event.channel_type !== "im" && !event.channel.startsWith("D");
+    const isThreadReply = isMention && threadTs !== event.ts;
+    const slackContext = isMention ? async (): Promise<Message[]> => {
+      if (!isThreadReply) return [{ role: "user", content: text }];
+      const source = await readSlackThread(app.client, {
+        channel: identity.channel, threadTs, currentTs: event.ts!, userId: identity.userId,
+        botUserId: trusted.botUserId, botId: trusted.botId,
+      });
+      return budgetSlackThread(source, summarize);
+    } : undefined;
     try {
       await runtime.run(identity, text, async (messages, commit) => {
-        if (!text) {
+        if (!text && !isThreadReply) {
           const greeting = "네, 무엇을 도와드릴까요?";
           await commit(greeting);
           await postToThread(app, identity.channel, threadTs, greeting);
           return;
         }
         await handleConversation(app, agent, text, identity, messages, commit);
-      });
+      }, slackContext);
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
-      const errorText = error instanceof ConversationBusyError
+      const errorText = error instanceof SlackThreadContextError
+        ? THREAD_CONTEXT_ERROR_TEXT
+        : error instanceof ConversationBusyError
         ? "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
         : error instanceof ConversationInputError
           ? "메시지가 너무 깁니다. 내용을 나누어 보내주세요."
