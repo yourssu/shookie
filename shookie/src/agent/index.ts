@@ -7,7 +7,8 @@ import { getPostHogProjects } from "../projects/index.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import type { Agent } from "@mastra/core/agent";
-import { WebClient } from "@slack/web-api";
+import { WebClient, LogLevel } from "@slack/web-api";
+import { silentSlackLogger } from "../tools/slack/sdk-logger.js";
 import type { SlackReadClient } from "../tools/slack/client.js";
 
 export function createAgent(options: { slackClient?: SlackReadClient } = {}) {
@@ -47,7 +48,7 @@ export function createAgent(options: { slackClient?: SlackReadClient } = {}) {
 
   // Dedicated bot-only read client: no user-OAuth lookup, SDK retries or long 429 waits.
   const slackClient = options.slackClient ?? (config.SLACK_BOT_TOKEN
-    ? new WebClient(config.SLACK_BOT_TOKEN, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000 })
+    ? new WebClient(config.SLACK_BOT_TOKEN, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000, logger: silentSlackLogger, logLevel: LogLevel.ERROR })
     : undefined);
   const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY }, slackClient);
   logger.info("메인 에이전트 생성 완료");

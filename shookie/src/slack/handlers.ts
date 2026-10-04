@@ -75,7 +75,7 @@ export function registerHandlers(
   const runtime = new ConversationRuntime(repository);
   const receive = async (kind: "app_mention" | "message", raw: unknown, body: unknown, context: unknown) => {
     const event = raw as { channel?: string; channel_type?: string; ts?: string; thread_ts?: string;
-      user?: string; team?: string; text?: string; bot_id?: string; subtype?: string };
+      user?: string; team?: string; text?: string; bot_id?: string; subtype?: string; action_token?: unknown };
     // Only original human messages. Edits/deletes and bot/system subtypes cannot trigger runs.
     if (event.bot_id || event.subtype || !event.user || !event.channel || !event.ts) return;
     if (kind === "message" && event.channel_type !== "im") return;
@@ -113,7 +113,7 @@ export function registerHandlers(
           await postToThread(app, identity.channel, threadTs, greeting);
           return;
         }
-        await handleConversation(app, agent, text, identity, messages, commit);
+        await handleConversation(app, agent, text, identity, messages, commit, event.action_token);
       }, slackContext);
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
@@ -138,6 +138,7 @@ async function handleConversation(
   identity: ConversationEvent,
   messages: Message[],
   commit: (answer: string) => Promise<void>,
+  actionToken?: unknown,
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
@@ -184,7 +185,7 @@ async function handleConversation(
       ]);
       // Only authenticated event metadata authorizes explicit Slack reads, never model/user text
       // or the threadTs-only Assistant view hint. Missing team fails closed for read tools.
-      if (teamId) bindSlackReadContext(requestContext, { channel, userId, teamId, requestId });
+      if (teamId) bindSlackReadContext(requestContext, { channel, userId, teamId, requestId }, actionToken);
       // Preserve Assistant current-view hints without flattening conversation roles.
       // This is a hint, never an actor identity or authorization source (the legacy map is threadTs-only).
       const modelMessages = currentChannel && /^[A-Z][A-Z0-9]{1,63}$/.test(currentChannel)

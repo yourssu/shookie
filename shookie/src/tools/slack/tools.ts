@@ -7,7 +7,7 @@ export function createSlackReadTools(client: SlackReadClient) {
   return {
     slack_search: createTool({
       id: "slack-search",
-      description: "Slack 검색의 지원 여부를 확인합니다. search.messages는 user token 전용이므로 bot-token-only 환경에서는 unsupported를 반환하며 검색/우회 스캔하지 않습니다. 광역 검색이나 in: 범위 지정은 금지됩니다.",
+      description: "assistant.search.context로 현재 공개 채널의 메시지만 실제 키워드 검색합니다. 인증된 Slack event action_token과 bot search:read.public 필요. private/DM·다른 채널·검색 연산자(in:/OR 등)는 불가. 일반 단어만 입력하세요. 최대 20개 match/페이지, 4페이지. context는 match와 구분하고 complete/truncated/nextCursor를 확인하세요. 기능/토큰/권한 없으면 명확한 안내, 우회 스캔 없음.",
       inputSchema: searchInput, outputSchema: readOutput,
       execute: async (input, context) => reader.search(input, context?.requestContext),
     }),

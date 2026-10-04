@@ -13,6 +13,8 @@ export const threadInput = channelInput.extend({
 export const searchInput = z.object({
   query: z.string().trim().min(1).max(500),
   channel: channelId.optional(),
+  cursor: z.string().min(1).max(128).optional(),
+  limit: z.number().int().min(1).max(20).default(20),
 }).strict();
 
 export const readOutput = z.object({
@@ -23,7 +25,10 @@ export const readOutput = z.object({
     channel: z.string(), ts: z.string(), threadTs: z.string().optional(),
     author: z.object({ userId: z.string().nullable(), botId: z.string().nullable(), kind: z.enum(["participant", "bot", "system"]) }),
     text: z.string(), textTruncated: z.boolean(), replyCount: z.number().int().nonnegative().optional(),
+    permalink: z.string().optional(), searchMatch: z.boolean().optional(),
+    contextForTs: z.string().optional(), contextPosition: z.enum(["before", "after"]).optional(),
   })),
+  api: z.literal("assistant.search.context").optional(),
   page: z.number().int(), nextCursor: z.string().nullable(),
   complete: z.boolean(), truncated: z.boolean(),
   retryAfterSeconds: z.number().optional(),
