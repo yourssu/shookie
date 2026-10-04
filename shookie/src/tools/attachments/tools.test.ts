@@ -14,7 +14,7 @@ describe('attachment tool capability contract and bounded citations', () => {
   it('uses trusted authorization before reading; current-channel provenance is not model-controlled', async () => {
     const opts = options(Buffer.from('a\n한글 😀\nc'));
     const result = await readAttachment({ ...input, unitStart: 2, unitCount: 1 }, opts);
-    expect(opts.authorize).toHaveBeenCalledWith(input.fileId, input.messageTs);
+    expect(opts.authorize).toHaveBeenCalledWith(input.fileId, input.messageTs, undefined, undefined);
     expect(result).toMatchObject({ ok: true, source: { fileId: 'F123', channelId: 'C123', messageTs: input.messageTs },
       units: [{ unit: 2, start: 2, end: 2, text: '한글 😀' }], nextUnit: 3, complete: false, truncated: false });
   });

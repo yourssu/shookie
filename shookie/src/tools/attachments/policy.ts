@@ -24,7 +24,7 @@ export type AttachmentMetadata = { id: string; name: string; mimetype: string; s
 export type AttachmentSource = { fileId: string; name: string; channelId: string; messageTs: string };
 // This capability must be supplied by the trusted Slack actor/client bridge, never model arguments.
 export type AuthorizedAttachment = { file: AttachmentMetadata; channelId: string; messageTs: string };
-export type AuthorizeAttachment = (fileId: string, messageTs: string) => Promise<AuthorizedAttachment>;
+export type AuthorizeAttachment = (fileId: string, messageTs: string, requestContext?: object, threadTs?: string) => Promise<AuthorizedAttachment>;
 export function failure(error: unknown) {
   const code = error instanceof AttachmentError ? error.code : 'DOWNLOAD_FAILED';
   const messages: Record<AttachmentCode, string> = {
