@@ -4,7 +4,7 @@
 
 승인 정책은 **실제 실행 시작부터 전체 180초 + 요청자 전용 취소 버튼**이다. 대기열 시간은 포함하지 않는다. 새 전체 호출량 cap, 비용 기록/경고/강제 상한, 모델 변경, 운영 설정 또는 DB 변경은 없다. 기존 `maxSteps`와 호출 로그를 유지한다.
 
-현재 독립 모듈 (`shookie/src/cancellation/`)과 그 단위 테스트만 추가되어 있다. 아직 Slack action 등록, control message, runtime 및 agent/tool 전파는 연결되지 않았다. 아래 통합 계약은 선행 Slack read/첨부/shared handlers 및 web 변경을 main에 squash 통합한 뒤 적용한다. 이 단계 테스트 통과는 실제 Slack E2E 또는 provider 실행 취소 성공을 의미하지 않는다.
+현재 독립 controller/registry 모듈과 전용 Slack transport 프로토타입 (`shookie/src/cancellation/`) 및 그 테스트만 추가되어 있다. 아직 Slack action 등록, control message, runtime 및 agent/tool 전파는 연결되지 않았다. 아래 통합 계약은 선행 Slack read/첨부/shared handlers 및 web 변경을 main에 squash 통합한 뒤 적용한다. 이 단계 테스트 통과는 실제 Slack E2E 또는 provider 실행 취소 성공을 의미하지 않는다.
 
 ## 단일 실행 범위
 
@@ -43,10 +43,12 @@ runtime catch는 `isCommitted`를 확인하여 성공 뒤 `repository.fail()`을
 - Mastra 공개 `ToolExecutionContext.abortSignal`이 제공된다 (`dist/tools/types.d.ts`). 각 도구에서 해당 signal을 실제 fetch/HTTP/subprocess에 넘겨야 한다. 옵션을 넣었다는 사실만으로 모든 nested tool이 중단된다고 주장하지 않는다. SDK stream settlement와 늦은 tool continuation을 각각 검사한다.
 - thread summary의 AI SDK `generateText`는 `abortSignal`을 사용한다. 기존 60초 개별 timeout이 있다면 `AbortSignal.any([shared, localTimeout])`로 결합하고 전체 deadline은 유지한다.
 - fetch/Node HTTP/git subprocess는 AbortSignal을 지원한다. PostHog/GitHub/web/첨부 다운로드 및 parse 각각에서 실제 signal, settle, 전후 checkpoint를 확인한다. 동기 parse는 JS 이벤트 루프상 중간 취소가 불가능하므로 기존 크기 제한과 앞/뒤 절대 deadline 검사로 늦은 결과를 막는다.
-- 설치된 Slack WebClient는 메서드 argument의 signal을 transport signal로 해석하는 공개 API가 없다. 단순히 `conversations.replies({ signal })`로 넘기면 Slack API body일 뿐이다. 공개 `WebClientOptions.requestInterceptor`/`adapter`의 Axios request config에는 signal을 전달할 수 있다. 전용 실행 client + interceptor에서 shared signal을 넣고 `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`, bounded `timeout`을 적용하는 방식을 검토한다. 원래 client를 전역 변경하거나 취소 scope 간 interceptor를 공유하지 않는다. 기본 SDK는 무제한에 가까운(약 30분 재시도/timeout=0) 대기여서 그대로 두고 180초 종료를 주장할 수 없다.
+- 설치된 Slack WebClient는 메서드 argument의 signal을 transport signal로 해석하는 공개 API가 없다. 단순히 `conversations.replies({ signal })`로 넘기면 Slack API body일 뿐이다. 공개 `WebClientOptions.requestInterceptor`/`adapter`의 Axios request config에는 signal을 전달할 수 있다. `createCancellationSlackClient()` 프로토타입은 전용 실행 client + interceptor에서 shared signal을 넣고 `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`, 15초 transport timeout을 적용한다. Bolt의 공개 `webClientOptions`에서 인증/헤더, TLS, agent/proxy, logger, endpoint, 기존 interceptor를 보존한다. SDK 기본 Axios adapter를 그대로 쓰고, 취소를 무시할 수 있는 custom adapter는 거절한다. dynamic apiCall의 absolute URL 우회도 막는다. 원래 client를 전역 변경하거나 취소 scope 간 interceptor를 공유하지 않는다. 15초는 개별 HTTP transport timeout이며 최종 delivery 전체 범위의 15초 signal은 통합 때 별도로 만들어야 한다. 직접 runtime import에 사용하는 `@slack/web-api`는 현재 Bolt transitive dependency이므로 통합 시 직접 dependency 선언도 확인한다. 기본 SDK는 무제한에 가까운(약 30분 재시도/timeout=0) 대기여서 그대로 두고 180초 종료를 주장할 수 없다.
 
 ## 검증 구분
 
 독립 fake-timer 테스트: 실행 시작 시각/정확히 180초/여러 단계 합산, 절대 시각 재검사, shared signal, cooperative underlying abort, signal 무시 Promise의 실제 settlement 보유와 late result/commit 차단, commit 시작 전/중/후 경주, registry requester/team/channel/message/thread/중복/만료/종료/위조 metadata 거절.
+
+전용 Slack transport 로컬 테스트: 실제 localhost HTTP에서 공유 signal abort와 socket close, pre-aborted 요청의 socket 미생성, 15초 실제 timeout 및 socket close, 429 즉시 거절/무재시도, 인증/헤더 및 공용 client/다음 요청 보존, TLS/agent/proxy 설정 전달, 상위 interceptor/signal 보존, custom adapter 거절을 확인한다. TLS 설정 전달 테스트는 실제 TLS handshake 검증은 아니다.
 
 통합 후 필수 테스트: 실제 acquire 뒤 timer 생성과 queue exclusion, action 즉시 ack 및 사용자 한정 안내, source fetch 이전 버튼, 실제 Mastra/HTTP/subagent/tool 전파, residual slot/lane 보유, deadline 이후 bounded delivery, 버튼/stream 정리, DB dedupe/성공 commit 보존/다음 요청 회복 및 기존 Slack streaming fallback 회귀. 실제 Slack E2E는 별도이며 단위/로컬 mock 테스트와 구분하여 보고한다.
