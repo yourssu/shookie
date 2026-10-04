@@ -149,6 +149,72 @@ describe("bot + trusted event action_token Real-time Search", () => {
     expect(result.messages.filter(m => m.searchMatch)).toHaveLength(20); expect(result.messages.length).toBeLessThanOrEqual(40);
     expect(Buffer.byteLength(JSON.stringify(result.messages))).toBeLessThan(24_100); expect(result.messages.some(m => m.textTruncated)).toBe(true);
   });
+  it("promotes a prior context-only message to the terminal page's actual match with full primary provenance", async () => {
+    const f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(2), context_messages: { after: [
+      { ts: ts(3), text: "match 3", user_id: "UCONTEXT" },
+    ] } }] }, response_metadata: { next_cursor: "next-page" } });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first.messages.find(m => m.ts === ts(3))).toMatchObject({ searchMatch: false, contextForTs: ts(2), author: { userId: "UCONTEXT" } });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(3), author_user_id: "UBOT", is_author_bot: true, thread_ts: ts(1) }] } });
+    const last = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
+    expect(last).toMatchObject({ status: "ok", page: 2, complete: true, truncated: false });
+    expect(last.messages).toEqual([{ channel: "C1", ts: ts(3), text: "match 3", textTruncated: false,
+      searchMatch: true, threadTs: ts(1), permalink: message(3).permalink, author: { userId: "UBOT", botId: null, kind: "bot" } }]);
+    expect(last.messages[0].contextForTs).toBeUndefined(); expect(last.messages[0].contextPosition).toBeUndefined();
+  });
+  it("dedupes true primary repeats across pages without suppressing context-to-primary promotion", async () => {
+    const f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(2), context_messages: { after: [{ ts: ts(3), text: "match 3" }] } }] }, next_cursor: "page-2" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(2), message(3), message(3)] }, next_cursor: "page-3" });
+    const second = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
+    expect(second.messages.map(m => [m.ts, m.searchMatch])).toEqual([[ts(3), true]]);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(2), message(3), message(4)] } });
+    const last = await f.reader.search({ query: "launch", cursor: second.nextCursor }, f.context);
+    expect(last).toMatchObject({ status: "ok", complete: true, truncated: false });
+    expect(last.messages.map(m => [m.ts, m.searchMatch])).toEqual([[ts(4), true]]);
+  });
+  it("returns one primary-preferred object per ts and dedupes same/later-page context with a representative relation", async () => {
+    const f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...message(2), context_messages: { after: [{ ts: ts(3), text: "match 3" }, { ts: ts(4), text: "match 4" }] } },
+      { ...message(4), context_messages: { before: [{ ts: ts(3), text: "match 3", user_id: "UOTHER" }] } },
+    ] }, next_cursor: "next" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first.messages.map(m => [m.ts, m.searchMatch])).toEqual([[ts(2), true], [ts(3), false], [ts(4), true]]);
+    expect(first.messages.find(m => m.ts === ts(3))).toMatchObject({ contextForTs: ts(2), contextPosition: "after" });
+    expect(first.messages.find(m => m.ts === ts(4))).toMatchObject({ permalink: message(4).permalink });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(5), context_messages: { before: [
+      { ts: ts(3), text: "match 3" }, { ts: ts(4), text: "match 4" },
+    ] } }] } });
+    const last = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
+    expect(last.messages.map(m => [m.ts, m.searchMatch])).toEqual([[ts(5), true]]); expect(last.complete).toBe(true);
+  });
+  it.each(["primary", "context"])("preserves cross-page text conflict rejection for prior %s delivery", async role => {
+    const f = fixture();
+    const messages = role === "primary" ? [message(3)] : [{ ...message(2), context_messages: { after: [{ ts: ts(3), text: "match 3" }] } }];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages }, next_cursor: "next" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(3), content: "conflicting original" }] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", messages: [], complete: false });
+  });
+  it("does not mark capped-out context delivered; later primary is returned but traversal stays truncated", async () => {
+    const f = fixture();
+    const contexts = Array.from({ length: 20 }, (_, n) => ({ ts: ts(10 + n), text: `match ${10 + n}` }));
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...message(2), context_messages: { after: contexts } },
+      { ...message(3), context_messages: { after: contexts.map((c, n) => n === 19 ? { ts: ts(30), text: "match 30" } : c) } },
+      ...Array.from({ length: 18 }, (_, n) => message(100 + n)),
+    ] }, next_cursor: "next" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(first.messages).toHaveLength(40); expect(first.messages.some(m => m.ts === ts(30))).toBe(false);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(30)] } });
+    const last = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
+    expect(last.messages).toEqual([expect.objectContaining({ ts: ts(30), searchMatch: true, permalink: message(30).permalink })]);
+    expect(last).toMatchObject({ status: "ok", complete: false, truncated: true });
+  });
   it("binds opaque search cursors to query/limit/requester/team/current channel/request and rechecks membership", async () => {
     const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, response_metadata: { next_cursor: "RAW_SEARCH_CURSOR" } });
     const first = await f.reader.search({ query: "launch", limit: 2 }, f.context); const cursor = first.nextCursor!;

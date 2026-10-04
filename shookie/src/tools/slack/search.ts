@@ -22,7 +22,9 @@ const responseSchema = z.object({ results: z.object({ messages: z.array(searchMe
 }), response_metadata: z.object({ next_cursor: z.string().max(4096).optional(), warnings: z.array(z.string()).max(0).optional() }).optional(),
   next_cursor: z.string().max(4096).optional(), has_more: z.boolean().optional(), warning: z.string().optional(),
 }).passthrough();
-type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, string>; used: string[]; expires: number };
+type DeliveryRole = "primary" | "context";
+type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, string>;
+  deliveredRoles: Record<string, DeliveryRole>; used: string[]; expires: number };
 const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 24_000 };
 
 /** Bot + authenticated event action_token only. Fixed current public channel, keyword messages, no fallback. */
@@ -90,19 +92,29 @@ export class SlackSearcher {
         }
       }
       const fingerprints = { ...(previous?.fingerprints ?? {}) };
+      const deliveredRoles = { ...(previous?.deliveredRoles ?? {}) };
+      // Validate conflicts across ALL observed objects, even ones omitted by the page budget.
+      // Persist only delivered objects below, keeping continuation memory bounded.
+      const observed = new Map(Object.entries(fingerprints));
       const projected = new Map<string, ReadResult["messages"][number]>();
       let lossy = previous?.lossy ?? false;
       for (const message of [...candidates, ...contexts]) {
         const fingerprint = createHash("sha256").update(message.text).digest("hex");
-        if (fingerprints[message.ts] && fingerprints[message.ts] !== fingerprint) unavailable();
-        if (fingerprints[message.ts]) continue;
-        if (projected.size >= 40) { lossy = true; continue; }
-        fingerprints[message.ts] = fingerprint;
-        projected.set(message.ts, message);
+        const previousText = observed.get(message.ts);
+        if (previousText && previousText !== fingerprint) unavailable();
+        observed.set(message.ts, fingerprint);
+        const role: DeliveryRole = message.searchMatch ? "primary" : "context";
+        // Context delivery is not proof of match delivery. Return the full primary object on promotion.
+        if (deliveredRoles[message.ts] === "primary" || (role === "context" && deliveredRoles[message.ts] === "context")) continue;
+        const selected = projected.get(message.ts);
+        if (selected && (selected.searchMatch || role === "context")) continue;
+        if (!selected && projected.size >= 40) { lossy = true; continue; }
+        projected.set(message.ts, message); // primary wins; context keeps its first representative relation
       }
       const messages = [...projected.values()];
+      const primaryCount = messages.filter(m => m.searchMatch).length;
       const headerBytes = () => messages.reduce((sum, m) => sum + Buffer.byteLength(JSON.stringify({ ...m, text: "" })), 0);
-      while (headerBytes() > limits.maxPageBytes && messages.length > candidates.length) { messages.pop(); lossy = true; }
+      while (headerBytes() > limits.maxPageBytes && messages.length > primaryCount) { messages.pop(); lossy = true; }
       let budget = limits.maxPageBytes - headerBytes();
       if (budget < 0) unavailable();
       for (const message of messages) {
@@ -113,6 +125,10 @@ export class SlackSearcher {
         lossy ||= message.textTruncated;
         budget -= Buffer.byteLength(JSON.stringify(message.text)) - 2;
       }
+      for (const message of messages) {
+        fingerprints[message.ts] = observed.get(message.ts)!;
+        deliveredRoles[message.ts] = message.searchMatch ? "primary" : "context";
+      }
       messages.sort((a, b) => BigInt(a.ts.replace(".", "")) < BigInt(b.ts.replace(".", "")) ? -1 : 1);
       const next = data.response_metadata?.next_cursor?.trim() || data.next_cursor?.trim();
       if (data.response_metadata?.next_cursor && data.next_cursor && data.response_metadata.next_cursor !== data.next_cursor) unavailable();
@@ -122,7 +138,7 @@ export class SlackSearcher {
       if (next && page < limits.maxPages) {
         if (this.cursors.size >= 1000) this.cursors.delete(this.cursors.keys().next().value!);
         nextCursor = randomUUID();
-        this.cursors.set(nextCursor, { binding, cursor: next, page, lossy, fingerprints, used: [...(previous?.used ?? []), next], expires: Date.now() + 10 * 60_000 });
+        this.cursors.set(nextCursor, { binding, cursor: next, page, lossy, fingerprints, deliveredRoles, used: [...(previous?.used ?? []), next], expires: Date.now() + 10 * 60_000 });
       }
       if (cursor) this.cursors.delete(cursor);
       const complete = !next && !data.has_more && !lossy;
