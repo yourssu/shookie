@@ -1,3 +1,4 @@
+import { executionSignal, trackExecution } from "../../cancellation/execution-context.js";
 import http from "node:http";
 import https from "node:https";
 import { lookup } from "node:dns/promises";
@@ -74,12 +75,13 @@ export function pinnedRequest(url: URL, address: Address, signal: AbortSignal, h
       },
       ...(url.protocol === 'https:' ? { rejectUnauthorized: true, servername: isIP(url.hostname.replace(/^\[|\]$/gu, '')) ? undefined : url.hostname } : {}),
     }, resolve);
+    trackExecution(new Promise<void>(resolve => request.on('close', resolve)));
     request.on('error', reject);
     request.end(searchRequest?.body);
   });
 }
 export type Connector = typeof pinnedRequest;
-export interface NetworkDependencies { resolver?: Resolver; connector?: Connector; deadlineMs?: number }
+export interface NetworkDependencies { resolver?: Resolver; connector?: Connector; deadlineMs?: number; signal?: AbortSignal }
 
 export async function readBody(response: http.IncomingMessage, signal: AbortSignal): Promise<Buffer> {
   const encoding = String(response.headers['content-encoding'] ?? 'identity').toLowerCase();
@@ -114,14 +116,17 @@ export async function readBody(response: http.IncomingMessage, signal: AbortSign
 export async function download(raw: string, dependencies: NetworkDependencies = {}, headers: Record<string, string> = {}, redirects: number = LIMITS.redirects, searchRequest?: SearchRequest): Promise<{ body: Buffer; finalUrl: string; contentType: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), dependencies.deadlineMs ?? LIMITS.deadlineMs);
-  const signal = controller.signal;
+  const signal = executionSignal(dependencies.signal)
+    ? AbortSignal.any([controller.signal, executionSignal(dependencies.signal)!]) : controller.signal;
   // Racing also bounds a resolver/connector implementation that does not support cancellation.
   let abortListener: () => void = () => {};
   const aborted = new Promise<never>((_, reject) => {
     abortListener = () => reject(new WebError('TIMEOUT', true));
     signal.addEventListener('abort', abortListener, { once: true });
+    if (signal.aborted) abortListener();
   });
   const operation = async () => {
+    if (signal.aborted) throw new WebError('TIMEOUT', true);
     let url = publicUrl(raw);
     validateRequest(url, searchRequest);
     if (searchRequest && redirects !== 0) throw new WebError('INVALID_REQUEST');
@@ -155,7 +160,7 @@ export async function download(raw: string, dependencies: NetworkDependencies = 
       return { body, finalUrl: url.href, contentType };
     }
   };
-  try { return await Promise.race([operation(), aborted]); }
+  try { return await Promise.race([trackExecution(operation()), aborted]); }
   catch (error) { if (error instanceof WebError) throw error; throw new WebError('NETWORK_ERROR', true); }
   finally { clearTimeout(timer); signal.removeEventListener('abort', abortListener); }
 }

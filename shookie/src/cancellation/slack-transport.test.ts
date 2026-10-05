@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse, Agent } from "node:http";
 import type { Socket } from "node:net";
 import { WebClient, LogLevel, type WebClientOptions } from "@slack/web-api";
-import { createCancellationSlackClient, SLACK_TRANSPORT_TIMEOUT_MS } from "./slack-transport.js";
+import { createCancellationSlackClient, SLACK_TRANSPORT_TIMEOUT_MS, slackDelivery } from "./slack-transport.js";
+import { ExecutionScope, executionStorage, executionCheckpoint } from "./execution-context.js";
+import type { App } from "@slack/bolt";
 
 type RequestConfig = Parameters<NonNullable<WebClientOptions["requestInterceptor"]>>[0];
 
@@ -12,7 +14,7 @@ function deferred<T = void>() {
   return { resolve, promise };
 }
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0)) await cleanup(); });
 async function fixture(handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const sockets = new Set<Socket>();
   const server = createServer(handler);
@@ -189,6 +191,22 @@ describe("dedicated Slack transport (real localhost HTTP, no Slack E2E)", () => 
     const client = createCancellationSlackClient(source(h.options), new AbortController().signal);
     await client.apiCall("https://outside.invalid/auth.test");
     expect(paths).toEqual(["/api/https://outside.invalid/auth.test"]);
+  });
+
+  it("gives post-deadline final delivery a separate 15-second signal outside execution context", async () => {
+    vi.useFakeTimers();
+    const scope = new ExecutionScope(); scope.control.cancel();
+    const fake = { client: {} } as unknown as Pick<App, "client" | "webClientOptions">;
+    let deliverySignal: AbortSignal | undefined;
+    const work = executionStorage.run(scope, () => slackDelivery(fake, async (_client, signal) => {
+      deliverySignal = signal; executionCheckpoint(); // no inherited cancelled execution scope
+      return new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("delivery stopped")), { once: true }));
+    }));
+    const assertion = expect(work).rejects.toThrow("delivery stopped");
+    expect(deliverySignal).not.toBe(scope.control.signal); expect(deliverySignal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(14_999); expect(deliverySignal!.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1); await assertion; expect(deliverySignal!.aborted).toBe(true);
+    scope.control.finish(); expect(vi.getTimerCount()).toBe(0);
   });
 
   it("rejects unknown custom adapters that could ignore transport cancellation", () => {

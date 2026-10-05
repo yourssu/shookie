@@ -70,10 +70,10 @@ async function harness(options:{dropActor?:boolean}={}) {
   const main=createAgent(), tools=await main.listTools();
   const callbacks=new Map<string,(delivery:any)=>Promise<void>>();
   let currentMention = { user: 'U1', ts: '123.457', text: '' };
-  const app={event:(kind:string,callback:(delivery:any)=>Promise<void>)=>callbacks.set(kind,callback),client:{conversations:{replies:vi.fn(async(args:{ts:string})=>({ok:true,messages:[
+  const app={action:vi.fn(),event:(kind:string,callback:(delivery:any)=>Promise<void>)=>callbacks.set(kind,callback),client:{conversations:{replies:vi.fn(async(args:{ts:string})=>({ok:true,messages:[
     {ts:args.ts,user:'U0',text:'synthetic thread root',reply_count:1},
     {...currentMention,thread_ts:args.ts},
-  ]}))},chat:{postMessage:vi.fn(async()=>({ok:true,ts:'reply'}))},apiCall:vi.fn(async()=>{throw new Error('synthetic streaming unavailable');})}} as unknown as App;
+  ]}))},chat:{postMessage:vi.fn(async()=>({ok:true,ts:'reply'})),update:vi.fn(async()=>({ok:true}))},apiCall:vi.fn(async()=>{throw new Error('synthetic streaming unavailable');})}} as unknown as App;
   const repository:ConversationRepository={claim:vi.fn(async()=>true),recent:vi.fn(async()=>[]),complete:vi.fn(async()=>{}),fail:vi.fn(async()=>{})};
   const results:any[]=[];let snapshotId:string|undefined;const contexts:RequestContext[]=[];
   const execute=async(tool:any,input:unknown,context?:RequestContext)=>tool.execute!(input,{requestContext:context});

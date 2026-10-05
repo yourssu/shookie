@@ -31,9 +31,11 @@ beforeEach(() => {
 type Delivery = { event: Record<string, unknown>; body: Record<string, unknown>; context: Record<string, unknown> };
 function harness(summarize?: ThreadSummarizer) {
   const callbacks = new Map<string, (args: Delivery) => Promise<void>>();
-  const postMessage = vi.fn(async () => ({ ok: true, ts: "reply" }));
-  const app = { event: (kind: string, callback: (args: Delivery) => Promise<void>) => callbacks.set(kind, callback),
-    client: { chat: { postMessage } } } as unknown as App;
+  const postMessage = vi.fn(async (_args?: unknown) => ({ ok: true, ts: "reply" }));
+  const controlPost = vi.fn(async () => ({ ok: true, ts: "control" }));
+  const app = { event: (kind: string, callback: (args: Delivery) => Promise<void>) => callbacks.set(kind, callback), action: vi.fn(),
+    client: { chat: { postMessage: (args: { blocks?: { type: string }[] }) => args.blocks?.[0]?.type === "actions"
+      ? controlPost() : postMessage(args), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
   const events = new Map<string, string>();
   const turns = new Map<string, ConversationTurn[]>();
   const repository: ConversationRepository = {

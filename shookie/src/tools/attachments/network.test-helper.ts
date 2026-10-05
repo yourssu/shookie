@@ -11,6 +11,7 @@ export function fakeNetwork(responses: { status?: number; headers?: Record<strin
     req.end = () => {
       const response = Readable.from([next.body ?? Buffer.from('hello')]);
       Object.assign(response, { statusCode: next.status ?? 200, headers: next.headers ?? { 'content-type': 'text/plain' } });
+      response.once('close', () => req.emit('close'));
       queueMicrotask(() => callback(response));
     };
     return req;

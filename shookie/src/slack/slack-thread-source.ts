@@ -1,4 +1,5 @@
 import type { WebClient } from "@slack/web-api";
+import { executionCheckpoint } from "../cancellation/execution-context.js";
 import type { Message } from "../services/memory/in-memory.js";
 import { conversationLimits } from "../services/memory/limits.js";
 
@@ -27,6 +28,7 @@ export async function readSlackThread(
     let cursor: string | undefined;
     let totalBytes = 0;
     for (let page = 0; ; page++) {
+      executionCheckpoint();
       if (page >= 1000) fail();
       const response = await client.conversations.replies({ channel: mention.channel, ts: mention.threadTs,
         limit: 15, ...(cursor ? { cursor } : {}) });
@@ -72,7 +74,7 @@ export async function readSlackThread(
           text: m.text,
         }) };
       });
-  } catch { return fail(); } // Never expose Slack responses, tokens or participant data through errors.
+  } catch { executionCheckpoint(); return fail(); } // Never expose Slack responses, tokens or participant data through errors.
 }
 
 /** Preserve root + a contiguous recent suffix; replace every older reply with an explicitly labelled summary. */

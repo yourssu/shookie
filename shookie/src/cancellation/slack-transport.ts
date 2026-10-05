@@ -1,13 +1,7 @@
 import type { App } from "@slack/bolt";
-import { WebClient, LogLevel, type Logger } from "@slack/web-api";
-
-// Same mandatory no-op policy as the Slack read/search client: action_token is
-// NOT protected by the SDK's token-key redaction, and response diagnostics leak too.
-// Keep independent until the shared Slack modules are integrated; then reuse their logger.
-const silentCancellationSlackLogger: Logger = Object.freeze({
-  debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
-  setLevel: () => {}, setName: () => {}, getLevel: () => LogLevel.ERROR,
-});
+import { WebClient, LogLevel } from "@slack/web-api";
+import { silentSlackLogger } from "../tools/slack/sdk-logger.js";
+import { executionSignal, executionCheckpoint, executionStorage } from "./execution-context.js";
 
 /** Transport timeout; not a new conversation/call/cost budget. */
 export const SLACK_TRANSPORT_TIMEOUT_MS = 15_000;
@@ -42,7 +36,7 @@ export function createCancellationSlackClient(
     timeout: timeoutMs,
     // Never inherit a DEBUG logger: assistant.search.context request/response data
     // contains a WeakMap-held event action_token that must not enter any SDK log.
-    logger: silentCancellationSlackLogger,
+    logger: silentSlackLogger,
     logLevel: LogLevel.ERROR,
     attachOriginalToWebAPIRequestError: false,
     requestInterceptor: async config => {
@@ -60,5 +54,29 @@ export function createCancellationSlackClient(
         ? Math.min(request.timeout, timeoutMs) : timeoutMs;
       return request;
     },
+  });
+}
+
+/** Test DI may supply a structural fake; production Bolt WebClient always uses real abortable transport. */
+export function scopedSlackClient(source: Pick<App, "client" | "webClientOptions">, signal: AbortSignal): WebClient {
+  return source.client instanceof WebClient ? createCancellationSlackClient(source, signal) : source.client;
+}
+
+/** Dedicated read/search SDK client interceptor; no global app.client modification. */
+export const executionSlackInterceptor: NonNullable<App["webClientOptions"]["requestInterceptor"]> = config => {
+  executionCheckpoint();
+  const signal = executionSignal();
+  signal?.throwIfAborted();
+  if (signal) config.signal = signal;
+  return config;
+};
+
+/** Final success/error/cancel delivery has its OWN 15-second scope, outside execution ALS. */
+export function slackDelivery<T>(app: Pick<App, "client" | "webClientOptions">, send: (client: WebClient, signal: AbortSignal) => Promise<T>): Promise<T> {
+  return executionStorage.exit(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SLACK_TRANSPORT_TIMEOUT_MS);
+    try { return await send(scopedSlackClient(app, controller.signal), controller.signal); }
+    finally { clearTimeout(timer); }
   });
 }

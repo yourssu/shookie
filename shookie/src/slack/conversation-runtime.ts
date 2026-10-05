@@ -1,4 +1,5 @@
 import type { ConversationEvent, ConversationRepository } from "database";
+import { ExecutionScope, executionStorage } from "../cancellation/execution-context.js";
 import { InMemoryConversationStore, budgetMessages, type Message } from "../services/memory/in-memory.js";
 import { conversationLimits as limits } from "../services/memory/limits.js";
 
@@ -18,8 +19,9 @@ export class ConversationRuntime {
   run(
     event: ConversationEvent,
     text: string,
-    execute: (messages: Message[], commit: (answer: string) => Promise<void>) => Promise<void>,
+    execute: (messages: Message[], commit: (answer: string) => Promise<void>, scope: ExecutionScope) => Promise<void>,
     authoritativeContext?: () => Promise<Message[]>,
+    onStart?: (scope: ExecutionScope) => Promise<void>,
   ): Promise<void> {
     const duplicate = this.pending.get(event.requestId);
     // The original delivery owns error reporting; retries must not emit duplicate errors.
@@ -35,37 +37,50 @@ export class ConversationRuntime {
     thread.count++;
     const task = thread.tail.then(async () => {
       await this.acquire();
+      const scope = new ExecutionScope(); // Queue/thread wait is excluded; acquire has completed.
       let claimed = false;
       try {
-        claimed = await this.repository.claim(event);
-        if (!claimed) return;
-        let history = authoritativeContext ? [] : this.cache.get(event.sessionId);
-        if (!history) {
-          const turns = await this.repository.recent(event.sessionId, limits.recentTurns);
-          history = turns.flatMap(turn => [
-            { role: "user" as const, content: turn.userContent },
-            { role: "assistant" as const, content: turn.assistantContent },
-          ]);
-        }
-        // Slack source is resolved inside claim + thread serialization and replaces DB/cache history entirely.
-        const messages = authoritativeContext ? await authoritativeContext() : budgetMessages(history, text);
-        let committed = false;
-        await execute(messages, async answer => {
-          if (committed) throw new Error("Conversation already committed");
-          await this.repository.complete(event, { userContent: text, assistantContent: answer });
-          committed = true;
-          // Cache only the bounded context, not potentially huge model outputs.
-          if (authoritativeContext) this.cache.clear(event.sessionId);
-          else this.cache.set(event.sessionId, budgetMessages([...messages, { role: "assistant", content: answer }], "").slice(0, -1));
+        await executionStorage.run(scope, async () => {
+          claimed = await this.repository.claim(event);
+          if (!claimed) return;
+          scope.control.checkpoint();
+          await onStart?.(scope); // Initial cancel UI MUST precede source fetch/summary.
+          scope.control.checkpoint();
+          let history = authoritativeContext ? [] : this.cache.get(event.sessionId);
+          if (!history) {
+            const turns = await this.repository.recent(event.sessionId, limits.recentTurns);
+            history = turns.flatMap(turn => [
+              { role: "user" as const, content: turn.userContent },
+              { role: "assistant" as const, content: turn.assistantContent },
+            ]);
+          }
+          // Slack source is resolved inside claim + thread serialization and replaces DB/cache history entirely.
+          const messages = authoritativeContext ? await scope.control.operation(authoritativeContext) : budgetMessages(history, text);
+          scope.control.checkpoint();
+          let committed = false;
+          await execute(messages, async answer => {
+            if (committed) throw new Error("Conversation already committed");
+            await scope.drain();
+            await scope.control.commit(() => this.repository.complete(event, { userContent: text, assistantContent: answer }));
+            committed = true;
+            // Cache only the bounded context, not potentially huge model outputs.
+            if (authoritativeContext) this.cache.clear(event.sessionId);
+            else this.cache.set(event.sessionId, budgetMessages([...messages, { role: "assistant", content: answer }], "").slice(0, -1));
+          }, scope);
+          if (!committed) throw new Error("Conversation did not commit");
         });
-        if (!committed) throw new Error("Conversation did not commit");
       } catch (error) {
+        if (scope.control.isCommitted) return; // Ancillary/delivery failure never reverses a durable turn.
         this.cache.clear(event.sessionId);
         if (claimed) {
           try { await this.repository.fail(event.requestId); } catch { /* original failure stays visible */ }
         }
         throw error;
       } finally {
+        // An aborted Mastra stream may finish before its tool/DNS/process does.
+        // Hold BOTH semaphore and per-thread lane until the real residual work settles.
+        await scope.drain();
+        scope.control.finish();
         this.release();
       }
     });

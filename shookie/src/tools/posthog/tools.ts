@@ -1,4 +1,5 @@
 import { createTool } from "@mastra/core/tools";
+import { executionTools } from "../../cancellation/execution-context.js";
 import { PostHogClientManager, type PostHogClient } from "./client.js";
 import {
   queryEventsSchema,
@@ -19,7 +20,7 @@ export function createPostHogTools(manager: PostHogClientManager) {
     catch { return { status: "error", data: null, source: { project: project ?? manager.getDefaultName(), projectId: "", resource: "project", fetchedAt: new Date().toISOString() }, error: { code: "unknown_project", message: "프로젝트 이름을 확인해 주세요.", retryable: false } }; }
     return action(client);
   }
-  return {
+  return executionTools({
     queryEvents: createTool({
       id: "query-events",
       description: "PostHog 이벤트 목록을 조회합니다.",
@@ -101,5 +102,5 @@ export function createPostHogTools(manager: PostHogClientManager) {
         return client.listExperiments(input.limit, input.continuation);
       }),
     }),
-  };
+  });
 }

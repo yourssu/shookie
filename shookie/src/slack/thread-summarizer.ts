@@ -1,10 +1,12 @@
 import { generateText } from "ai";
+import { executionSignal, executionCheckpoint } from "../cancellation/execution-context.js";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { config } from "../config.js";
 import { summaryInput, type ThreadSummarizer } from "./slack-thread-source.js";
 
 /** Same configured model as the main agent, with no tools or delegated actions. */
 export const summarizeThread: ThreadSummarizer = async (messages, maxBytes) => {
+  executionCheckpoint();
   const provider = createDeepSeek({ apiKey: config.LLM_API_KEY, baseURL: config.LLM_BASE_URL });
   const result = await generateText({
     model: provider(config.LLM_MODEL),
@@ -13,8 +15,9 @@ export const summarizeThread: ThreadSummarizer = async (messages, maxBytes) => {
     messages: [{ role: "user", content: summaryInput(messages, maxBytes) }],
     maxOutputTokens: 1_500,
     maxRetries: 0,
-    abortSignal: AbortSignal.timeout(60_000),
+    abortSignal: executionSignal(AbortSignal.timeout(60_000)),
   });
+  executionCheckpoint();
   if (result.finishReason !== "stop") throw new Error("Thread summary incomplete");
   return result.text;
 };

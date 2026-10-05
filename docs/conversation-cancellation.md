@@ -1,27 +1,39 @@
-# 대화 전체 실행 제한 / 요청자 취소
+# 대화 전체 3분 제한 / 요청자 취소
 
-## 정책과 현재 구현 단계
+## 정책 / 실제 배선
 
-승인 정책은 **실제 실행 시작부터 전체 180초 + 요청자 전용 취소 버튼**이다. 대기열 시간은 포함하지 않는다. 새 전체 호출량 cap, 비용 기록/경고/강제 상한, 모델 변경, 운영 설정 또는 DB 변경은 없다. 기존 `maxSteps`와 호출 로그를 유지한다.
+**실제 실행 시작부터 전체 180초 + 요청자 전용 Slack 취소 버튼**만 추가한다. 큐 대기는 제외한다. 새 전체 호출량 cap, 비용 기록/경고/강제 상한, 모델 변경, 운영 설정 또는 DB 변경은 없다. 기존 `maxSteps`, 호출 로그 및 진단 footer를 유지한다.
 
-현재 독립 controller/registry 모듈과 전용 Slack transport 프로토타입 (`shookie/src/cancellation/`) 및 그 테스트만 추가되어 있다. 아직 Slack action 등록, control message, runtime 및 agent/tool 전파는 연결되지 않았다. 아래 통합 계약은 선행 Slack read/첨부/shared handlers 및 web 변경을 main에 squash 통합한 뒤 적용한다. 이 단계 테스트 통과는 실제 Slack E2E 또는 provider 실행 취소 성공을 의미하지 않는다.
+통합 기준은 main `e2b3298e5e5a2d1c6644995051fa91ad5c0631e1` (Slack read/search/authorization PR #91, 첨부 PR #92, web 포함)이다.
 
-## 단일 실행 범위
+- `ConversationRuntime.acquire()` 직후 `ExecutionScope`를 만든다. DB claim → 초기 control message → source fetch/summary → main → subagent/tool → 성공 persist 시작 전 체크까지 하나의 절대 `deadlineAt`과 signal을 공유한다. 단계별로 180초를 갱신하지 않는다.
+- 기존 event dedupe / thread 직렬화 / admission concurrency / cache / DB 성공 turn 정책을 유지한다. queue에는 타이머/UI/registry가 없으며 claim 중복은 UI도 만들지 않는다.
+- `handlers.ts`는 plan stream을 열기 **전**, Slack source 조회/요약 **전** 짧은 control message를 스레드에 게시한다. 별도 plan stream은 기존대로 유지해 progress UX를 보존한다. 버튼은 status message에만 두고 plan에는 중복하지 않는다.
+- 취소/시간초과 안내는 execution abort와 별개인 bounded delivery scope로 즉시 시작한다. 실제 underlying 작업이 정리 중이라는 사실을 명시한다. 완료/오류/취소/시간초과에서는 버튼을 제거하고 열린 stream도 정리한다. cleanup 실패로 남은 버튼도 registry/state 검증으로 사용할 수 없다.
 
-- `ConversationRuntime.acquire()`가 완료된 직후 `ConversationControl`을 만들고, 큐에는 컨트롤러/타이머를 만들지 않는다. DB claim, source fetch, summary, main, subagent, tool에 하나의 `signal`과 절대 `deadlineAt`을 공유한다. 단계마다 180초를 갱신하지 않는다.
-- `checkpoint()`는 타이머 콜백이 늦어져도 절대 시각을 검사한다. `operation(fn)`은 실제 underlying Promise를 기다리고 앞/뒤 체크로 늦은 결과를 버린다. 단독 `Promise.race`로 실제 작업 종료를 주장하지 않는다.
-- 취소/시간초과는 provider 에러를 친화적인 `ConversationStoppedError`로 정규화한다. 사용자에게 raw error나 token을 전달하지 않는다.
-- `finish()`는 실제 실행·persist 작업이 settle된 뒤에만 호출한다. runtime semaphore와 동일 thread 직렬화도 그때만 해제한다. 중단된 잔여 작업이 실행 중이면 slot/lane을 계속 보유해야 한다. 반응성을 위해 종료 안내를 먼저 보내더라도 이를 실행 settlement로 간주하면 안 된다.
-- 지원하지 않는 SDK 호출은 명시적인 transport timeout/무재시도로 settle을 제한하고, residual ownership을 유지한다. 메모리/DB Promise처럼 signal 없는 호출도 timeout 경주만으로 slot을 해제하지 않는다. 강제 DB rollback/새 연결 설정을 추가하지 않는다.
+## 신뢰 / 취소 권한
 
-## 취소 소유권과 UI 통합 계약
+`CancellationRegistry`는 원래 검증된 Slack event의 `requestId/teamId/channel/threadTs/userId`를 불변 복사하고, 서버 자신의 control post 응답 ts에 bind한다. trusted team을 구할 수 없는 요청에는 status만 제공하며 취소 버튼을 제공하지 않는다.
 
-1. 검증된 원래 Slack event의 `requestId/teamId/channel/threadTs/userId`를 server registry에 복사한다. trusted team을 구할 수 없는 요청에는 취소 버튼을 제공하지 않는다. 메시지 본문/모델/첨부 내용에서 actor를 추론하지 않는다.
-2. runtime acquire와 claim 성공 후 **source fetch/summary 이전**에 짧은 초기 status/control message를 스레드에 게시한다. 버튼 `value`는 requestId 조회 힌트뿐이며 actor/승인 데이터는 없다. 서버 자신의 post 응답 ts로 registry에 bind한다. 다른 메시지/팀/채널 버튼은 일치하지 않는다.
-3. Bolt action handler는 먼저 `await ack()`하고 취소 상태 조회보다 먼저 acknowledgement를 끝낸다. 이후 검증된 `body.user.id`, `body.team.id`, `body.channel.id`, `body.container.channel_id/message_ts`(및 있는 경우 message thread)를 읽는다. 채널/메시지 필드 불일치, 잘못된 형식, app/team 불일치는 거절한다. untrusted button payload의 actor/approved/thread를 신뢰하지 않는다.
-4. 잘못된 사용자/팀/스레드/메시지, unknown, expired, committing, completed, 반복 클릭은 모두 동일한 친화적 unavailable 안내를 **클릭 사용자에게만** 전달한다. 다른 요청자의 취소 여부나 registry 존재를 유출하지 않는다. accepted는 즉시 종료 확정이 아닌 “취소를 접수하고 정리 중”으로 안내한다.
-5. 초기 control message를 plan 안내와 중복하지 않도록 짧게 유지한다. 기존 plan stream은 그대로 사용한다. 최종 성공/오류/취소/시간초과에서 control message 버튼을 제거하고 plan stream도 정리한다. 정리 실패로 UI가 남아도 registry/state 검증으로 추가 실행/취소가 불가능하다.
-6. active registry는 기존 runtime admission bound만 사용한다. 실행 중(중단됐지만 미settle 포함) entry를 임의로 evict하지 않는다. finally에서 controller identity를 비교해 제거하여 stale cleanup이 새 실행을 지우지 않는다. durable dedupe는 기존 event ledger가 담당한다.
+Bolt action handler의 첫 호출은 `await ack()`다. 이후 검증된 action envelope의 `body.user.id`, `body.team.id`, `body.channel.id`, `body.container.channel_id/message_ts`, 있는 경우 `message.ts/thread_ts`, Bolt `context.teamId` 일치를 확인한다. button `value`는 requestId 조회 힌트일 뿐이다. actor/approved/team/thread 등 button payload, model output, message content를 권한으로 신뢰하지 않는다.
+
+다른 requester/team/channel/thread/message, malformed/unknown/expired/completed/committing/repeated 클릭은 **동일한 unavailable 안내를 클릭 사용자에게만 ephemeral로** 전달한다. 다른 요청자의 취소 여부나 registry 존재를 공개하지 않는다. committing 동안에도 취소를 접수했다고 거짓 안내하지 않고, 동일 안내에서 “결과 저장 중이거나 종료된 요청은 취소할 수 없음”을 설명한다.
+
+active registry는 기존 runtime admission bound만 사용한다. 중단됐지만 미settle인 live entry를 evict하지 않는다. finally 제거 시 controller identity를 비교해 stale cleanup이 새 요청을 지우지 않는다. durable dedupe는 기존 DB event ledger가 담당하며 실패 요청 retry를 재실행하지 않는다.
+
+## shared signal / 실제 종료 / 잔여 작업
+
+`shookie/src/cancellation/execution-context.ts`의 실행 ALS는 기존 agent 호출 로깅 ALS와 별개다. `executionTools()`는 공개 `Tool.execute`를 감싸 public `ToolExecutionContext.abortSignal`과 shared signal을 결합하고, 앞/뒤 절대 deadline 체크 및 실제 Promise 추적을 한다. 모든 기존 tool/schema의 합집합을 유지한다.
+
+- Mastra main `agent.stream`과 직접 위임하는 subagent `agent.generate`에 공개 `abortSignal` 옵션을 명시한다. PostHog 위임도 기존 trusted RequestContext object를 보존한다. 새 모델/step cap을 만들지 않는다.
+- thread summary AI SDK `generateText.abortSignal`은 기존 60초 local timeout과 shared signal을 결합한다. source pagination과 summary 결과 뒤 execution 체크로 늦은 원문/요약/답변을 버린다.
+- PostHog/GitHub fetch, Git subprocess, web pinned HTTP/MCP/search/readBody, Slack attachment download/parser에 actual signal이 도달한다. 기존 local transport/크기/parse 제한도 그대로 적용한다.
+- Slack API 메서드 body의 `signal`은 transport 취소 API가 아니다. source/status/plan은 **전용 WebClient**의 공개 `requestInterceptor`로 Axios HTTP signal을 설정한다. 공용 `app.client`는 변경하지 않는다. 전용 read/search/attachment API client도 execution interceptor로 shared signal을 설정한다. SDK 기본 Axios adapter를 유지하고, unknown custom adapter는 fail closed한다.
+- Slack transport는 SDK retry 0, 429 즉시 reject, 최대 15초 HTTP timeout이며 기존 read/search 10초처럼 더 짧은 timeout은 보존한다. 기존 bot auth/header, TLS, agent/proxy, 신뢰된 endpoint/interceptor를 보존한다. endpoint override/localhost는 테스트 DI일 뿐 운영 목적지 설정을 추가하지 않는다.
+- attachment parser는 abort/timeout/output limit에서 SIGKILL하지만 **실제 child close 이후에만 Promise/파서 slot이 settle**한다. Git도 실제 close를 기다리며 disk monitor 잔여 Promise를 추적한다. HTTP request close와 signal 없는 DNS Promise도 실행 scope에 추적한다.
+- `Promise.race`로 사용자 관측 시간을 제한하는 기존 web/GitHub 경계가 있더라도 실제 작업 Promise는 `trackExecution()`에 남는다. runtime은 commit 전에 및 finally에서 `scope.drain()`을 기다리고, 실제 잔여 작업이 모두 settle된 뒤에만 semaphore와 같은-thread lane을 해제한다. 늦은 DNS 응답 뒤에는 abort 체크로 새 HTTP를 시작하지 않는다.
+
+이것은 “정확히 180초에 모든 OS/SDK 작업이 이미 사라졌다”는 보장이 아니다. signal 없는 DNS/DB 또는 취소를 무시하는 주입 SDK Promise는 강제로 끝낼 수 없다. production HTTP는 abort와 유한 transport timeout, parser/process는 kill+close로 settle하지만, 미settle 잔여 작업은 slot/lane을 계속 보유한다. 안내를 먼저 보냈다는 이유로 조기 release하지 않는다. 이미 실행한 외부 도구 side effect나 Slack progress는 rollback할 수 없다. 동기 web parse도 JS 이벤트 루프 중간 취소는 불가능하므로 기존 크기 제한과 전후 절대 deadline 체크로 늦은 결과를 차단한다.
 
 ## commit / deadline / delivery 경주
 
@@ -29,36 +41,39 @@
 
 | 순서 | 정책 |
 | --- | --- |
-| 취소 또는 deadline → commit 시도 | persist를 호출하지 않음; 성공 turn 생성 금지 |
-| commit 시작 → 요청자 취소 클릭 | committing 동안 취소 불가/동일 unavailable 안내 |
-| commit 시작 → deadline → persist 성공 | 이미 시작한 transaction의 결과를 기다림; durable 성공 보존, `fail()` 금지 |
-| commit 시작 → deadline → persist 실패 | 성공 없음; 실패 dedupe 유지, 늦은 답변 전송 금지 |
-| 성공 commit → 로그/Slack delivery 오류 또는 늦은 취소 | 성공 turn/로그 상태를 취소 실패로 바꾸지 않음 |
+| 취소/deadline → commit 시도 | persist 미호출; 늦은 성공 turn/최종 답변 금지 |
+| commit 시작 → requester 취소 클릭 | committing 중 취소 unavailable |
+| commit 시작 → deadline → persist 성공 | in-flight transaction 실제 결과를 기다림; durable 성공 보존, `fail()` 금지 |
+| commit 시작 → deadline → persist 실패 | 성공 없음; 실패 dedupe/친화적 timeout 안내, 늦은 답변 금지 |
+| 성공 commit → 로그/Slack delivery 오류 또는 늦은 취소 | 성공 turn을 실패로 뒤집거나 실패 안내로 덮지 않음 |
 
-runtime catch는 `isCommitted`를 확인하여 성공 뒤 `repository.fail()`을 호출하지 않는다. callback이 commit을 안 했으면 기존 실패 처리를 유지한다. 취소나 timeout turn은 다음 대화 history에 넣지 않는다. Slack final 안내/성공 delivery는 실행 signal과 분리된 **별도 bounded delivery scope**를 사용한다. 실행 timeout 뒤 final 안내를 aborted execution signal로 보내면 안내가 사라진다. post/stop 응답이 늦어지거나 ambiguous일 때 무제한 retry/fallback을 하지 않고, 이미 시작한 전송의 residual settlement도 명시한다. Slack의 전송 원자성/이미 보내진 progress의 회수까지 보장하지 않는다.
+final 성공 전달은 persist 뒤, 부가 DB logging 앞에 한다. 후속 logging 실패가 답변을 숨기지 않는다. runtime/handler 모두 committed 상태를 확인하여 성공 뒤 `repository.fail()`/오류 invocation 재기록/오류 안내를 하지 않는다. 취소/timeout turn은 다음 history에 넣지 않는다.
 
-## 설치된 SDK 공개 API 확인
+`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. final stopStream 실패 시 기존 postMessage fallback을 유지하되, delivery signal이 이미 abort된 경우 늦은 fallback을 시작하지 않는다. status cleanup과 action ephemeral도 별도 bounded delivery다. Slack이 요청을 받아들인 뒤 연결이 끊기는 ambiguous 전송은 exactly-once가 아니며 fallback 중복 가능성은 기존처럼 남는다. 이미 시작한 transport의 실제 종료를 기다리는 정책이지 취소 불가능 API를 race만으로 끝났다고 주장하는 방식이 아니다.
 
-- Mastra `@mastra/core` 공개 `AgentExecutionOptionsBase.abortSignal`은 `agent.stream()`/`agent.generate()` 양쪽 옵션에 있다 (`dist/agent/agent.types.d.ts`). 메인과 직접 위임하는 서브에 같은 signal을 명시한다. `RequestContext`는 신뢰된 identity 및 필요시 실행 제어 전달에 사용하며 모델이 signal/actor를 만들지 않는다.
-- Mastra 공개 `ToolExecutionContext.abortSignal`이 제공된다 (`dist/tools/types.d.ts`). 각 도구에서 해당 signal을 실제 fetch/HTTP/subprocess에 넘겨야 한다. 옵션을 넣었다는 사실만으로 모든 nested tool이 중단된다고 주장하지 않는다. SDK stream settlement와 늦은 tool continuation을 각각 검사한다.
-- thread summary의 AI SDK `generateText`는 `abortSignal`을 사용한다. 기존 60초 개별 timeout이 있다면 `AbortSignal.any([shared, localTimeout])`로 결합하고 전체 deadline은 유지한다.
-- fetch/Node HTTP/git subprocess는 AbortSignal을 지원한다. PostHog/GitHub/web/첨부 다운로드 및 parse 각각에서 실제 signal, settle, 전후 checkpoint를 확인한다. 동기 parse는 JS 이벤트 루프상 중간 취소가 불가능하므로 기존 크기 제한과 앞/뒤 절대 deadline 검사로 늦은 결과를 막는다.
-- 설치된 Slack WebClient는 메서드 argument의 signal을 transport signal로 해석하는 공개 API가 없다. 단순히 `conversations.replies({ signal })`로 넘기면 Slack API body일 뿐이다. 공개 `WebClientOptions.requestInterceptor`/`adapter`의 Axios request config에는 signal을 전달할 수 있다. `createCancellationSlackClient()` 프로토타입은 전용 실행 client + interceptor에서 shared signal을 넣고 `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`, 15초 transport timeout을 적용한다. Bolt의 공개 `webClientOptions`에서 인증/헤더, TLS, agent/proxy, 신뢰된 기존 endpoint, 기존 interceptor를 보존한다. SDK logger는 Slack read/search 정책처럼 모든 메서드 no-op으로 고정하여 DEBUG 설정에서도 `action_token`/본문/응답/원본 오류를 출력하지 않는다. 기존 timeout이 더 짧다면 그대로 보존하며(예: read/search 10초), 15초로 늘리지 않는다. endpoint override/localhost는 테스트 DI에서만 사용하며 운영 목적지를 바꾸는 새 설정을 추가하지 않는다. SDK 기본 Axios adapter를 그대로 쓰고, 취소를 무시할 수 있는 custom adapter는 거절한다. dynamic apiCall의 absolute URL 우회도 막는다. 원래 client를 전역 변경하거나 취소 scope 간 interceptor를 공유하지 않는다. 15초는 개별 HTTP transport timeout이며 최종 delivery 전체 범위의 15초 signal은 통합 때 별도로 만들어야 한다. 직접 runtime import에 사용하는 `@slack/web-api`는 현재 Bolt transitive dependency이므로 통합 시 직접 dependency 선언도 확인한다. 기본 SDK는 무제한에 가까운(약 30분 재시도/timeout=0) 대기여서 그대로 두고 180초 종료를 주장할 수 없다.
+## Slack read/search/attachment 보안 보존
 
-## PR #91 Slack read/search/authorization 구조 검토 (공유 변경 전)
+`bindSlackReadContext`의 identity/action_token 별도 WeakMap에 바인딩된 **동일 RequestContext object**를 authorization/search/attachment bridge에 전달한다. cancellation registry나 일반 context/model/tool/DB entry로 action_token을 복사하지 않는다. 기존 cursor 상태/매 페이지 live membership/현재 채널 scope/공유채널 차단/DM peer/정확한 message→file 관계 검증을 유지한다. reader를 실행마다 새로 만들어 cursor를 잃지 않는다.
 
-기준 main `5bd513199d918b0fce637af3e08ad139f5792478` (web 변경 포함)을 참조했다. 첨부 통합 이후 공유 lifecycle 수정 단계에서 다음 경계를 보존해야 한다.
+취소 클라이언트도 공유 `silentSlackLogger`를 사용하여 DEBUG에서도 request/response/warning/error/action_token 로그가 no-op이다. 기존 handler의 Slack tool input/output/opaque cursor 및 attachment 로그/progress redaction도 유지한다. sanitized tool/access error가 underlying abort를 숨기더라도 외부 execution checkpoint에서 중단을 계속 검사한다.
 
-- `bindSlackReadContext`의 identity/action token 별도 WeakMap에 바인딩된 **동일 RequestContext object**를 authorization/search/attachment bridge에 전달한다. 취소 signal을 전파하려고 일반 context entry나 cancellation registry에 action token을 복사하지 않는다. 도구나 모델이 준 actor/token을 바인딩하지 않는다.
-- `SlackReader`/`SlackSearcher`의 continuation 상태와 매 페이지 live authorization을 유지한다. 취소 client를 연결하려 reader를 매 invocation마다 새로 만드는 방식은 cursor를 잃을 수 있으므로 통합 시 이를 검증한다. private/DM 검색 불가, current channel scope, membership, exact message/file 연결을 약화하지 않는다.
-- `SlackReadAccessError`/tool error 투영이 underlying abort를 sanitized 결과로 바꾸더라도 전체 execution checkpoint에서 취소/절대 deadline을 계속 검사하여 늦은 성공/실패 데이터가 main으로 재진입하지 못하게 한다.
-- SDK 검색/읽기 no-op logger 및 handler의 Slack tool input/output/opaque cursor redaction을 유지한다. 취소클라이언트의 logger를 공용 app의 DEBUG logger로 다시 바꾸지 않는다.
-- 아직 공유 Slack modules를 branch로 가져오거나 변경하지 않았다. 독립 transport에는 동등한 no-op logger를 임시로 정의했으며, 선행 첨부 merge 뒤 공유 logger를 재사용할 수 있다.
+## 후속 이미지 도구용 public signal 계약
 
-## 검증 구분
+이미지 후속 task는 이 PR의 tool 등록 합집합과 RequestContext 보안을 보존하며 나중에 연결한다. 사용할 API:
 
-독립 fake-timer 테스트: 실행 시작 시각/정확히 180초/여러 단계 합산, 절대 시각 재검사, shared signal, cooperative underlying abort, signal 무시 Promise의 실제 settlement 보유와 late result/commit 차단, commit 시작 전/중/후 경주, registry requester/team/channel/message/thread/중복/만료/종료/위조 metadata 거절.
+```ts
+executionSignal(context?.abortSignal) // shared + public tool signal, 없으면 undefined
+executionCheckpoint()               // 앞/뒤 절대 deadline 및 tool abort 검사
+executionOperation(() => actualWork(), context?.abortSignal)
+trackExecution(actualPromise)      // race/early return 뒤에도 실제 잔여 Promise 소유권 보존
+```
 
-전용 Slack transport 로컬 테스트: 실제 localhost HTTP에서 공유 signal abort와 socket close, pre-aborted 요청의 socket 미생성, 15초 실제 timeout 및 socket close, 429 즉시 거절/무재시도, 인증/헤더 및 공용 client/다음 요청 보존, TLS/agent/proxy 설정 전달, 상위 interceptor/signal 및 기존의 더 짧은 timeout 보존, DEBUG inherited logger를 넘겨도 검색 action token과 SDK 응답/warning/error 로그가 no-op인 점, custom adapter 거절을 확인한다. TLS 설정 전달 테스트는 실제 TLS handshake 검증은 아니다.
+HTTP/LLM에는 반환 signal을 actual transport의 `signal`/`abortSignal`로 전달한다. 다운로드/파서는 explicit signal 옵션을 지원한다 (`DownloadDependencies.signal`, `parseAttachment(body, kind, signal?)`). 실제 socket/process 종료를 검증하고, kill/race 직후가 아닌 close/settle 후에 파서/실행 자원을 해제한다. token/actor를 signal 전달용 context에 재바인딩하지 않는다. 새 호출량/비용 cap이나 비용 정책은 추가하지 않는다.
 
-통합 후 필수 테스트: 실제 acquire 뒤 timer 생성과 queue exclusion, action 즉시 ack 및 사용자 한정 안내, source fetch 이전 버튼, 실제 Mastra/HTTP/subagent/tool 전파, residual slot/lane 보유, deadline 이후 bounded delivery, 버튼/stream 정리, DB dedupe/성공 commit 보존/다음 요청 회복 및 기존 Slack streaming fallback 회귀. 실제 Slack E2E는 별도이며 단위/로컬 mock 테스트와 구분하여 보고한다.
+## 검증과 남은 한계
+
+- fake timer/registry: 정확히 180초, 여러 단계 합산/queue exclusion, requester 성공과 다른 user/team/channel/message/thread/위조 payload/repeated/expired/completed/committing 거절, cancellation shared signal/late answer suppression.
+- 실제 runtime/handler 통합: source fetch 이전 버튼, 즉시 action ack, fetch/summary/main 취소, 180초 즉시 안내와 잔여 slot/thread 유지, late tool drain, failed dedupe/다음 요청 회복, commit 시작 전/중/후 경주, committed logging/delivery failure 보존, 버튼 정리 및 기존 streaming fallback 회귀.
+- 실제 로컬 transport/SDK: Slack/Web/첨부 HTTP socket close, pre-aborted socket 미생성, 15초 HTTP timeout close, 429 무재시도, SDK no-op secret log, TLS/agent/proxy 설정 전달; 실제 AI SDK DeepSeek 요약 HTTP 취소; 실제 Mastra stream/generate provider 및 tool signal; 실제 parser child SIGKILL/close/다음 parse 회복.
+- TLS 설정 전달 테스트는 실제 TLS handshake/인증서 E2E가 아니다. **실제 운영 Slack/실제 LLM E2E는 미실행**이며 bot scope/Real-time Search 및 action_token 수신 성공을 로컬 테스트로 보증하지 않는다.
+- 실행 큐/registry/ALS는 single-process다. replica 간 서로 다른 event의 thread 직렬화나 process 재시작 뒤 살아 있는 버튼 회수는 보장하지 않는다. 재시작 후 registry에 없는 버튼은 동일 unavailable 응답이다.

@@ -1,4 +1,5 @@
 import { createTool } from "@mastra/core/tools";
+import { executionTools, executionSignal, executionCheckpoint } from "../../../cancellation/execution-context.js";
 import { z } from "zod";
 import type { Agent } from "@mastra/core/agent";
 import type { RequestContext } from "@mastra/core/request-context";
@@ -38,7 +39,8 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
     : null;
 
   try {
-    const generateOpts: { maxSteps?: number; requestContext?: RequestContext } = {};
+    executionCheckpoint();
+    const generateOpts: { maxSteps?: number; requestContext?: RequestContext; abortSignal?: AbortSignal } = { abortSignal: executionSignal() };
     if (opts.maxSteps) generateOpts.maxSteps = opts.maxSteps;
     if (opts.requestContext) generateOpts.requestContext = opts.requestContext;
 
@@ -46,6 +48,7 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
       [{ role: "user", content: opts.task }],
       generateOpts,
     );
+    executionCheckpoint();
     const usage = await result.usage;
 
     logger.debug(`[${opts.agentName}] text length:`, result.text?.length ?? 0);
@@ -106,7 +109,7 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
     if (invocationId) {
       await completeInvocation(invocationId, {
         status: "error",
-        error: err instanceof Error ? err.message : String(err),
+        error: "Subagent execution failed",
         finishReason: "error",
       });
     }
@@ -137,11 +140,12 @@ export function createMainShookieTools(subAgents: {
       outputSchema: z.object({
         result: z.string(),
       }),
-      execute: async (input) => {
+      execute: async (input, context) => {
         const result = await delegateToSubAgent({
           agentName: "posthog",
           agent: posthogAgent,
           task: input.task,
+          requestContext: context?.requestContext,
         });
         return { result };
       },
@@ -177,5 +181,5 @@ export function createMainShookieTools(subAgents: {
     });
   }
 
-  return tools;
+  return executionTools(tools);
 }

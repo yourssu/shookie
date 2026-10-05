@@ -27,7 +27,7 @@ export const CANCEL_ACTION_ID = "shookie_cancel_request";
 export const CANCEL_ACCEPTED_TEXT = "요청 취소를 접수했습니다. 진행 중인 작업을 정리하고 있어요.";
 // Same message for forbidden, malformed, expired, completed, and repeated actions.
 // No lookup result or other user's cancellation state is disclosed.
-export const CANCEL_UNAVAILABLE_TEXT = "이 버튼으로 요청을 취소할 수 없습니다. 요청자만 실행 중인 요청을 취소할 수 있어요. 이미 종료된 요청이라면 새 메시지로 요청해주세요.";
+export const CANCEL_UNAVAILABLE_TEXT = "이 버튼으로 요청을 취소할 수 없습니다. 요청자만 아직 실행 중인 요청을 취소할 수 있어요. 결과 저장 중이거나 이미 종료된 요청, 사용할 수 없는 버튼은 취소할 수 없습니다. 필요하면 새 메시지로 요청해주세요.";
 
 interface Entry {
   owner: Readonly<CancellationOwner>;
