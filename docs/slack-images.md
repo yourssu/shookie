@@ -11,6 +11,7 @@
 - 도구 인자는 `fileId`, `messageTs`, 선택적 루트 `threadTs`, 최대 1000자의 `question`뿐입니다. channel/user/token/URL/base64/model/config/signal을 모델 인자로 받지 않습니다.
 - 기존 `AuthorizeAttachment` capability를 주입하여 요청자의 live WeakMap 신원, 현재 채널 접근, 정확한 message→file 관계, `files.info`, 재검증을 재사용합니다. bot이 파일을 읽을 수 있다는 사실만으로 권한을 부여하지 않습니다.
 - 기존 `downloadAttachment`의 Slack-only URL·DNS public-address pinning·크기·시간·redirect 제한과 기존 bot token을 그대로 사용합니다. 새 다운로드 구현을 복사하지 않습니다.
+- 공유 파일 mode 정책은 `files.info`의 `snippet`을 기존 텍스트·CSV MIME에만 허용하므로 PNG·JPEG/PDF snippet은 이미지 validator와 무관하게 거부합니다. `hosted`와 기존 mode 누락 처리는 유지하며, TXT/CSV snippet도 이미지 validator를 통과할 수 없습니다.
 - 기존 첨부 권한 브리지에 server-supplied MIME validator를 선택하는 최소 확장만 추가합니다. 기존 텍스트 validator 기본값 `attachmentKind`는 그대로이고 `createSlackImageOptions`만 PNG·JPEG validator를 고정 주입합니다. 모델 인자로 policy를 교체할 수 없으며 각 호출의 live 권한·메시지 관계·metadata를 새로 검사합니다.
 - Slack private URL, token, 파일명 등 메타데이터는 이미지 분석 모델에 전달하지 않습니다. inline 이미지 bytes만 이미지 user block으로 보냅니다. 반환값은 bounded 해석, file/channel/message 출처, 이미지 크기, 한계뿐이며 URL/base64/credentials는 포함하지 않습니다.
 - 이미지 내용·사용자 question은 비신뢰 데이터입니다. 고정 system 프롬프트와 분리되며 이미지 분석 호출에는 tools가 없습니다. 파생 해석도 main의 지시/권한/승인으로 승격시키지 않습니다.
