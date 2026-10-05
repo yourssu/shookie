@@ -56,9 +56,10 @@ function network(body: Buffer, mime: string, status = 200) {
   const resolve = (async () => [{ address: '93.184.216.34', family: 4 }]) as unknown as typeof lookup;
   return { request, resolve, calls };
 }
-function setup(bytes = pngFixture(), mime = 'image/png', apiBody = visionResponse('DERIVED_IMAGE_SECRET; 흐린 글자는 불확실합니다.')) {
+function setup(bytes = pngFixture(), mime = 'image/png', apiBody = visionResponse('DERIVED_IMAGE_SECRET; 흐린 글자는 불확실합니다.'),
+  mode: string | undefined = 'hosted') {
   fixture.client.files.info.mockResolvedValue({ ok: true, file: { id: 'F123', name: 'PRIVATE_IMAGE_FILENAME', mimetype: mime,
-    size: bytes.length, mode: 'hosted', url_private_download: 'https://files.slack.com/files-pri/T1-F123/private' } });
+    size: bytes.length, mode, url_private_download: 'https://files.slack.com/files-pri/T1-F123/private' } });
   const download = network(bytes, mime); const vision = network(Buffer.from(apiBody), 'application/json');
   const main = createAgent({ slackClient: fixture.client as unknown as AttachmentSlackClient,
     attachmentDownloadDependencies: download, imageVisionDependencies: vision });
@@ -103,6 +104,15 @@ describe('registered image tool + live Slack bridge + shared cancellation (synth
       for (const secret of ['PRIVATE_IMAGE_FILENAME', 'files.slack.com', fixture.settings.SLACK_BOT_TOKEN, fixture.settings.LLM_API_KEY]) expect(vision.calls[0].body).not.toContain(secret);
       for (const secret of ['PRIVATE_IMAGE_FILENAME', 'files.slack.com', bytes.toString('base64'), fixture.settings.SLACK_BOT_TOKEN, fixture.settings.LLM_API_KEY]) expect(JSON.stringify(result)).not.toContain(secret);
     }
+  });
+  it.each([
+    ['image/png', 'ACCESS_DENIED'], ['image/jpeg', 'ACCESS_DENIED'], ['application/pdf', 'ACCESS_DENIED'],
+    ['application/octet-stream', 'ACCESS_DENIED'], ['text/plain', 'UNSUPPORTED_IMAGE'], ['text/csv', 'UNSUPPORTED_IMAGE'],
+  ])('snippet MIME %s cannot bypass registered image validator/mode policy', async (mime, code) => {
+    const { main, download, vision } = setup(Buffer.from('not downloaded'), mime, undefined, 'snippet');
+    expect(await execute((await main.listTools()).slack_analyze_image, args, trusted())).toMatchObject({ ok: false, error: { code } });
+    expect(fixture.client.files.info).toHaveBeenCalledTimes(1);
+    expect(download.calls).toHaveLength(0); expect(vision.calls).toHaveLength(0);
   });
   it('preserves default text MIME validator and never accepts model-selected validator/config/identity', async () => {
     const { main, download, vision } = setup(); const tools = await main.listTools();

@@ -6,14 +6,15 @@ const args = { fileId: 'F123', messageTs: '123.000002' };
 const context = {};
 const scope: AttachmentScope = { channelId: 'C123', kind: 'private_channel',
   identity: { userId: 'U123', teamId: 'T123', channel: 'C123', requestId: 'request-1' } };
-function fixture() {
+function fixture(fileOverrides: { mode?: string; mimetype?: string; is_external?: boolean } = {}) {
   const readMessage = vi.fn().mockImplementation(async (_client, ctx, target) => {
     // Test-only trusted capability; getters/model-like fields cannot bind identity.
     if (ctx !== context) throw new AttachmentError('ACCESS_DENIED');
     return { channelId: 'C123', messageTs: target.messageTs, ...(target.threadTs ? { threadTs: target.threadTs } : {}), fileIds: [args.fileId] };
   });
   const info = vi.fn().mockResolvedValue({ ok: true, file: { id: args.fileId, name: 'sample.txt', mimetype: 'text/plain',
-    size: 5, url_private_download: 'https://files.slack.com/files-pri/T123-F123/sample.txt', mode: 'hosted' } });
+    size: 5, url_private_download: 'https://files.slack.com/files-pri/T123-F123/sample.txt', mode: 'hosted',
+    is_external: false, ...fileOverrides } });
   const authorizeChannel = vi.fn().mockImplementation(async (_client, ctx, target) => {
     if (ctx !== context || target.channelId !== scope.channelId) throw new AttachmentError('ACCESS_DENIED'); return scope;
   });
@@ -32,6 +33,37 @@ describe('attachment DI bridge matching approved predecessor live authorization 
     const order = [f.readMessage.mock.invocationCallOrder[0], f.authorizeChannel.mock.invocationCallOrder[0],
       f.info.mock.invocationCallOrder[0], f.authorizeChannel.mock.invocationCallOrder[1]];
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+  it.each(['text/plain', 'text/markdown', 'text/x-markdown', 'text/csv', 'application/csv',
+    ' Text/Plain; charset="UTF-8"', 'TEXT/CSV; charset=utf8'])('accepts only existing text/CSV classification for server snippet MIME %s', async mimetype => {
+    const f = fixture({ mode: 'snippet', mimetype });
+    await expect(authorizeSlackAttachment(f.deps, context, args)).resolves.toMatchObject({ file: { mimetype } });
+    expect(f.authorizeChannel).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    { mode: 'snippet', mimetype: 'application/pdf' },
+    { mode: 'snippet', mimetype: 'image/png' },
+    { mode: 'snippet', mimetype: 'image/jpeg' },
+    { mode: 'snippet', mimetype: 'application/octet-stream' },
+    { mode: 'snippet', mimetype: 'text/html' },
+    { mode: 'snippet', mimetype: 'text/plain; charset=iso-8859-1' },
+    { mode: 'snippet', is_external: true },
+    { mode: 'external' }, { mode: 'unknown' }, { mode: 'Snippet' },
+  ])('denies unsupported snippet/mode metadata even with permissive server validator: %j', async metadata => {
+    const f = fixture(metadata); const validateMime = vi.fn();
+    await expect(authorizeSlackAttachment(f.deps, context, args, validateMime)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+    expect(validateMime).not.toHaveBeenCalled(); expect(f.authorizeChannel).toHaveBeenCalledTimes(1);
+  });
+  it.each(['hosted', undefined, ''])('preserves existing mode %j behavior and custom image MIME validator', async mode => {
+    const f = fixture({ mode, mimetype: 'image/png' }); const validateMime = vi.fn();
+    await expect(authorizeSlackAttachment(f.deps, context, args, validateMime)).resolves.toMatchObject({ file: { mimetype: 'image/png' } });
+    expect(validateMime).toHaveBeenCalledWith('image/png'); expect(f.authorizeChannel).toHaveBeenCalledTimes(2);
+  });
+  it('still applies server-supplied format validator to an otherwise allowed text snippet', async () => {
+    const f = fixture({ mode: 'snippet' });
+    const validateMime = vi.fn(() => { throw new AttachmentError('UNSUPPORTED_TYPE'); });
+    await expect(authorizeSlackAttachment(f.deps, context, args, validateMime)).rejects.toMatchObject({ code: 'UNSUPPORTED_TYPE' });
+    expect(validateMime).toHaveBeenCalledWith('text/plain'); expect(f.authorizeChannel).toHaveBeenCalledTimes(1);
   });
   it('forwards explicit parent threadTs without scanning; mismatched reply provenance is rejected', async () => {
     const f = fixture();

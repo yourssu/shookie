@@ -20,6 +20,12 @@ const fileSchema = z.object({ id: z.string().regex(/^F[A-Z0-9]+$/u).max(64), nam
   mimetype: z.string().max(200), size: z.number().int().min(0), url_private_download: z.string().max(4096),
   is_external: z.boolean().optional(), mode: z.string().optional() });
 const validTs = (ts: string) => /^\d+\.\d{1,6}$/u.test(ts) && ts.length <= 32;
+function isSupportedTextSnippet(mime: string): boolean {
+  try {
+    const kind = attachmentKind(mime);
+    return kind === 'text' || kind === 'csv';
+  } catch { return false; }
+}
 function checked(response: { ok?: boolean; error?: string; warning?: string; response_metadata?: { warnings?: string[] } }) {
   if (response.error === 'missing_scope') throw new AttachmentError('MISSING_SCOPE');
   if (!response.ok || response.error) throw safeError({ data: { error: response.error } });
@@ -68,8 +74,11 @@ export async function authorizeSlackAttachment(
     const info = await deps.client.files.info({ file: args.fileId });
     checked(info);
     const parsed = fileSchema.safeParse(info.file);
+    // Only files.info metadata may allow a snippet, and only existing text/CSV MIME kinds.
+    // An injected image (or permissive) validator cannot broaden this file-mode policy.
     if (!parsed.success || parsed.data.id !== args.fileId || parsed.data.is_external ||
-        (parsed.data.mode && parsed.data.mode !== 'hosted')) throw new AttachmentError('ACCESS_DENIED');
+        (parsed.data.mode && parsed.data.mode !== 'hosted' &&
+          !(parsed.data.mode === 'snippet' && isSupportedTextSnippet(parsed.data.mimetype)))) throw new AttachmentError('ACCESS_DENIED');
     const file = parsed.data;
     if (file.size > L.fileBytes) throw new AttachmentError('FILE_LIMIT');
     validateMime(file.mimetype);
