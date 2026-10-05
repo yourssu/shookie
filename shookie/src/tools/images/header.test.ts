@@ -55,6 +55,19 @@ describe('bounded PNG/JPEG structural preflight (no inflate/decode)', () => {
     const segments = Array.from({ length: L.headerSteps }, () => jpegSegment(0xfe, Buffer.alloc(0)));
     expect(() => inspectImage(Buffer.concat([raw.subarray(0, 2), ...segments, raw.subarray(2)]), 'image/jpeg', 'image/jpeg')).toThrow('IMAGE_LIMIT');
   });
+  it('counts entropy restart markers against the same 4096-step JPEG budget', () => {
+    const raw = jpegFixture();
+    const withRestarts = (count: number) => {
+      const markers = Buffer.alloc(count * 2);
+      for (let i = 0; i < count; i++) { markers[2 * i] = 0xff; markers[2 * i + 1] = 0xd0 + i % 8; }
+      return Buffer.concat([raw.subarray(0, -2), markers, raw.subarray(-2)]);
+    };
+    // Structural preflight only: accepting this does not guarantee valid decoded pixels/restart order.
+    expect(inspectImage(withRestarts(16), 'image/jpeg', 'image/jpeg')).toMatchObject({ width: 1, height: 1 });
+    const overBudget = withRestarts(5000);
+    expect(overBudget.length).toBeLessThan(L.fileBytes);
+    expect(() => inspectImage(overBudget, 'image/jpeg', 'image/jpeg')).toThrow('IMAGE_LIMIT');
+  });
   it('fails closed on deterministic random inputs without native parser errors', () => {
     let seed = 1;
     for (let n = 0; n < 100; n++) {

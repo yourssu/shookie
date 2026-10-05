@@ -128,6 +128,7 @@ function jpeg(bytes: Buffer): ImageHeader {
         if (bytes[offset] !== 0xff) { offset++; entropy++; continue; }
         const start = offset++; while (bytes[offset] === 0xff) offset++;
         const next = bytes[offset];
+        if (next >= 0xd0 && next <= 0xd7 && ++steps > L.headerSteps) throw new ImageError('IMAGE_LIMIT');
         if (next === 0 || (next >= 0xd0 && next <= 0xd7)) { offset++; entropy++; continue; }
         offset = start; break;
       }

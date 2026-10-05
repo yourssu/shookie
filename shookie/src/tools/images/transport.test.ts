@@ -103,6 +103,21 @@ describe('isolated tool-free image transport', () => {
       JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok', tool_calls: [{}] }, finish_reason: 'stop' }] })])
       await expect(interpretImage(input, config, { dependencies: fakeTransport(body) })).rejects.toMatchObject({ code: 'VISION_FAILED' });
   });
+  it.each(['\n', ' ', '\t', '\r\n \t'])('rejects full PNG/JPEG payload reflection wrapped at 64 characters with %j', async separator => {
+    for (const [bytes, mime] of [[pngFixture(), 'image/png'], [jpegFixture(), 'image/jpeg']] as const) {
+      const encoded = bytes.toString('base64'); const wrapped = encoded.match(/.{1,64}/gu)!.join(separator);
+      expect(wrapped).not.toContain(encoded);
+      const deps = fakeTransport(visionResponse(`해석 대신 전송된 데이터:\n${wrapped}`));
+      await expect(interpretImage({ ...input, bytes, mime }, config, { dependencies: deps }))
+        .rejects.toMatchObject({ code: 'VISION_FAILED', message: 'VISION_FAILED' });
+      expect(deps.request).toHaveBeenCalledTimes(1);
+    }
+  });
+  it('does not reject normal prose or spaced numbers merely because whitespace removal forms a long run', async () => {
+    const text = '차트 수치가 흐려 불확실합니다. ' + Array.from({ length: 160 }, (_, i) => String(i % 10)).join(' \t');
+    const result = await interpretImage(input, config, { dependencies: fakeTransport(visionResponse(text)) });
+    expect(result).toEqual({ text, truncated: false });
+  });
   it('bounds stalled DNS to its own deadline and honors pre-aborted requests without I/O', async () => {
     const parent = new AbortController(); parent.abort(); const deps = fakeTransport();
     await expect(interpretImage(input, config, { signal: parent.signal, dependencies: deps })).rejects.toMatchObject({ code: 'CANCELLED' });

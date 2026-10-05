@@ -148,6 +148,18 @@ describe('registered image tool + live Slack bridge + shared cancellation (synth
     expect(result).toMatchObject({ ok: false, error: { code: 'VISION_FAILED' } });
     expect(JSON.stringify(result)).not.toContain('RAW_SECRET'); expect(f.vision.calls).toHaveLength(1);
   });
+  it.each(['\n', ' ', '\t'])('registered tool fails closed on PNG/JPEG base64 wrapped at 64 characters with %j', async separator => {
+    for (const [bytes, mime] of [[pngFixture(), 'image/png'], [jpegFixture(), 'image/jpeg']] as const) {
+      const encoded = bytes.toString('base64'); const wrapped = encoded.match(/.{1,64}/gu)!.join(separator);
+      const f = setup(bytes, mime, visionResponse(`해석 대신 데이터:\n${wrapped}`));
+      const result = await execute((await f.main.listTools()).slack_analyze_image, args, trusted());
+      expect(result).toMatchObject({ ok: false, error: { code: 'VISION_FAILED' } });
+      expect(result).not.toHaveProperty('interpretation');
+      const safe = JSON.stringify([result, vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
+      expect(safe).not.toContain(encoded); expect(safe).not.toContain(wrapped); expect(safe).not.toContain('해석 대신 데이터');
+      expect(f.vision.calls).toHaveLength(1);
+    }
+  });
   it.each(['download', 'vision'] as const)('propagates registry cancellation through registered %s HTTP and drains actual socket close', async phase => {
     let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
     let closed!: () => void; const socketClosed = new Promise<void>(resolve => { closed = resolve; });

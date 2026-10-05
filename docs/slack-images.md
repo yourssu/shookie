@@ -30,7 +30,7 @@
 | 이미지 API deadline | DNS부터 response 완료까지 30초 |
 | 이미지 API max_tokens | 2048 |
 
-`header.ts`는 inflate·decode·render·실행을 하지 않습니다. PNG signature, chunk bounds/CRC/order/IHDR/color/depth, IDAT zlib prefix, IEND와 JPEG SOI/segment bounds, 8-bit baseline/progressive frame dimensions/components, quantization/Huffman tables, SOS, bounded entropy marker walk, EOI를 검사합니다. APNG, unsupported critical chunks/JPEG variants, MIME mismatch, 크기 초과, 구조 손상은 차단합니다. **헤더 구조 검사이지 전체 압축 pixel stream의 유효성 보증이 아닙니다.** 헤더가 유효해도 실제 디코딩이 실패할 수 있으며 remote 오류는 fail-closed합니다. 압축 해제 폭탄은 로컬에서 해제하지 않는 방식으로 회피하고 raster 크기는 사전 제한합니다.
+`header.ts`는 inflate·decode·render·실행을 하지 않습니다. PNG signature, chunk bounds/CRC/order/IHDR/color/depth, IDAT zlib prefix, IEND와 JPEG SOI/segment bounds, 8-bit baseline/progressive frame dimensions/components, quantization/Huffman tables, SOS, bounded entropy marker walk(FFD0–FFD7 restart marker도 공유 4096-step 예산에 포함), EOI를 검사합니다. APNG, unsupported critical chunks/JPEG variants, MIME mismatch, 크기 초과, 구조 손상은 차단합니다. **헤더 구조 검사이지 전체 압축 pixel stream의 유효성 보증이 아닙니다.** 헤더가 유효해도 실제 디코딩이 실패할 수 있으며 remote 오류는 fail-closed합니다. 압축 해제 폭탄은 로컬에서 해제하지 않는 방식으로 회피하고 raster 크기는 사전 제한합니다.
 
 ## 현재 SDK가 아닌 독립 전송을 쓰는 이유
 
@@ -38,7 +38,7 @@
 
 `transport.test.ts`는 설치된 SDK를 실제 호출하되 fetch를 synthetic으로 대체합니다. 표준 image `file` part(`mediaType: image/png`, bytes)를 넣었을 때 **실제 outgoing JSON이 text-only**이고 `user message part type: file` unsupported warning이 생김을 검증합니다. 문서 지원만 보고 SDK 전달 성공으로 오인하지 않습니다.
 
-별도 `transport.ts`는 기존 `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` 값만 사용하는 최소 tool-free OpenAI-compatible HTTPS POST 경로입니다. main/provider/global model 설정이나 package deps를 바꾸지 않습니다. server의 trusted HTTPS config endpoint(`/` 또는 `/v1`)만 사용하며 URL userinfo/query/fragment/alternate port와 private DNS를 차단하고 DNS를 socket에 pinning합니다. redirect는 전부 거절하고 압축 response, API unsupported/error, malformed/refused/tool-return 응답은 정직하게 실패합니다. 텍스트-only 재시도나 다른 모델로의 fallback은 없습니다.
+별도 `transport.ts`는 기존 `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` 값만 사용하는 최소 tool-free OpenAI-compatible HTTPS POST 경로입니다. main/provider/global model 설정이나 package deps를 바꾸지 않습니다. server의 trusted HTTPS config endpoint(`/` 또는 `/v1`)만 사용하며 URL userinfo/query/fragment/alternate port와 private DNS를 차단하고 DNS를 socket에 pinning합니다. redirect는 전부 거절하고 압축 response, API unsupported/error, malformed/refused/tool-return 응답은 정직하게 실패합니다. 텍스트-only 재시도나 다른 모델로의 fallback은 없습니다. 응답의 private URL/token/data URL과 긴 원시 base64 run을 차단하며, 공백·개행·탭을 제거한 응답이 원본 encoded image payload를 포함해도 실패로 처리합니다. 정규화된 일반 문장·수치가 길다는 이유만으로 base64로 판정하지 않고 원본 payload와 정확히 비교합니다. 차단된 raw response text는 반환하거나 로그/DB에 저장하지 않습니다.
 
 각 전송은 자체 deadline과 호출자의 AbortSignal을 결합하여 실제 request/socket을 abort합니다. synthetic HTTP endpoint 테스트는 header stall/body stall/deadline에 실제 열린 socket이 종료되는 것을 검증합니다. `readImage` 및 이미지 API는 `executionSignal(context?.abortSignal)`을 통해 public tool signal과 AsyncLocalStorage의 main 3분 request signal을 결합하고 전후 abort/checkpoint를 검사합니다. 기존 Slack downloader의 `DownloadDependencies.signal` 및 실제 HTTP abort를 그대로 재사용합니다. DNS 잔여 작업 및 request `close`를 `trackExecution`에 등록하여 취소 후 runtime 소유권이 실제 잔여 완료까지 유지됩니다. 등록된 도구의 Slack 다운로드/이미지 API socket을 실제 local HTTP로 열고 registry scope를 취소한 뒤 `scope.drain()`과 socket 종료를 확인하는 synthetic integration 테스트를 추가했습니다.
 

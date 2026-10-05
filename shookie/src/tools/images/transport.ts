@@ -40,11 +40,13 @@ export async function interpretImage(input: { bytes: Buffer; mime: ImageMime; qu
   inspectImage(input.bytes, input.mime, input.mime);
   if (!input.question.trim() || input.question.length > L.questionChars) throw new ImageError('INVALID_INPUT');
   const url = visionEndpoint(config);
-  if (input.question.includes(config.apiKey) || forbiddenText.test(input.question)) throw new ImageError('INVALID_INPUT');
+  const encodedImage = input.bytes.toString('base64');
+  if (input.question.includes(config.apiKey) || forbiddenText.test(input.question) ||
+      input.question.replace(/\s+/gu, '').includes(encodedImage)) throw new ImageError('INVALID_INPUT');
   const body = JSON.stringify({ model: config.model, stream: false, max_tokens: L.maxTokens,
     messages: [{ role: 'system', content: IMAGE_SYSTEM }, { role: 'user', content: [
       { type: 'text', text: input.question },
-      { type: 'image_url', image_url: { url: `data:${input.mime};base64,${input.bytes.toString('base64')}` } },
+      { type: 'image_url', image_url: { url: `data:${input.mime};base64,${encodedImage}` } },
     ] }] });
   if (Buffer.byteLength(body) > L.requestBytes) throw new ImageError('IMAGE_LIMIT');
   const controller = new AbortController();
@@ -93,8 +95,10 @@ export async function interpretImage(input: { bytes: Buffer; mime: ImageMime; qu
         !['stop', 'length'].includes(choice.finish_reason)) throw new ImageError('VISION_FAILED');
     const text: string = choice.message.content;
     // Do not retain accidental reflected payloads/secrets in main tool context, DB or logs.
+    // Compare only against this exact payload after whitespace removal: normal prose/numbers
+    // are not classified as base64 merely because normalization makes them contiguous.
     if (text.includes(config.apiKey) || forbiddenText.test(text) ||
-        text.includes(input.bytes.toString('base64'))) throw new ImageError('VISION_FAILED');
+        text.replace(/\s+/gu, '').includes(encodedImage)) throw new ImageError('VISION_FAILED');
     executionCheckpoint();
     return { text: utf8Prefix(text, L.outputBytes), truncated: choice.finish_reason === 'length' || Buffer.byteLength(text) > L.outputBytes };
   } catch (error) {
