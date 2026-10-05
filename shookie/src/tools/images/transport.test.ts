@@ -64,7 +64,7 @@ describe('isolated tool-free image transport', () => {
     expect(() => visionEndpoint({ ...config, apiKey: 'secret\r\nHeader: secret' })).toThrow('VISION_CONFIG');
   });
   it('never sends reflected private Slack URLs, tokens or data payloads in text blocks', async () => {
-    for (const question of [config.apiKey, 'xoxb-private-bot-token', 'https://files.slack.com/files-pri/T-F/private', 'data:image/png;base64,abc']) {
+    for (const question of [config.apiKey, 'xoxb-private-bot-token', 'https://files.slack.com/files-pri/T-F/private', 'data:image/png;base64,abc', 'A'.repeat(200)]) {
       const deps = fakeTransport();
       await expect(interpretImage({ ...input, question }, config, { dependencies: deps })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
       expect(deps.resolve).not.toHaveBeenCalled(); expect(deps.request).not.toHaveBeenCalled();
@@ -99,7 +99,7 @@ describe('isolated tool-free image transport', () => {
   it('fails closed on malformed/refused/tool output, unexpected schema or reflected credentials/payload', async () => {
     for (const body of ['not-json', '{}', JSON.stringify({ error: { message: 'secret' } }), visionResponse('', 'stop'),
       visionResponse('tool output', 'tool_calls'), visionResponse(config.apiKey), visionResponse(input.bytes.toString('base64')),
-      visionResponse('https://files.slack.com/files-pri/T-F/private'), visionResponse('data:image/png;base64,abc'),
+      visionResponse('https://files.slack.com/files-pri/T-F/private'), visionResponse('data:image/png;base64,abc'), visionResponse('A'.repeat(200)),
       JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok', tool_calls: [{}] }, finish_reason: 'stop' }] })])
       await expect(interpretImage(input, config, { dependencies: fakeTransport(body) })).rejects.toMatchObject({ code: 'VISION_FAILED' });
   });
