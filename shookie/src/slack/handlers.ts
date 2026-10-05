@@ -38,6 +38,7 @@ import { budgetSlackThread, readSlackThread, SlackThreadContextError, THREAD_CON
   type ThreadSummarizer } from "./slack-thread-source.js";
 import { summarizeThread } from "./thread-summarizer.js";
 import { bindSlackReadContext } from "../tools/slack/context.js";
+import { logSlackTokenReceive, logSlackTokenSelection, logSlackTokenBinding } from "../tools/slack/action-token-diagnostics.js";
 import { projectEventAttachments, type AttachmentCandidates } from "../tools/attachments/event-metadata.js";
 
 const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
@@ -103,6 +104,7 @@ export function registerHandlers(
     const text = (trusted.botUserId ? rawText.split(`<@${trusted.botUserId}>`).join("") : rawText).trim() ||
       (attachments.files.length ? "첨부 파일을 확인해 주세요." : "");
     if (!text && kind === "message") return;
+    logSlackTokenReceive(requestId, kind, raw, body, context);
     const identity: ConversationEvent = {
       sessionId, requestId, channel: event.channel, threadTs, userId: event.user,
       ...(teamId ? { teamId } : {}), ...(envelope.event_id ? { eventId: envelope.event_id } : {}),
@@ -126,7 +128,10 @@ export function registerHandlers(
           await postToThread(app, identity.channel, threadTs, greeting);
           return;
         }
-        await handleConversation(app, agent, text, identity, messages, commit, scope, event.action_token, attachments);
+        // Keep the original event-only selection and its single read; diagnostics never supply a fallback.
+        const actionToken = event.action_token;
+        logSlackTokenSelection(requestId, kind, actionToken);
+        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, kind);
       }, slackContext, scope => controls.start(scope));
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
@@ -157,6 +162,7 @@ async function handleConversation(
   scope: ExecutionScope,
   actionToken?: unknown,
   attachments?: AttachmentCandidates,
+  eventKind: "app_mention" | "message" = "message",
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
@@ -213,6 +219,7 @@ async function handleConversation(
       // Only authenticated event metadata authorizes explicit Slack reads, never model/user text
       // or the threadTs-only Assistant view hint. Missing team fails closed for read tools.
       if (teamId) bindSlackReadContext(requestContext, { channel, userId, teamId, requestId }, actionToken);
+      logSlackTokenBinding(requestContext, requestId, eventKind, actionToken, !!teamId);
       // Preserve Assistant current-view hints without flattening conversation roles.
       // This is a hint, never an actor identity or authorization source (the legacy map is threadTs-only).
       const modelMessages = currentChannel && /^[A-Z][A-Z0-9]{1,63}$/.test(currentChannel)

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { SlackReadClient } from "./client.js";
 import { authorizeCurrentSlackChannel, requireSlackReadIdentity } from "./authorization.js";
 import { getSlackSearchActionToken } from "./context.js";
+import { logSlackTokenSearch } from "./action-token-diagnostics.js";
 import { check, deny, errorResult, failure, invalid, unavailable } from "./errors.js";
 import { searchInput, type ReadResult } from "./schemas.js";
 import { jsonTextPrefix } from "./projection.js";
@@ -35,6 +36,7 @@ export class SlackSearcher {
   async search(input: unknown, context?: object): Promise<ReadResult> {
     let locked: string | undefined;
     try {
+      logSlackTokenSearch(context);
       const identity = requireSlackReadIdentity(context);
       const parsed = searchInput.safeParse(input); if (!parsed.success) invalid();
       const { query, channel, cursor, limit } = parsed.data;
@@ -53,6 +55,7 @@ export class SlackSearcher {
       if (!access.workspaceHost || !this.client.apiCall) unavailable();
       const terms = query.trim().split(/\s+/).map(term => `"${term}"`).join(" ");
       // SDK lacks this new method's types: apiCall uses the documented endpoint/official argument names.
+      logSlackTokenSearch(context, "search_api");
       const raw = await this.client.apiCall("assistant.search.context", {
         action_token: actionToken, query: `in:<#${identity.channel}> ${terms}`,
         channel_types: ["public_channel"], content_types: ["messages"], context_channel_id: identity.channel,

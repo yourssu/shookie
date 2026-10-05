@@ -1,3 +1,5 @@
+import { isUsableSlackActionToken } from "./action-token-validation.js";
+
 export type SlackReadIdentity = Readonly<{
   userId: string;
   teamId: string;
@@ -12,7 +14,7 @@ const actionTokens = new WeakMap<object, string>();
 export function bindSlackReadContext(context: object, identity: SlackReadIdentity, actionToken?: unknown): void {
   identities.set(context, Object.freeze({ userId: identity.userId, teamId: identity.teamId, channel: identity.channel, requestId: identity.requestId }));
   actionTokens.delete(context);
-  if (typeof actionToken === "string" && actionToken.length > 0 && actionToken.length <= 16_384 && !/[\u0000-\u0020]/.test(actionToken)) actionTokens.set(context, actionToken);
+  if (isUsableSlackActionToken(actionToken)) actionTokens.set(context, actionToken);
 }
 /** Internal search transport use only; do not add this to model context, grants or outputs. */
 export function getSlackSearchActionToken(context?: object): string | undefined {

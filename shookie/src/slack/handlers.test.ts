@@ -20,6 +20,8 @@ import type { ThreadSummarizer } from "./slack-thread-source.js";
 import { appendTaskUpdate, startPlanStream, stopStreamWithBlocks } from "./streaming.js";
 import { getSlackReadIdentity, getSlackSearchActionToken } from "../tools/slack/context.js";
 import { getCurrentChannel } from "./assistant.js";
+import { logger } from "../logger.js";
+import { SlackReader, type SlackReadClient } from "../tools/slack/client.js";
 
 beforeEach(() => {
   vi.mocked(getCurrentChannel).mockReset().mockReturnValue(undefined);
@@ -50,7 +52,7 @@ function harness(summarize?: ThreadSummarizer) {
     }),
     fail: vi.fn(async id => { if (events.get(id) === "processing") events.set(id, "failed"); }),
   };
-  const stream = vi.fn(async () => ({
+  const stream = vi.fn(async (_messages?: unknown, _options?: { requestContext: object }) => ({
     fullStream: new ReadableStream({ start(controller) { controller.close(); } }),
     text: Promise.resolve("answer"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }),
     steps: Promise.resolve([]), finishReason: Promise.resolve("stop"),
@@ -70,6 +72,57 @@ function harness(summarize?: ThreadSummarizer) {
 }
 
 describe("actual Slack handler wiring", () => {
+  it.each([
+    { token: "SYNTHETIC_TRUSTED_SECRET", status: "ok", candidate: false },
+    { token: undefined, status: "unsupported", candidate: false },
+    { token: "invalid secret", status: "unsupported", candidate: false },
+    { token: undefined, status: "unsupported", candidate: true },
+  ])("correlates actual handler selection, WeakMap binding and search without fallback: $status / $candidate", async ({ token, status, candidate }) => {
+    const h = harness();
+    const result = await h.stream(); h.stream.mockClear(); vi.mocked(logger.info).mockClear();
+    const apiCall = vi.fn(async (..._args: unknown[]) => ({ ok: true, results: { messages: [] } }));
+    const auth = vi.fn(async () => ({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" }));
+    const history = vi.fn(), replies = vi.fn();
+    const reader = new SlackReader({ auth: { test: auth }, conversations: {
+      info: vi.fn(async () => ({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } })),
+      members: vi.fn(async () => ({ ok: true, members: ["U1"] })), history, replies,
+    }, apiCall } as unknown as SlackReadClient);
+    let searchResult: unknown;
+    h.stream.mockImplementation(async (...args: unknown[]) => {
+      const options = args[1] as { requestContext: object };
+      searchResult = await reader.search({ query: "launch" }, options.requestContext);
+      return result;
+    });
+    const alternate = "ALTERNATE_SECRET_DO_NOT_SELECT";
+    const getter = vi.fn(() => { throw new Error(alternate); });
+    const body = { event_id: "diag", team_id: "T1", event: { action_token: alternate },
+      ...(candidate ? { action_token: alternate } : {}) };
+    const context = candidate ? { botUserId: "BOT", action_token: alternate } : { botUserId: "BOT" };
+    Object.defineProperty(body, "unrelated", { enumerable: true, get: getter });
+    const event = { channel: "C1", ts: "diag", user: "U1", text: "<@BOT> launch", ...(token !== undefined ? { action_token: token } : {}) };
+    await h.deliver("diag", { event, body, context }, "app_mention");
+    const logs = vi.mocked(logger.info).mock.calls.filter(call => call[0] === "slack_action_token_diagnostic").map(call => call[1] as Record<string, unknown>);
+    expect(logs.map(log => log.stage)).toEqual(status === "ok"
+      ? ["receive", "selection", "binding", "search", "search_api"] : ["receive", "selection", "binding", "search"]);
+    expect(logs.every(log => log.requestId === "slack-event:diag" && log.eventKind === "app_mention")).toBe(true);
+    expect(logs[0]).toMatchObject({ eventTokenPresent: token !== undefined, eventTokenUsable: status === "ok",
+      bodyEventTokenUsable: true, bodyTokenUsable: candidate, contextTokenUsable: candidate });
+    expect(logs[2]).toMatchObject({ bindingAttempted: true, identityBound: true, tokenBound: status === "ok" });
+    expect(logs[3]).toMatchObject({ identityBound: true, tokenBound: status === "ok", correlationAvailable: true });
+    expect(searchResult).toMatchObject({ status });
+    expect(apiCall).toHaveBeenCalledTimes(status === "ok" ? 1 : 0);
+    expect(auth).toHaveBeenCalledTimes(status === "ok" ? 1 : 0);
+    if (status === "ok") expect(apiCall.mock.calls[0]).toEqual(["assistant.search.context", expect.objectContaining({ action_token: token })]);
+    expect(history).not.toHaveBeenCalled(); expect(replies).not.toHaveBeenCalled(); expect(getter).not.toHaveBeenCalled();
+    for (const value of [logs, h.stream.mock.calls[0][0], vi.mocked(h.repository.complete).mock.calls, searchResult]) {
+      const serialized = JSON.stringify(value);
+      expect(serialized).not.toContain(alternate);
+      if (token) expect(serialized).not.toContain(token);
+    }
+    const requestContext = (h.stream.mock.calls[0] as unknown as [unknown, { requestContext: { get(key: string): unknown } }])[1].requestContext;
+    expect(requestContext.get("action_token")).toBeUndefined(); expect(requestContext.get("stage")).toBeUndefined();
+  });
+
   it("passes native roles and trusted actor context, preserving other mentions", async () => {
     const h = harness();
     await h.deliver("e1");

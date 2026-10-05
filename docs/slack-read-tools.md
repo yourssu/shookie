@@ -79,6 +79,10 @@ readAuthorizedSlackMessage(client, requestContext, { messageTs, threadTs?, chann
 - 첨부 worker의 `authorize(fileId,messageTs)`는 trusted 원본 context로 이 exact API를 호출하고 반환 fileIds에 fileId가 실제 포함되는지 확인한 뒤에만 자신의 files.info/download 경로로 진행해야 한다. 모델 text/일반 RequestContext entries/단순 files.info 성공은 메시지 연결/사용자 접근 증거가 아니다. 작업이 지연되거나 새 요청이면 다시 live 검증한다.
 - 이 bridge는 user token/OAuth/다른 채널/새 도구를 추가하지 않는다. 첨부 module 및 실제 파일 metadata/download/처리는 해당 worker 소유다. 이 PR은 첨부 구현을 수정하지 않는다.
 
+## 임시 action_token 안전 진단
+
+수신의 고정 후보 위치와 실제 선택 → WeakMap 바인딩 → 검색/API 직전 상태만 INFO boolean/enum 로그로 관찰한다. 토큰 선택/권한/fallback은 바꾸지 않는다. [전달 구조 근거·필드 계약·해석 및 단일 UI 멘션 재현](slack-action-token-diagnostics.md)을 따른다. 운영 증거 확보 후 진단 제거 후속 PR이 필요하다.
+
 ## 검증 / 실제 Slack E2E 미실행
 
 관련 자동 테스트는 mock Slack API + 실제 Mastra main factory/tool execute/실제 handler 배선 및 실제 SDK synthetic adapter로 token 로그 차단을 검증한다. 검색 성공/공식 shape/context/bots/provenance, scope/query 주입, trusted action_token 전달과 위조 차단, 20 matches·budget·bounded cursor·partial, 설정/권한/429/빈결과 구분, bridge live 권한/exact message/file IDs, 기존 thread/DM 회귀가 포함된다.
