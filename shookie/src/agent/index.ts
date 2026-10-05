@@ -13,9 +13,11 @@ import { silentSlackLogger } from "../tools/slack/sdk-logger.js";
 import type { SlackReadClient } from "../tools/slack/client.js";
 import { createSlackAttachmentOptions } from "../tools/attachments/slack-authorization.js";
 import type { DownloadDependencies } from "../tools/attachments/download.js";
+import { createSlackImageOptions } from "../tools/images/slack-options.js";
+import type { VisionDependencies } from "../tools/images/transport.js";
 
 export function createAgent(options: { slackClient?: SlackReadClient & Partial<Pick<WebClient, "files">>;
-  attachmentDownloadDependencies?: DownloadDependencies } = {}) {
+  attachmentDownloadDependencies?: DownloadDependencies; imageVisionDependencies?: VisionDependencies } = {}) {
   const provider = createDeepSeek({
     apiKey: config.LLM_API_KEY,
     baseURL: config.LLM_BASE_URL,
@@ -58,7 +60,12 @@ export function createAgent(options: { slackClient?: SlackReadClient & Partial<P
     ? createSlackAttachmentOptions(slackClient as SlackReadClient & Pick<WebClient, "files">,
         config.SLACK_BOT_TOKEN, options.attachmentDownloadDependencies)
     : undefined;
-  const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY }, slackClient, attachments);
+  const images = slackClient?.files && config.SLACK_BOT_TOKEN
+    ? createSlackImageOptions(slackClient as SlackReadClient & Pick<WebClient, "files">, config.SLACK_BOT_TOKEN,
+        { apiKey: config.LLM_API_KEY, baseURL: config.LLM_BASE_URL, model: config.LLM_MODEL },
+        options.attachmentDownloadDependencies, options.imageVisionDependencies)
+    : undefined;
+  const mainShookie = createMainShookieAgent(subAgents, model, { exaApiKey: config.EXA_API_KEY }, slackClient, attachments, images);
   logger.info("메인 에이전트 생성 완료");
 
   return mainShookie;

@@ -49,7 +49,7 @@ beforeEach(() => {
 describe('actual main + merged trusted Slack authorization + hardened attachment pipeline (synthetic)', () => {
   it('registers the union of existing web/Slack tools and advertises only the available attachment capability', async () => {
     const { main } = mainFor(); const tools = await main.listTools();
-    expect(Object.keys(tools)).toEqual(['web_fetch', 'web_search', 'web_read_more', 'web_find_in_content', 'slack_search', 'slack_read_thread', 'slack_read_channel', 'slack_read_attachment']);
+    expect(Object.keys(tools)).toEqual(['web_fetch', 'web_search', 'web_read_more', 'web_find_in_content', 'slack_search', 'slack_read_thread', 'slack_read_channel', 'slack_read_attachment', 'slack_analyze_image']);
     const instructions = String(await main.getInstructions());
     expect(instructions).toContain('slack_read_attachment 등록됨'); expect(instructions).toContain('OCR'); expect(instructions).toContain('files:read');
     expect(instructions).toContain('assistant.search.context'); expect(instructions).toContain('web_read_more');

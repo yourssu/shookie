@@ -5,10 +5,11 @@ import { createMainShookieTools } from "./tools.js";
 import type { Agent as AgentType } from "@mastra/core/agent";
 import type { SlackReadClient } from "../../../tools/slack/client.js";
 import type { AttachmentToolOptions } from "../../../tools/attachments/tools.js";
+import type { ImageToolOptions } from "../../../tools/images/tools.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExplorer?: AgentType }, model: any, webOptions: Parameters<typeof createMainShookieTools>[1] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions) {
-  const tools = createMainShookieTools(subAgents, webOptions, slackClient, attachments);
+export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExplorer?: AgentType }, model: any, webOptions: Parameters<typeof createMainShookieTools>[1] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions, images?: ImageToolOptions) {
+  const tools = createMainShookieTools(subAgents, webOptions, slackClient, attachments, images);
 
   return new Agent({
     id: "main-shookie",

@@ -47,10 +47,11 @@ const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
   slack_read_channel: "💬 현재 채널 기록 읽는 중...",
   slack_search: "💬 Slack 검색 지원 확인 중...",
   slack_read_attachment: "📎 Slack 첨부 텍스트 읽는 중...",
+  slack_analyze_image: "🖼️ Slack 이미지 분석 중...",
 };
 
 // Do not persist/debug-log Slack read arguments, opaque cursors or fetched participant text.
-const isSlackReadTool = (toolName: string) => ["slack_search", "slack_read_thread", "slack_read_channel", "slack_read_attachment"].includes(toolName);
+const isSlackReadTool = (toolName: string) => ["slack_search", "slack_read_thread", "slack_read_channel", "slack_read_attachment", "slack_analyze_image"].includes(toolName);
 const safeToolLog = (toolName: string, value: unknown): unknown =>
   isSlackReadTool(toolName) ? { redacted: true } : value;
 
@@ -252,7 +253,7 @@ async function handleConversation(
 
             if (streamSession && taskId) {
               const argsSummary = payload.args
-                ? JSON.stringify(payload.args).slice(0, 200)
+                ? JSON.stringify(safeToolLog(toolName, payload.args)).slice(0, 200)
                 : undefined;
               try {
                 await appendTaskUpdate(streamSession, client, {
@@ -288,7 +289,9 @@ async function handleConversation(
               // output 필드로 긴 결과 본문 전송 (rich_text, ~3000자).
               // 도구 결과가 JSON/문자열 혼합이라 문자열로 정규화 후 슬라이스.
               const rawResult = payload.result;
-              const resultStr = toolName === "slack_read_attachment"
+              const resultStr = toolName === "slack_analyze_image"
+                ? "이미지 분석 결과를 확인했습니다. 파생 해석의 출처·불확실성·한계는 최종 답변에 반영합니다."
+                : toolName === "slack_read_attachment"
                 ? "첨부 읽기 결과를 확인했습니다. 출처·지원 여부·잘림은 최종 답변에 반영합니다."
                 : rawResult
                 ? (typeof rawResult === "string"
