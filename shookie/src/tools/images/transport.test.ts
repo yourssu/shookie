@@ -63,6 +63,13 @@ describe('isolated tool-free image transport', () => {
       expect(() => visionEndpoint({ ...config, baseURL })).toThrow('VISION_CONFIG');
     expect(() => visionEndpoint({ ...config, apiKey: 'secret\r\nHeader: secret' })).toThrow('VISION_CONFIG');
   });
+  it('never sends reflected private Slack URLs, tokens or data payloads in text blocks', async () => {
+    for (const question of [config.apiKey, 'xoxb-private-bot-token', 'https://files.slack.com/files-pri/T-F/private', 'data:image/png;base64,abc']) {
+      const deps = fakeTransport();
+      await expect(interpretImage({ ...input, question }, config, { dependencies: deps })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+      expect(deps.resolve).not.toHaveBeenCalled(); expect(deps.request).not.toHaveBeenCalled();
+    }
+  });
   it('rejects private/mixed DNS addresses and pins validated DNS for the outgoing socket', async () => {
     const bad = fakeTransport(); bad.resolve = vi.fn(async () => [{ address: '127.0.0.1', family: 4 }]) as unknown as typeof lookup;
     await expect(interpretImage(input, config, { dependencies: bad })).rejects.toMatchObject({ code: 'VISION_CONFIG' });

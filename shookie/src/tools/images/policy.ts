@@ -15,6 +15,7 @@ export function imageMime(value: string): ImageMime {
   return type;
 }
 export function imageFailure(error: unknown) {
+  if (error instanceof AttachmentError && error.code === 'UNSUPPORTED_TYPE') error = new ImageError('UNSUPPORTED_IMAGE');
   if (error instanceof AttachmentError) {
     const result = attachmentFailure(error);
     return { ...result, limits: IMAGE_LIMITS };

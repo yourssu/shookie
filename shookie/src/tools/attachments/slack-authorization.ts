@@ -38,15 +38,17 @@ function safeError(error: unknown): AttachmentError {
 }
 /** Production adapter: existing bot client/token + predecessor's live trusted WeakMap bridge. */
 export function createSlackAttachmentOptions(client: AttachmentSlackClient, botToken: string,
-  downloadDependencies?: DownloadDependencies): AttachmentToolOptions {
+  downloadDependencies?: DownloadDependencies, validateMime: (mime: string) => unknown = attachmentKind): AttachmentToolOptions {
   const deps: AttachmentAuthorizationDependencies = { client, authorizeCurrentSlackChannel, readAuthorizedSlackMessage };
   return { botToken, downloadDependencies,
-    authorize: (fileId, messageTs, requestContext, threadTs) => authorizeSlackAttachment(deps, requestContext, { fileId, messageTs, threadTs }) };
+    authorize: (fileId, messageTs, requestContext, threadTs) => authorizeSlackAttachment(deps, requestContext, { fileId, messageTs, threadTs }, validateMime) };
 }
 /** Exact live current-channel attachment relation first; files.info alone NEVER grants access. */
 export async function authorizeSlackAttachment(
   deps: AttachmentAuthorizationDependencies, requestContext: object | undefined,
   args: { fileId: string; messageTs: string; threadTs?: string },
+  // Server-supplied format policy only; never part of model input or an authorization grant.
+  validateMime: (mime: string) => unknown = attachmentKind,
 ): Promise<AuthorizedAttachment> {
   try {
     if (!/^F[A-Z0-9]{2,}$/u.test(args.fileId) || args.fileId.length > 64 || !validTs(args.messageTs) ||
@@ -70,7 +72,7 @@ export async function authorizeSlackAttachment(
         (parsed.data.mode && parsed.data.mode !== 'hosted')) throw new AttachmentError('ACCESS_DENIED');
     const file = parsed.data;
     if (file.size > L.fileBytes) throw new AttachmentError('FILE_LIMIT');
-    attachmentKind(file.mimetype);
+    validateMime(file.mimetype);
     // Last await before hardened download. Scope return values are NOT cached reusable grants.
     const current = await deps.authorizeCurrentSlackChannel(deps.client, requestContext, { channelId: message.channelId });
     if (current.channelId !== scope.channelId || current.identity.channel !== scope.identity.channel ||

@@ -12,7 +12,7 @@
 - `text/csv`, `application/csv`: RFC 스타일 쉼표/이중 인용부호/인용된 여러 줄/이스케이프된 인용부호. CSV는 순수 문자열 배열이며 `=`, `+`, `-`, `@` 수식을 실행하거나 URL을 방문하지 않는다. 출처 `start/end`는 CSV 논리 행의 **원문 물리 줄 범위**이다.
 - `application/pdf`: PDF 1.0–1.7 텍스트 레이어만 추출한다. 페이지별 출처와 텍스트 없는 페이지 목록을 반환한다. PDF.js 4.10.38 ESM을 고정하며 Node 20+ / Yarn 4에서 실행한다. 공개된 과거 PDF.js eval 취약 버전(<4.2.67)을 사용하지 않으며 `isEvalSupported:false`도 적용한다.
 - 보안상 PDF stream dictionary는 직접 `/Length`와 무필터 또는 canonical `/Filter /FlateDecode` (단일 원소 배열도 가능)만 허용한다. `/F` filter alias, `/DP`, `/DecodeParms`가 stream dictionary에 있으면 값이 null·배열·간접 reference인지와 무관하게 **PDF.js import 및 inflate 전에 거부**한다. `/Fl` shorthand도 지원하지 않으며 normalize해서 통과시키지 않는다. 간접 length/filter, name escape, 다른 압축 필터, 손상된 구조는 계속 거부한다. 따라서 일부 정상 텍스트 PDF도 unsupported/limit로 거부될 수 있다. 이미지-only PDF는 텍스트 없음/지원하지 않는 필터로 거부된다.
-- 이미지·스캔 OCR·영상·Office·암호화/password PDF는 지원하지 않는다. 모든 페이지가 비어 있으면 `NO_TEXT_PDF` (빈 문서 또는 스캔, OCR 미지원), 일부 빈 페이지만 있으면 `emptyPages`를 명시한다. 파일명/확장자는 형식 판정·권한 판정에 쓰지 않는다. Slack MIME, HTTP MIME, 파일 signature/유효 UTF-8를 검증한다.
+- `slack_read_attachment`는 이미지·스캔 OCR·영상·Office·암호화/password PDF를 지원하지 않는다. PNG·JPEG 시각 분석은 별도 `slack_analyze_image`에서 파생 해석으로 제공하며, 범위·한계·실제 E2E 상태는 [Slack 이미지 분석](slack-images.md)을 참고한다. 모든 페이지가 비어 있으면 `NO_TEXT_PDF` (빈 문서 또는 스캔, OCR 미지원), 일부 빈 페이지만 있으면 `emptyPages`를 명시한다. 파일명/확장자는 형식 판정·권한 판정에 쓰지 않는다. Slack MIME, HTTP MIME, 파일 signature/유효 UTF-8를 검증한다.
 
 ## 구간·검색·출처
 
