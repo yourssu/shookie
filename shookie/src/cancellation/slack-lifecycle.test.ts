@@ -10,8 +10,9 @@ vi.mock("../slack/streaming.js", () => ({ startPlanStream: vi.fn(async () => { t
 vi.mock("database", () => ({ conversationRepository: {}, logAgentCall: vi.fn(), startAgentCall: vi.fn(async () => null), startInvocation: vi.fn(), completeAgentCall: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn() }));
 import { registerHandlers } from "../slack/handlers.js";
 import { CANCEL_ACTION_ID, CANCEL_ACCEPTED_TEXT, CANCEL_UNAVAILABLE_TEXT } from "./request-registry.js";
-import { startPlanStream } from "../slack/streaming.js";
-import { logAgentCall } from "database";
+import { startPlanStream, stopStreamWithBlocks } from "../slack/streaming.js";
+import { startAgentCall, startInvocation, completeInvocation, completeAgentCall, logToolCall, logAgentCall } from "database";
+import { logger } from "../logger.js";
 import { executionSignal } from "./execution-context.js";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
@@ -37,7 +38,18 @@ function harness(summary = vi.fn(async () => "summary")) {
   };
   return { client, repository, stream, summary, deliver, click, actions };
 }
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); vi.mocked(logAgentCall).mockReset(); vi.mocked(startPlanStream).mockClear(); });
+beforeEach(() => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  vi.mocked(logAgentCall).mockReset();
+  vi.mocked(startAgentCall).mockReset().mockResolvedValue(null);
+  vi.mocked(startInvocation).mockReset();
+  vi.mocked(completeInvocation).mockReset();
+  vi.mocked(completeAgentCall).mockReset();
+  vi.mocked(logToolCall).mockReset();
+  vi.mocked(startPlanStream).mockReset().mockRejectedValue(new Error("mock fallback"));
+  vi.mocked(stopStreamWithBlocks).mockReset().mockResolvedValue(undefined);
+  vi.mocked(logger.info).mockClear(); vi.mocked(logger.warn).mockClear();
+});
 afterEach(() => vi.useRealTimers());
 
 describe("registered Slack cancel UI/action + actual runtime wiring", () => {
@@ -129,6 +141,65 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage).toHaveBeenCalledTimes(2); // control + answer attempt, no failure replacement
     expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({ text: "요청을 완료했습니다.", blocks: [] }));
+    expect(logAgentCall).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ answer: "safe answer" }));
+    expect(vi.mocked(logger.info).mock.calls.some(([text]) => text.includes("📤"))).toBe(false);
+  });
+
+  it.each(["rejection", "bounded timeout"])("continues tool/token/invocation success logging after final delivery %s", async mode => {
+    const h = harness();
+    vi.mocked(startAgentCall).mockResolvedValueOnce({ agentCallId: 41 } as Awaited<ReturnType<typeof startAgentCall>>);
+    vi.mocked(startInvocation).mockResolvedValueOnce(42);
+    const usage = { inputTokens: 101, outputTokens: 23, cachedInputTokens: 7, reasoningTokens: 3 };
+    const steps = [{ toolCalls: [{ payload: { toolName: "slack_read_thread", id: "tool-1", args: { private: "hidden" } } }],
+      toolResults: [{ payload: { toolName: "slack_read_thread", id: "tool-1", result: { participantText: "hidden" } } }] }];
+    h.stream.mockResolvedValueOnce({ ...answer(), usage: Promise.resolve(usage), steps: Promise.resolve(steps),
+      fullStream: new ReadableStream({ start(c) {
+        c.enqueue({ type: "tool-call", payload: steps[0].toolCalls[0].payload }); c.close();
+      } }) } as unknown as ReturnType<typeof answer>);
+    const attempted = deferred<void>();
+    h.client.chat.postMessage.mockImplementation(async args => {
+      if (args.text.includes("safe answer")) {
+        attempted.resolve();
+        if (mode === "bounded timeout") await new Promise<void>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("private delivery timeout")), 15_000);
+        });
+        throw new Error("private delivery failure");
+      }
+      return { ok: true, ts: "2.000001" };
+    });
+    const run = h.deliver(`logging-${mode}`);
+    await attempted.promise;
+    if (mode === "bounded timeout") await vi.advanceTimersByTimeAsync(15_000);
+    await run;
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
+    expect(logToolCall).toHaveBeenCalledExactlyOnceWith({ invocationId: 42, stepIndex: 0,
+      toolName: "slack_read_thread", input: { redacted: true }, output: { redacted: true } });
+    expect(completeInvocation).toHaveBeenCalledExactlyOnceWith(42, { status: "success", ...usage, finishReason: "stop" });
+    expect(completeAgentCall).toHaveBeenCalledExactlyOnceWith(41, { answer: "safe answer",
+      toolsUsed: ["slack_read_thread"], inputTokens: 101, outputTokens: 23 });
+    expect(logAgentCall).not.toHaveBeenCalled();
+    expect(h.client.chat.postMessage).toHaveBeenCalledTimes(2); // control + delivery attempt, no misleading failure post
+    expect(vi.mocked(logger.info).mock.calls.some(([text]) => text.includes("📤"))).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith("성공 대화 저장 이후 최종 응답 전송 실패", expect.any(Object));
+    expect(JSON.stringify(h.client.chat.postMessage.mock.calls)).not.toContain("private delivery");
+  });
+
+  it("retains a plan returned exactly at the absolute deadline for bounded cleanup without model/commit", async () => {
+    const h = harness();
+    const session = { channel: "C1", threadTs: "1.000001", messageTs: "3.000001" };
+    vi.mocked(startPlanStream).mockImplementationOnce(async () => {
+      // The HTTP call successfully returns a timestamp, but the timer callback has not run yet.
+      vi.setSystemTime(180_000);
+      return session;
+    });
+    await h.deliver("plan-deadline");
+    expect(startPlanStream).toHaveBeenCalledOnce();
+    expect(h.stream).not.toHaveBeenCalled(); expect(h.repository.complete).not.toHaveBeenCalled();
+    expect(h.repository.fail).toHaveBeenCalledOnce();
+    expect(stopStreamWithBlocks).toHaveBeenCalledExactlyOnceWith(session, h.client, "요청을 완료하지 못했습니다.", []);
+    expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ blocks: [], text: expect.stringContaining("3분을 초과") }));
+    expect(h.client.chat.postMessage).toHaveBeenCalledOnce(); // initial control only; no fallback answer/model execution
+    expect(vi.getTimerCount()).toBe(0); // independent bounded cleanup scope settled and cleared
   });
 
   it("keeps committed success/answer despite a later logging failure and clears completed buttons", async () => {

@@ -182,14 +182,21 @@ async function handleConversation(
     // Slack plan 스트림 열기 (실패 시 폴백: 이후 도구/최종 응답은 chat.postMessage로)
     try {
       logger.info(`[streaming] startPlanStream 호출: channel=${channel} threadTs=${threadTs} teamId=${teamId ?? "(없음)"} userId=${userId}`);
-      streamSession = await executionOperation(() => startPlanStream(client, channel, threadTs, teamId, userId));
-      logger.info(`[streaming] plan 스트림 열림: ts=${streamSession.messageTs}`);
+      const openedSession = await executionOperation(async () => {
+        const session = await startPlanStream(client, channel, threadTs, teamId, userId);
+        // Retain a known successful creation before the post-operation deadline check.
+        // Even a late result must be stopped using its actual Slack timestamp.
+        streamSession = session;
+        return session;
+      });
+      logger.info(`[streaming] plan 스트림 열림: ts=${openedSession.messageTs}`);
     } catch (err) {
+      executionCheckpoint(); // Stopped execution goes to bounded cleanup, not model/fallback work.
       logger.warn(
         "[streaming] startPlanStream 실패, postMessage 폴백 모드:",
         err instanceof Error ? err.message : String(err),
       );
-      streamSession = null;
+      // Keep any session already returned by Slack; null only means creation never succeeded.
     }
 
     const runConversation = async () => {
@@ -347,19 +354,28 @@ async function handleConversation(
       `💵 비용: $${((inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000).toFixed(4)}`,
     ].join("\n"); // Existing diagnostics only; no new cost policy.
     const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, debugFooter, { withFeedback: true });
-    // Deliver before ancillary DB logging; its failure must not hide the successful answer.
-    await slackDelivery(app, async (deliveryClient, signal) => {
-      if (streamSession) {
-        try { await stopStreamWithBlocks(streamSession, deliveryClient, fallbackText, blocks); }
-        catch {
-          signal.throwIfAborted(); // No late fallback after delivery deadline.
-          await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
-        }
-      } else await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
-    });
+    // Deliver before ancillary DB logging, but delivery failure must not skip success logging.
+    let delivered = false;
+    try {
+      await slackDelivery(app, async (deliveryClient, signal) => {
+        if (streamSession) {
+          try { await stopStreamWithBlocks(streamSession, deliveryClient, fallbackText, blocks); }
+          catch {
+            signal.throwIfAborted(); // No late fallback after delivery deadline.
+            await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
+          }
+        } else await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
+      });
+      delivered = true;
+    } catch {
+      logger.warn("성공 대화 저장 이후 최종 응답 전송 실패", { requestId });
+      // No misleading failure reply or state reversal; persist-success logging continues below.
+    }
 
-    if (toolNamesSeen.some(isSlackReadTool)) logger.info("📤 Slack 조회 응답 전송", { textLen: responseText.length });
-    else logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
+    if (delivered) {
+      if (toolNamesSeen.some(isSlackReadTool)) logger.info("📤 Slack 조회 응답 전송", { textLen: responseText.length });
+      else logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
+    }
     // 진단용 INFO 한 줄 — 잘림 원인 파악 (LOG_LEVEL=info에서도 보임)
     // finishReason=length → LLM 토큰 한도, =steps → maxSteps 도달, =stop → 정상, =error → 예외
     const finishReasonLabel = typeof finishReason === "string" ? finishReason : String(finishReason ?? "?");

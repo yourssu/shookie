@@ -47,9 +47,9 @@ active registry는 기존 runtime admission bound만 사용한다. 중단됐지�
 | commit 시작 → deadline → persist 실패 | 성공 없음; 실패 dedupe/친화적 timeout 안내, 늦은 답변 금지 |
 | 성공 commit → 로그/Slack delivery 오류 또는 늦은 취소 | 성공 turn을 실패로 뒤집거나 실패 안내로 덮지 않음 |
 
-final 성공 전달은 persist 뒤, 부가 DB logging 앞에 한다. 후속 logging 실패가 답변을 숨기지 않는다. runtime/handler 모두 committed 상태를 확인하여 성공 뒤 `repository.fail()`/오류 invocation 재기록/오류 안내를 하지 않는다. 취소/timeout turn은 다음 history에 넣지 않는다.
+final 성공 전달은 persist 뒤, 부가 DB logging 앞에 한다. 후속 logging 실패가 답변을 숨기지 않으며, final delivery 실패/timeout도 로컬 catch로 처리해 기존 tool/token/invocation/agent-call 성공 기록을 계속 시도한다. 전송 실패를 성공 전송 로그로 표시하지 않는다. runtime/handler 모두 committed 상태를 확인하여 성공 뒤 `repository.fail()`/오류 invocation 재기록/오류 안내를 하지 않는다. 취소/timeout turn은 다음 history에 넣지 않는다.
 
-`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. final stopStream 실패 시 기존 postMessage fallback을 유지하되, delivery signal이 이미 abort된 경우 늦은 fallback을 시작하지 않는다. status cleanup과 action ephemeral도 별도 bounded delivery다. Slack이 요청을 받아들인 뒤 연결이 끊기는 ambiguous 전송은 exactly-once가 아니며 fallback 중복 가능성은 기존처럼 남는다. 이미 시작한 transport의 실제 종료를 기다리는 정책이지 취소 불가능 API를 race만으로 끝났다고 주장하는 방식이 아니다.
+`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. final stopStream 실패 시 기존 postMessage fallback을 유지하되, delivery signal이 이미 abort된 경우 늦은 fallback을 시작하지 않는다. plan 생성에서 Slack이 성공 session/ts를 반환하면 execution post-checkpoint **이전**에 저장한다. 바로 그때 deadline이 지나도 모델/commit은 차단하되 알려진 stream ts로 bounded cleanup을 할 수 있다. status cleanup과 action ephemeral도 별도 bounded delivery다. Slack이 요청을 받아들인 뒤 연결이 끊기는 ambiguous 전송은 exactly-once가 아니며 fallback 중복 가능성은 기존처럼 남는다. 이미 시작한 transport의 실제 종료를 기다리는 정책이지 취소 불가능 API를 race만으로 끝났다고 주장하는 방식이 아니다.
 
 ## Slack read/search/attachment 보안 보존
 
