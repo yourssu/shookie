@@ -60,7 +60,7 @@ describe("actual main Slack tool registration", () => {
     fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
     fixture.client.conversations.history.mockResolvedValue({ ok: true, messages: [{ ts: "1700000000.000001", user: "U2", text: "SECRET_FETCH_RESULT" }] });
     const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
-    const app = { event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback), client: { chat: { postMessage: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
+    const app = { action: vi.fn(), event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback), client: { chat: { postMessage: vi.fn(async () => ({ ok: true, ts: 'control' })), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
     const repository: ConversationRepository = { claim: vi.fn(async () => true), recent: vi.fn(async () => []), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
     const results: unknown[] = [], searchResults: unknown[] = [];
     fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });

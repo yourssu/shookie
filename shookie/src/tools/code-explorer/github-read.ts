@@ -1,4 +1,5 @@
 import { createTool } from "@mastra/core/tools";
+import { executionSignal, trackExecution } from "../../cancellation/execution-context.js";
 import { z } from "zod";
 import { trustedActor } from "./workspace-manager.js";
 
@@ -111,13 +112,16 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     if (url.toString().includes(secret) || url.toString().includes(encodeURIComponent(secret))) throw new Error("secret in source");
   }
   const controller = new AbortController();
+  const shared = executionSignal();
+  const signal = shared ? AbortSignal.any([shared, controller.signal]) : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => { controller.abort(); reject(new Error("timeout")); }, READ_TIMEOUT_MS);
   });
   const work = async () => {
+    signal.throwIfAborted();
     const response = await fetcher(url, {
-      method: "GET", redirect: "error", signal: controller.signal,
+      method: "GET", redirect: "error", signal,
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
     });
     if (!response.ok || response.redirected || !response.body) throw new Error("read failed");
@@ -153,7 +157,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
       message: "GitHub API 읽기 전용 조회입니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. 파일 수정·push·PR 생성/병합/삭제는 지원하지 않습니다.",
     };
   };
-  try { return await Promise.race([work(), deadline]); }
+  try { return await Promise.race([trackExecution(work()), deadline]); }
   finally { clearTimeout(timer); controller.abort(); }
 }
 

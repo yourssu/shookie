@@ -1,3 +1,4 @@
+import { executionSignal } from "../../cancellation/execution-context.js";
 import { MAX_LIMIT, queryEventsSchema, type PostHogResult } from "./schemas.js";
 
 const API = "https://app.posthog.com/api";
@@ -124,7 +125,7 @@ export class PostHogClient {
         method: body ? "POST" : "GET",
         headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(30_000),
+        signal: executionSignal(AbortSignal.timeout(30_000)),
         redirect: "error",
       });
       if (!response.ok) {

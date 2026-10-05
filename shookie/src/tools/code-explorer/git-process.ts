@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { trackExecution } from "../../cancellation/execution-context.js";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -60,10 +61,11 @@ export function runBoundedProcess(executable: string, args: string[], options: P
     const interval = options.monitor ? setInterval(async () => {
       if (settled || checking) return;
       checking = true;
-      try { await options.monitor!(); } catch { fail(); }
+      try { await trackExecution(options.monitor!()); } catch { fail(); }
       finally { if (!settled) checking = false; }
     }, 100) : undefined;
     options.signal?.addEventListener("abort", fail, { once: true });
+    if (options.signal?.aborted) fail();
     const collect = (data: Buffer, stdout: boolean) => {
       if (settled) return;
       bytes += data.length;

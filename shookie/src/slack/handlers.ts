@@ -1,4 +1,9 @@
 import type { App } from "@slack/bolt";
+import { CancellationRegistry } from "../cancellation/request-registry.js";
+import { registerCancellationAction, SlackRequestControls, STOP_TEXT } from "../cancellation/slack-controls.js";
+import { scopedSlackClient, slackDelivery } from "../cancellation/slack-transport.js";
+import { executionCheckpoint, executionSignal, executionOperation, type ExecutionScope } from "../cancellation/execution-context.js";
+import { ConversationStoppedError } from "../cancellation/conversation-control.js";
 import type { KnownBlock } from "@slack/types";
 import type { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
@@ -60,12 +65,12 @@ async function postToThread(
   text: string,
   blocks?: ShookieBlock[],
 ): Promise<void> {
-  await app.client.chat.postMessage({
+  await slackDelivery(app, client => client.chat.postMessage({
     channel,
     thread_ts: threadTs,
     text,
     ...(blocks ? { blocks: blocks as KnownBlock[] } : {}),
-  });
+  }));
 }
 
 export function registerHandlers(
@@ -75,6 +80,8 @@ export function registerHandlers(
   summarize: ThreadSummarizer = summarizeThread,
 ): void {
   const runtime = new ConversationRuntime(repository);
+  const registry = new CancellationRegistry();
+  registerCancellationAction(app, registry);
   const receive = async (kind: "app_mention" | "message", raw: unknown, body: unknown, context: unknown) => {
     const event = raw as { channel?: string; channel_type?: string; ts?: string; thread_ts?: string;
       user?: string; team?: string; text?: string; bot_id?: string; subtype?: string; action_token?: unknown; files?: unknown };
@@ -103,33 +110,37 @@ export function registerHandlers(
     const isThreadReply = isMention && threadTs !== event.ts;
     const slackContext = isMention ? async (): Promise<Message[]> => {
       if (!isThreadReply) return [{ role: "user", content: text }];
-      const source = await readSlackThread(app.client, {
+      const source = await readSlackThread(scopedSlackClient(app, executionSignal()!), {
         channel: identity.channel, threadTs, currentTs: event.ts!, userId: identity.userId,
         botUserId: trusted.botUserId, botId: trusted.botId,
       });
       return budgetSlackThread(source, summarize);
     } : undefined;
+    const controls = new SlackRequestControls(app, registry, identity);
     try {
-      await runtime.run(identity, text, async (messages, commit) => {
+      await runtime.run(identity, text, async (messages, commit, scope) => {
         if (!text && !isThreadReply) {
           const greeting = "네, 무엇을 도와드릴까요?";
           await commit(greeting);
           await postToThread(app, identity.channel, threadTs, greeting);
           return;
         }
-        await handleConversation(app, agent, text, identity, messages, commit, event.action_token, attachments);
-      }, slackContext);
+        await handleConversation(app, agent, text, identity, messages, commit, scope, event.action_token, attachments);
+      }, slackContext, scope => controls.start(scope));
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
-      const errorText = error instanceof SlackThreadContextError
+      const errorText = error instanceof ConversationStoppedError ? STOP_TEXT[error.reason]
+        : error instanceof SlackThreadContextError
         ? THREAD_CONTEXT_ERROR_TEXT
         : error instanceof ConversationBusyError
         ? "현재 요청이 많습니다. 잠시 후 다시 시도해주세요."
         : error instanceof ConversationInputError
           ? "메시지가 너무 깁니다. 내용을 나누어 보내주세요."
           : "대화를 안전하게 처리하지 못했습니다. 잠시 후 새 메시지로 다시 시도해주세요.";
-      await postToThread(app, identity.channel, threadTs, errorText);
-    }
+      if (!controls.stopNotified) {
+        try { await postToThread(app, identity.channel, threadTs, errorText); } catch { /* bounded delivery, no duplicate error */ }
+      }
+    } finally { await controls.finish(); }
   };
   app.event("app_mention", async ({ event, body, context }) => receive("app_mention", event, body, context));
   app.event("message", async ({ event, body, context }) => receive("message", event, body, context));
@@ -142,12 +153,14 @@ async function handleConversation(
   identity: ConversationEvent,
   messages: Message[],
   commit: (answer: string) => Promise<void>,
+  scope: ExecutionScope,
   actionToken?: unknown,
   attachments?: AttachmentCandidates,
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
   let streamSession: StreamSession | null = null;
+  const client = scopedSlackClient(app, scope.control.signal);
 
   try {
     logger.info(`📩 메시지 수신: "${userText.slice(0, 100)}"`);
@@ -169,17 +182,25 @@ async function handleConversation(
     // Slack plan 스트림 열기 (실패 시 폴백: 이후 도구/최종 응답은 chat.postMessage로)
     try {
       logger.info(`[streaming] startPlanStream 호출: channel=${channel} threadTs=${threadTs} teamId=${teamId ?? "(없음)"} userId=${userId}`);
-      streamSession = await startPlanStream(app.client, channel, threadTs, teamId, userId);
-      logger.info(`[streaming] plan 스트림 열림: ts=${streamSession.messageTs}`);
+      const openedSession = await executionOperation(async () => {
+        const session = await startPlanStream(client, channel, threadTs, teamId, userId);
+        // Retain a known successful creation before the post-operation deadline check.
+        // Even a late result must be stopped using its actual Slack timestamp.
+        streamSession = session;
+        return session;
+      });
+      logger.info(`[streaming] plan 스트림 열림: ts=${openedSession.messageTs}`);
     } catch (err) {
+      executionCheckpoint(); // Stopped execution goes to bounded cleanup, not model/fallback work.
       logger.warn(
         "[streaming] startPlanStream 실패, postMessage 폴백 모드:",
         err instanceof Error ? err.message : String(err),
       );
-      streamSession = null;
+      // Keep any session already returned by Slack; null only means creation never succeeded.
     }
 
     const runConversation = async () => {
+      executionCheckpoint();
       logger.info("🤖 응답 스트리밍 시작...");
       const requestContext = new RequestContext([
         ["channel", channel],
@@ -203,6 +224,7 @@ async function handleConversation(
       const streamResult = await agent.stream(withAttachments, {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         requestContext,
+        abortSignal: scope.control.signal,
       });
 
       const toolNamesSeen: string[] = [];
@@ -210,7 +232,9 @@ async function handleConversation(
       const reader = streamResult.fullStream.getReader();
       try {
         while (true) {
+          executionCheckpoint();
           const { done, value } = await reader.read();
+          executionCheckpoint();
           if (done) break;
 
           if (value.type === "error") throw new Error("Agent stream failed");
@@ -231,7 +255,7 @@ async function handleConversation(
                 ? JSON.stringify(payload.args).slice(0, 200)
                 : undefined;
               try {
-                await appendTaskUpdate(streamSession, app.client, {
+                await appendTaskUpdate(streamSession, client, {
                   id: taskId,
                   title: TOOL_PROGRESS_MESSAGES[toolName] ?? toolName,
                   status: "in_progress",
@@ -274,7 +298,7 @@ async function handleConversation(
                 : undefined;
 
               try {
-                await appendTaskUpdate(streamSession, app.client, {
+                await appendTaskUpdate(streamSession, client, {
                   id: taskId,
                   title: TOOL_PROGRESS_MESSAGES[toolName] ?? toolName,
                   status: "complete",
@@ -318,14 +342,40 @@ async function handleConversation(
       : await runConversation();
 
     const { responseText, usage, steps, finishReason, toolNamesSeen } = conv;
+    executionCheckpoint();
     // Save the complete successful turn before ancillary logging or final Slack delivery.
     // Neither delivery nor logging failures may discard an already generated answer.
     await commit(responseText);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
+    const debugFooter = [
+      `🔧 사용 도구: ${toolNamesSeen.length > 0 ? [...new Set(toolNamesSeen)].join(", ") : "없음"}`,
+      `💰 토큰: 입력 ${inputTokens.toLocaleString()} / 출력 ${outputTokens.toLocaleString()}`,
+      `💵 비용: $${((inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000).toFixed(4)}`,
+    ].join("\n"); // Existing diagnostics only; no new cost policy.
+    const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, debugFooter, { withFeedback: true });
+    // Deliver before ancillary DB logging, but delivery failure must not skip success logging.
+    let delivered = false;
+    try {
+      await slackDelivery(app, async (deliveryClient, signal) => {
+        if (streamSession) {
+          try { await stopStreamWithBlocks(streamSession, deliveryClient, fallbackText, blocks); }
+          catch {
+            signal.throwIfAborted(); // No late fallback after delivery deadline.
+            await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
+          }
+        } else await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
+      });
+      delivered = true;
+    } catch {
+      logger.warn("성공 대화 저장 이후 최종 응답 전송 실패", { requestId });
+      // No misleading failure reply or state reversal; persist-success logging continues below.
+    }
 
-    if (toolNamesSeen.some(isSlackReadTool)) logger.info("📤 Slack 조회 응답 전송", { textLen: responseText.length });
-    else logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
+    if (delivered) {
+      if (toolNamesSeen.some(isSlackReadTool)) logger.info("📤 Slack 조회 응답 전송", { textLen: responseText.length });
+      else logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
+    }
     // 진단용 INFO 한 줄 — 잘림 원인 파악 (LOG_LEVEL=info에서도 보임)
     // finishReason=length → LLM 토큰 한도, =steps → maxSteps 도달, =stop → 정상, =error → 예외
     const finishReasonLabel = typeof finishReason === "string" ? finishReason : String(finishReason ?? "?");
@@ -406,31 +456,11 @@ async function handleConversation(
       });
     }
 
-    const debugFooter = [
-      `🔧 사용 도구: ${toolNamesSeen.length > 0 ? [...new Set(toolNamesSeen)].join(", ") : "없음"}`,
-      `💰 토큰: 입력 ${inputTokens.toLocaleString()} / 출력 ${outputTokens.toLocaleString()}`,
-      `💵 비용: $${((inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000).toFixed(4)}`,
-    ].join("\n");
-
-    const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, debugFooter, {
-      withFeedback: true,
-    });
-
-    if (streamSession) {
-      try {
-        await stopStreamWithBlocks(streamSession, app.client, fallbackText, blocks);
-      } catch (err) {
-        logger.warn(
-          "[streaming] stopStreamWithBlocks 실패, postMessage로 폴백:",
-          err instanceof Error ? err.message : String(err),
-        );
-        await postToThread(app, channel, threadTs, fallbackText, blocks);
-      }
-    } else {
-      // 폴백 모드 (startPlanStream 실패)
-      await postToThread(app, channel, threadTs, fallbackText, blocks);
-    }
   } catch (error) {
+    if (scope.control.isCommitted) {
+      logger.warn("성공 대화 저장 이후 부가 처리 실패", { requestId });
+      return;
+    }
     logger.error("대화 실행 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
     if (mainInvocationId) {
       await completeInvocation(mainInvocationId, {
@@ -440,7 +470,7 @@ async function handleConversation(
       });
     }
     if (streamSession) {
-      try { await stopStreamWithBlocks(streamSession, app.client, "요청을 완료하지 못했습니다.", []); } catch { /* outer handler posts friendly error */ }
+      try { await slackDelivery(app, deliveryClient => stopStreamWithBlocks(streamSession!, deliveryClient, "요청을 완료하지 못했습니다.", [])); } catch { /* outer handler posts friendly error */ }
     }
     throw error;
   }

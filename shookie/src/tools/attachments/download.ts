@@ -1,3 +1,4 @@
+import { executionSignal, trackExecution } from '../../cancellation/execution-context.js';
 import https from 'node:https';
 import { lookup } from 'node:dns/promises';
 import type { IncomingMessage } from 'node:http';
@@ -18,32 +19,38 @@ export function publicAddress(address: string): boolean {
 export type DownloadDependencies = {
   resolve?: typeof lookup;
   request?: typeof https.request;
+  signal?: AbortSignal;
 };
 /** Authenticated Slack-only path. Redirects never broaden credential scope, DNS is pinned per hop. */
 export async function downloadAttachment(value: string, token: string, deps: DownloadDependencies = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), L.downloadMs);
+  const shared = executionSignal(deps.signal);
+  const signal = shared ? AbortSignal.any([shared, controller.signal]) : controller.signal;
   const abortable = <T>(promise: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
     const abort = () => reject(new AttachmentError('DOWNLOAD_FAILED'));
-    if (controller.signal.aborted) return abort();
-    controller.signal.addEventListener('abort', abort, { once: true });
-    promise.then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', abort));
+    if (signal.aborted) return abort();
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
   });
   try {
     let url = slackDownloadUrl(value);
     if (!token || /[\r\n]/u.test(token)) throw new AttachmentError('DOWNLOAD_FAILED');
     for (let hop = 0; hop <= L.redirects; hop++) {
-      const addresses = await abortable((deps.resolve ?? lookup)(url.hostname, { all: true, verbatim: true }));
+      signal.throwIfAborted();
+      const addresses = await abortable(trackExecution((deps.resolve ?? lookup)(url.hostname, { all: true, verbatim: true })));
+      signal.throwIfAborted();
       if (!addresses.length || addresses.some(a => !publicAddress(a.address))) throw new AttachmentError('UNSAFE_URL');
       const pinned = addresses[0];
       const response = await new Promise<IncomingMessage>((resolve, reject) => {
-        const req = (deps.request ?? https.request)(url, { method: 'GET', signal: controller.signal,
+        const req = (deps.request ?? https.request)(url, { method: 'GET', signal,
           agent: false, headers: { Authorization: `Bearer ${token}`, 'Accept-Encoding': 'identity' },
           lookup: (_host, options, callback) => {
             if ((options as { all?: boolean }).all) callback(null, [pinned] as never);
             else callback(null, pinned.address, pinned.family);
           },
         }, resolve);
+        trackExecution(new Promise<void>(resolveClosed => req.once('close', resolveClosed)));
         req.on('error', reject); req.end();
       });
       const status = response.statusCode ?? 0;

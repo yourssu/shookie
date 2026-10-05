@@ -18,6 +18,7 @@
     "@mastra/core": "^1.32.0",
     "@mozilla/readability": "^0.6.0",
     "@slack/bolt": "^4.7.0",
+    "@slack/web-api": "7.15.2",
     "ai": "^6.0.175",
     "database": "workspace:*",
     "dotenv": "^16.0.0",

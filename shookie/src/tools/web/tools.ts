@@ -1,4 +1,5 @@
 import { createTool } from '@mastra/core/tools';
+import { executionCheckpoint } from '../../cancellation/execution-context.js';
 import { z } from 'zod';
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
@@ -80,7 +81,9 @@ export function createWebTools(options: { exaApiKey?: string; network?: NetworkD
       try {
         const parsed = fetchInput.parse(input);
         const result = await download(parsed.url, options.network);
+        executionCheckpoint();
         const full = extractFull(result.body, result.contentType);
+        executionCheckpoint();
         const source = { originalUrl: parsed.url, finalUrl: result.finalUrl, fetchedAt: new Date().toISOString(), contentType: result.contentType, title: full.title };
         // Validate before admission so output failures do not consume invisible cache quota.
         // Reserve room for the fixed-size UUID/expiry/storage continuation metadata.
@@ -102,6 +105,7 @@ export function createWebTools(options: { exaApiKey?: string; network?: NetworkD
         const response = key
           ? await download('https://api.exa.ai/search', options.network, { 'x-api-key': key, Accept: 'application/json', 'Content-Type': 'application/json' }, 0, { method: 'POST', body })
           : await download(EXA_MCP_URL, options.network, { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' }, 0, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'web_search_exa', arguments: { query: parsed.query, numResults: parsed.count, objective: SEARCH_OBJECTIVE } } }) });
+        executionCheckpoint();
         if (key && !response.contentType.startsWith('application/json')) throw new WebError('INVALID_RESPONSE');
         // Exa metadata may be absent/null; excerpts are not separately fetched text.
         const data = z.object({ results: z.array(z.object({ title: z.string().nullish(), url: z.string(), highlights: z.array(z.string()).nullish(), publishedDate: z.string().nullish() })) }).parse(key ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(response.body)) : parseMcp(response.body, response.contentType));

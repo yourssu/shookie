@@ -23,7 +23,11 @@ it('kills a hung parser off-loop at wall limit, limits concurrency and strips cr
     expect(args).toContain(`--max-old-space-size=${L.parserHeapMb}`);
     expect(Object.keys(opts.env).sort()).toEqual(['LANG', 'PATH']);
     expect(opts.stdio).toEqual(['pipe', 'pipe', 'ignore']);
-    await vi.advanceTimersByTimeAsync(L.parserMs + 1); await checkOne; await checkTwo;
+    await vi.advanceTimersByTimeAsync(L.parserMs + 1);
     expect(children.every(child => child.kill.mock.calls.some(([signal]) => signal === 'SIGKILL'))).toBe(true);
+    // SIGKILL intent is not child settlement: keep the parser slots until actual close.
+    await expect(parseAttachment(Buffer.from('x'), 'csv')).rejects.toMatchObject({ code: 'PARSER_LIMIT' });
+    children.forEach(child => child.emit('close', null, 'SIGKILL'));
+    await checkOne; await checkTwo;
   } finally { vi.useRealTimers(); }
 });

@@ -1,0 +1,82 @@
+import type { App } from "@slack/bolt";
+import { WebClient, LogLevel } from "@slack/web-api";
+import { silentSlackLogger } from "../tools/slack/sdk-logger.js";
+import { executionSignal, executionCheckpoint, executionStorage } from "./execution-context.js";
+
+/** Transport timeout; not a new conversation/call/cost budget. */
+export const SLACK_TRANSPORT_TIMEOUT_MS = 15_000;
+
+/**
+ * A dedicated client, not a patch to the shared Bolt client. Uses Slack's public
+ * requestInterceptor to set Axios' transport signal (NOT Slack API body data).
+ * The caller owns signal lifetime and must await actual API settlement.
+ *
+ * Inherit auth/header, agent/proxy, TLS and trusted endpoint configuration through
+ * Bolt's public webClientOptions. Keep the SDK's standard Axios adapter: an unknown
+ * custom adapter might ignore abort, so reject it rather than claiming termination.
+ */
+export function createCancellationSlackClient(
+  source: Pick<App, "client" | "webClientOptions">,
+  signal: AbortSignal,
+): WebClient {
+  const inherited = source.webClientOptions;
+  if (inherited.adapter) throw new Error("Cancellation requires the standard Slack transport adapter");
+  const upstream = inherited.requestInterceptor;
+  // A pre-existing tighter read/search timeout must not be relaxed to 15 seconds.
+  const timeoutMs = inherited.timeout && Number.isFinite(inherited.timeout) && inherited.timeout > 0
+    ? Math.min(inherited.timeout, SLACK_TRANSPORT_TIMEOUT_MS) : SLACK_TRANSPORT_TIMEOUT_MS;
+  return new WebClient(source.client.token, {
+    ...inherited,
+    headers: { ...inherited.headers },
+    // Generic apiCall must not interpret a dynamic method name as an external URL.
+    allowAbsoluteUrls: false,
+    // Never sleep/retry after abort or 429; the caller chooses a friendly error.
+    retryConfig: { retries: 0 },
+    rejectRateLimitedCalls: true,
+    timeout: timeoutMs,
+    // Never inherit a DEBUG logger: assistant.search.context request/response data
+    // contains a WeakMap-held event action_token that must not enter any SDK log.
+    logger: silentSlackLogger,
+    logLevel: LogLevel.ERROR,
+    attachOriginalToWebAPIRequestError: false,
+    requestInterceptor: async config => {
+      signal.throwIfAborted();
+      const request = upstream ? await upstream(config) : config;
+      signal.throwIfAborted();
+      // Preserve an inherited interceptor's native cancellation boundary too.
+      const previous = request.signal;
+      if (previous && !(previous instanceof AbortSignal)) {
+        throw new Error("Unsupported inherited Slack cancellation signal");
+      }
+      request.signal = previous && previous !== signal ? AbortSignal.any([signal, previous]) : signal;
+      // An inherited interceptor cannot accidentally restore an unbounded timeout.
+      request.timeout = request.timeout && Number.isFinite(request.timeout) && request.timeout > 0
+        ? Math.min(request.timeout, timeoutMs) : timeoutMs;
+      return request;
+    },
+  });
+}
+
+/** Test DI may supply a structural fake; production Bolt WebClient always uses real abortable transport. */
+export function scopedSlackClient(source: Pick<App, "client" | "webClientOptions">, signal: AbortSignal): WebClient {
+  return source.client instanceof WebClient ? createCancellationSlackClient(source, signal) : source.client;
+}
+
+/** Dedicated read/search SDK client interceptor; no global app.client modification. */
+export const executionSlackInterceptor: NonNullable<App["webClientOptions"]["requestInterceptor"]> = config => {
+  executionCheckpoint();
+  const signal = executionSignal();
+  signal?.throwIfAborted();
+  if (signal) config.signal = signal;
+  return config;
+};
+
+/** Final success/error/cancel delivery has its OWN 15-second scope, outside execution ALS. */
+export function slackDelivery<T>(app: Pick<App, "client" | "webClientOptions">, send: (client: WebClient, signal: AbortSignal) => Promise<T>): Promise<T> {
+  return executionStorage.exit(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SLACK_TRANSPORT_TIMEOUT_MS);
+    try { return await send(scopedSlackClient(app, controller.signal), controller.signal); }
+    finally { clearTimeout(timer); }
+  });
+}

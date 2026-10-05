@@ -1,3 +1,4 @@
+import { executionSlackInterceptor } from "../cancellation/slack-transport.js";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createMainShookieAgent } from "./agents/main-shookie/index.js";
 import { createPostHogAgent } from "./agents/posthog/index.js";
@@ -51,7 +52,7 @@ export function createAgent(options: { slackClient?: SlackReadClient & Partial<P
 
   // Dedicated bot-only read client: no user-OAuth lookup, SDK retries or long 429 waits.
   const slackClient = options.slackClient ?? (config.SLACK_BOT_TOKEN
-    ? new WebClient(config.SLACK_BOT_TOKEN, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000, logger: silentSlackLogger, logLevel: LogLevel.ERROR })
+    ? new WebClient(config.SLACK_BOT_TOKEN, { rejectRateLimitedCalls: true, retryConfig: { retries: 0 }, timeout: 10_000, logger: silentSlackLogger, logLevel: LogLevel.ERROR, requestInterceptor: executionSlackInterceptor })
     : undefined);
   const attachments = slackClient?.files && config.SLACK_BOT_TOKEN
     ? createSlackAttachmentOptions(slackClient as SlackReadClient & Pick<WebClient, "files">,

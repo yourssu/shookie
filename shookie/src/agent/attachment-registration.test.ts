@@ -121,7 +121,7 @@ describe('actual main + merged trusted Slack authorization + hardened attachment
     const { main } = mainFor(); const tools = await main.listTools();
     fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: 'D1', is_im: true, user: 'U1' } });
     const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
-    const app = { event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback), client: { chat: { postMessage: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
+    const app = { action: vi.fn(), event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback), client: { chat: { postMessage: vi.fn(async () => ({ ok: true, ts: 'control' })), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
     const repository: ConversationRepository = { claim: vi.fn(async () => true), recent: vi.fn(async () => []), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
     const spy = vi.spyOn(main, 'stream').mockImplementation(async (messages: unknown, options: { requestContext?: RequestContext } = {}) => {
       expect(JSON.stringify(messages)).toContain('slack_attachment_candidates');
@@ -137,8 +137,8 @@ describe('actual main + merged trusted Slack authorization + hardened attachment
   it('handlers pass only bounded event metadata as untrusted data, bind actual actor, and redact attachment logs/progress', async () => {
     const { main, network } = mainFor(); const tools = await main.listTools();
     const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
-    const app = { event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback),
-      client: { chat: { postMessage: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
+    const app = { action: vi.fn(), event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback),
+      client: { chat: { postMessage: vi.fn(async () => ({ ok: true, ts: 'control' })), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
     const repository: ConversationRepository = { claim: vi.fn(async () => true), recent: vi.fn(async () => []), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
     const spy = vi.spyOn(main, 'stream').mockImplementation(async (messages: unknown, options: { requestContext?: RequestContext } = {}) => {
       const serialized = JSON.stringify(messages);
