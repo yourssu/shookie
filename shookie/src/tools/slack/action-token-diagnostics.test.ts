@@ -48,6 +48,7 @@ describe("temporary action-token safe diagnostics", () => {
     const { spy, records } = capture();
     logSlackTokenReceive(identity.requestId, "app_mention", {}, { action_token: secret, event: { action_token: secret } }, { action_token: secret });
     expect(records()[0]).toEqual({ stage: "receive", eventKind: "app_mention", requestId: identity.requestId,
+      requestIdTrust: "authenticated_handler", sdkBodyAlias: false, sdkEventAlias: false, receiverBodyAlias: false,
       eventTokenObservation: "absent", eventTokenPresent: false, eventTokenUsable: false,
       bodyEventTokenObservation: "data", bodyEventTokenPresent: true, bodyEventTokenUsable: true,
       bodyTokenObservation: "data", bodyTokenPresent: true, bodyTokenUsable: true,
@@ -83,8 +84,8 @@ describe("temporary action-token safe diagnostics", () => {
     const allowed = new Set(["stage", "eventKind", "requestId", "selectedSource", "selectedUsable",
       "eventTokenObservation", "eventTokenPresent", "eventTokenUsable", "bodyEventTokenObservation", "bodyEventTokenPresent", "bodyEventTokenUsable",
       "bodyTokenObservation", "bodyTokenPresent", "bodyTokenUsable", "contextTokenObservation", "contextTokenPresent", "contextTokenUsable",
-      "bindingAttempted", "identityBound", "tokenBound", "correlationAvailable"]);
-    const enums = new Set(["receive", "selection", "binding", "search", "message", "event.action_token", "absent", "data", "accessor", "blocked"]);
+      "bindingAttempted", "identityBound", "tokenBound", "correlationAvailable", "requestIdTrust", "sdkBodyAlias", "sdkEventAlias", "receiverBodyAlias"]);
+    const enums = new Set(["receive", "selection", "binding", "search", "message", "event.action_token", "absent", "data", "accessor", "blocked", "authenticated_handler"]);
     for (const record of records()) for (const [key, value] of Object.entries(record)) {
       expect(allowed.has(key)).toBe(true);
       expect(key === "requestId" ? value === identity.requestId : typeof value === "boolean" || enums.has(value as string)).toBe(true);

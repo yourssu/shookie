@@ -1,4 +1,4 @@
-import { App } from "@slack/bolt";
+import { createSocketModeApp } from "./slack/socket-mode-app.js";
 import {
   config,
   getMentionGroupCommandConfig,
@@ -63,9 +63,8 @@ async function main() {
   const agent = createAgent();
 
   // 4. Slack 앱 초기화
-  const app = new App({
+  const { app, disposeDiagnostics } = createSocketModeApp({
     token: config.SLACK_BOT_TOKEN,
-    socketMode: true,
     appToken: config.SLACK_APP_TOKEN,
     ...(userOAuth && userOAuthConfig
       ? {
@@ -114,14 +113,28 @@ async function main() {
   }
 
   // 6. 시작
-  await app.start();
+  try {
+    await app.start();
+  } catch (error) {
+    disposeDiagnostics();
+    await app.stop();
+    throw error;
+  }
   logger.info("슈키가 시작되었습니다! 🚀");
 
-  // 7. 종료 시 DB 연결 정리
+  // 7. 단일 Socket Mode 연결과 진단 listener, DB 연결 정리
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info("종료 중...");
-    await closePool();
-    process.exit(0);
+    disposeDiagnostics();
+    try {
+      await app.stop();
+    } finally {
+      await closePool();
+      process.exit(0);
+    }
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
