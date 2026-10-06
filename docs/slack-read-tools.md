@@ -79,6 +79,10 @@ readAuthorizedSlackMessage(client, requestContext, { messageTs, threadTs?, chann
 - 첨부 worker의 `authorize(fileId,messageTs)`는 trusted 원본 context로 이 exact API를 호출하고 반환 fileIds에 fileId가 실제 포함되는지 확인한 뒤에만 자신의 files.info/download 경로로 진행해야 한다. 모델 text/일반 RequestContext entries/단순 files.info 성공은 메시지 연결/사용자 접근 증거가 아니다. 작업이 지연되거나 새 요청이면 다시 live 검증한다.
 - 이 bridge는 user token/OAuth/다른 채널/새 도구를 추가하지 않는다. 첨부 module 및 실제 파일 metadata/download/처리는 해당 worker 소유다. 이 PR은 첨부 구현을 수정하지 않는다.
 
+## 임시 응답 실패 안전 진단
+
+[검색 응답/본문 충돌 진단](slack-search-response-diagnostics.md)과 [thread/channel 읽기 실패 진단](slack-read-response-diagnostics.md)은 trusted requestId 및 고정 enum/boolean만 기록한다. 검증·출처·반환·권한·취소 가드는 그대로이며 원문/hash/길이/ID/커서·토큰을 추가 저장하지 않는다. 실제 검색·thread read는 아직 FAIL인 관측과 합성 테스트 PASS를 구분하고, 근거 기반 fix 및 실제 성공 뒤 임시 진단 제거는 별도 후속이다.
+
 ## 임시 action_token 안전 진단
 
 수신의 고정 후보 위치와 실제 선택 → WeakMap 바인딩 → 검색/API 직전 상태만 INFO boolean/enum 로그로 관찰한다. 토큰 선택/권한/fallback은 바꾸지 않는다. [전달 구조 근거·필드 계약·해석 및 단일 UI 멘션 재현](slack-action-token-diagnostics.md)을 따른다. 운영 증거 확보 후 진단 제거 후속 PR이 필요하다.

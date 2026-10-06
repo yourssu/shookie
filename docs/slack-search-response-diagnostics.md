@@ -10,11 +10,17 @@ PR99/100은 관찰만 추가했다. 이후 main의 `/tmp/shookie-e2e/pr100-resul
 
 승인된 후속 수정은 이 관측 형태를 최소 지원한다. 기존 responseSchema, action_token 선택, bot/team/current public channel/live membership, API 인자·호출 수, context provenance, 페이지·커서·budget·취소는 유지한다. 기존 URL authority/path 검증 후 decoded thread_ts/cid만 각각 옵션으로 검증하고 queryless 메시지 주소를 반환한다. [기존 action-token 경계 진단](slack-action-token-diagnostics.md)과 함께 사용하며 임시 진단 제거는 별도 후속이다.
 
+## PR101 후속 관측: 본문 충돌·읽기 실패 (진단 전용)
+
+main이 전달한 `/tmp/shookie-e2e/pr101-results.md` / `pr101-new-thread-diagnostics.log`의 새 요청 `slack-event:Ev0C80QH8AL8`에서는 PR101 배포 성공·live SHA 확인·restarts=0 후 response_received/check_passed 다음에 `fingerprint_conflict`가 두 번(17:37:54.022Z / 17:37:56.870Z) 관측되었다. 해당 후보들의 링크·scope·schema 선행 검증은 통과했지만 **실제 검색은 FAIL**이다. 같은 요청의 별도 스레드 읽기도 두 번 unavailable였으며, 채널 읽기에서 부모만 찾은 것은 검색 또는 스레드 읽기 PASS가 아니다. 역할 조합/페이지 원천 및 읽기의 정확한 로컬 실패 분기는 아직 미확정이다. 이번 worker는 실제 응답 본문/URL/query를 조회·복사하지 않고 전달된 안전 요약만 사용한다.
+
+이번 단일 PR은 아래 충돌 vector와 [읽기 실패 고정 reason](slack-read-response-diagnostics.md)만 추가한다. 기존 sha256(text) 충돌 가드, 반환·primary promotion·context 대표 선택·schema·authority·query·cursor/budget·권한·취소 정책을 완화하지 않는다. 형식 차이/요약/잘림/동시 수정 등 **실제 원인을 아직 단정하지 않는다**. evidence 기반 수정은 main의 별도 설계·PR이며 실제 성공 후 임시 진단 제거도 별도 후속이다.
+
 ## 로그 계약
 
 기존 INFO logger에 `slack_search_response_diagnostic`만 기록한다. 호출당 응답 수신 1개, check 통과 1개, 실패 시 마지막 1개(최대 3개)다. 성공에는 추가 본문/결과 요약이 없다. SDK/global debug·환경변수·모델·의존성 변경 없음.
 
-공통 필드는 `stage`, `reason`, `correlationAvailable`, 선택적 `requestId`다. **schema_invalid에만** `schemaField`, `schemaCode`, `schemaMissing`, **permalink_invalid에만** 아래 고정 predicate vector와 보조 분류가 붙는다. 기존 마지막 실패 레코드 하나를 확장하며 레코드 수는 늘리지 않는다. requestId는 기존 identity WeakMap에서만 읽는다. diagnostic correlation이나 context.get/model 항목에서 fallback하지 않는다. 기존 action-token 로그의 같은 trusted requestId와 대조할 수 있으며, 상관 부재 시 새 ID/hash를 만들지 않는다.
+공통 필드는 `stage`, `reason`, `correlationAvailable`, 선택적 `requestId`다. **schema_invalid에만** `schemaField`, `schemaCode`, `schemaMissing`, **permalink_invalid에만** 아래 고정 predicate vector와 보조 분류, **fingerprint_conflict에만** 아래 역할/원천/보조 비교 vector가 붙는다. 기존 마지막 실패 레코드 하나를 확장하며 레코드 수는 늘리지 않는다. requestId는 기존 identity WeakMap에서만 읽는다. diagnostic correlation이나 context.get/model 항목에서 fallback하지 않는다. 기존 action-token 로그의 같은 trusted requestId와 대조할 수 있으며, 상관 부재 시 새 ID/hash를 만들지 않는다.
 
 requestId 외에는 고정 enum/boolean만 전달한다. logger API는 response/error/Zod issue/path/raw object를 받지 않는다. 원본 오류/API code, headers, 내용, query, 토큰·커서·키워드·길이·배열 크기·resultCount·hash, 사용자/팀/채널 metadata, permalink/private URL, raw payload는 추가 로그에 없다. 모델 입력/응답/DB/파일에 원본 응답이나 진단을 추가하지 않는다. 이 계약은 기존 로그 전체의 비밀 제거를 보장하는 것이 아니다. 운영 공유에는 이 두 진단 메시지만 발췌한다.
 
@@ -88,11 +94,26 @@ query 보조 관찰 예외에는 class=unknown/parameter booleans=false를 사�
 
 **실제 원문 URL은 공유·로그·모델 입력·DB·파일에 추가하지 않는다.** hostname/path/query 키·값/채널·팀·timestamp/hash/token/내용/원본 response/errors/길이도 기록하지 않는다. 안전 enum/boolean과 WeakMap의 trusted requestId만으로 원인을 대조한다.
 
+### fingerprint conflict vector
+
+기존 마지막 `fingerprint_conflict` 레코드 하나만 확장한다. 실패 반환 및 최대 3개 search record는 그대로다.
+
+- `priorRole`, `currentRole`: `primary` / `context` / `unknown`. primary 후보들 다음 context 후보들을 검사하는 **기존 관측 순서** 기준이다. 같은 페이지에서는 동일 ts의 가장 최근 검증된 관측 객체 역할이며, 최초 객체·primary 우선 projected 대표·cursor에 과거 전달한 winning role과 혼동하지 않는다. 페이지 최초 관측이 cursor seed와 충돌하면 기존 `deliveredRoles`를 사용한다.
+- `priorOrigin`: `page` / `cursor` / `unknown`. page는 직전 비교 본문이 이번 페이지의 검증된 후보인 경우, cursor는 과거 전달 fingerprint seed뿐인 경우다. origin은 Slack 원문 생성 원인/시간을 뜻하지 않는다.
+- `firstPage`, `cursorPresent`: 이전 continuation 부재/호출의 opaque cursor 존재 boolean만 기록한다. cursor 값·페이지 번호·메시지 ts/ID·hash·길이는 출력하지 않는다.
+- `comparisonAvailable`: 양쪽 **page-local primitive 본문**이 존재하고 각각 기존 24KB 이하일 때만 true다. 큰 문자열을 진단 때문에 스캔하지 않도록 code-unit 선행 한도도 사용한다. cursor에는 기존 fingerprint/role만 있으며 **이전 원문을 추가 저장하거나 복구하지 않는다**. cursor-only 충돌/크기 초과/보조 비교 예외에는 false다.
+- `trimEqual`: available일 때 양쪽 JS `trim()` 결과가 동일한지. `lineEndingEqual`: CRLF 및 단독 CR을 LF로 바꾼 결과가 동일한지. unavailable일 때 두 false는 **미평가 sentinel**이지 차이 확정이 아니다.
+- `prefixRelation`: available일 때 변형하지 않은 문자열의 prefix 관계 `previous_prefix` / `current_prefix` / `neither`, 그 외 `unknown`. 이는 snippet/잘림/원문 형식의 원인 증명이 아니다. prefix/equality flag만으로 guard 완화 근거를 만들지 않는다.
+
+기존 schema/scope/time 검증을 통과한 projected 후보 참조만 페이지 로컬 Map(최대 820개: 20 primary + 20×40 context)으로 추적한다. 가드와 같은 최신 관측을 갱신하며 budget으로 반환하지 않는 후보도 포함한다. 추가 원문 복사·hash 생성·cursor/DB/파일 지속보관은 없고, 반환 전에 기존 projection이 본문을 수정하기 전의 비교만 한다. raw response/context getter/Proxy/toJSON 접근을 추가하지 않는다. logger에는 primitive 인수만 전달하고 enum runtime allowlist/boolean strict equality로 재투영한다. 로거 throw는 같은 unavailable 및 finally unlock을 유지한다.
+
 ### 공식 문서의 예시와 보장 구분
 
 2026-10-06 worker가 직접 확인한 [assistant.search.context 공식 문서](https://docs.slack.dev/reference/methods/assistant.search.context/)는 permalink를 “a permalink to the message”라고 설명한다. response sample은 `https://mycompany.slack.com/archives/C012345ABC/p123456789`, message_ts는 `123456.7890`이며 sample의 channel_id조차 링크의 채널 문자열과 다르다. 이는 **예시이지 현재 로컬 canonical predicate를 보장하는 규범이 아니다**. [Real-time Search 공식 가이드](https://docs.slack.dev/apis/web-api/real-time-search-api/)도 workspace archives 링크와 6자리 timestamp 예시를 보여주지만, 확인한 본문에는 host/query/thread_ts/cid/경로 및 URL timestamp encoding에 대한 명시적 보장을 찾지 못했다. sample에 query가 없다는 사실은 응답에 query가 없다는 보장이 아니다.
 
 이번 worker는 [chat.getPermalink 공식 문서](https://docs.slack.dev/reference/methods/chat.getPermalink/)도 독립 확인했다. 문서는 channel + message_ts로 메시지 URL을 얻으며 threads/all conversation types를 처리한다고 설명한다. threaded response 설명은 path의 p 값이 댓글이고 query는 top-level 메시지를 참조한다고 명시하며 thread_ts/cid 예시를 제공한다. 이는 query가 붙은 댓글 URL을 이해하는 근거이나 **assistant.search.context가 항상 같은 host/path/query 형식이나 두 parameter를 보장한다는 규범은 확인하지 못했다**. 문서 예시의 URL과 response channel 문자열도 다르므로 sample을 정합성 보장으로 취급하지 않는다. chat.getPermalink를 새로 호출하지 않는다.
+
+2026-10-06 이번 worker가 다시 확인한 같은 `assistant.search.context` 문서의 Contextual messages는 관련 메시지의 before/after 목록과 원래 메시지가 스레드 안이면 그 스레드로 context를 제한한다고 설명한다. 예시는 primary `content`와 context `text`를 사용하며 `highlight` 기본값은 false다. 확인한 본문에서 **동일 ts의 content/text가 정확히 동일하다는 보장, snippet/잘림/formatting 보장**은 찾지 못했다. 예시/보장 부재는 판단 보조이지 위 실제 충돌의 원인 증거가 아니다. 가드를 바꾸지 않는다.
 
 ### 승인된 검색 permalink 정규화
 
@@ -114,6 +135,6 @@ query 보조 관찰 예외에는 class=unknown/parameter booleans=false를 사�
 main 책임:
 1. 최종 head 독립 리뷰·실제 diff·검증 SHA 수용 후 pinned squash merge. 배포 SHA와 bot 준비 확인.
 2. 기존 접근 가능한 공개채널에서 **새 이벤트 1회**의 실제 slack_search 요청. worker는 운영 E2E/서버/배포/merge를 하지 않는다.
-3. 그 trusted requestId의 기존 token 단계와 response/check/failure reason/schemaField 또는 permalink predicate flags/고정 보조 enum을 bot 응답과 대조한다. raw response/debug/credential 공유 금지. 배포 SUCCESS/live SHA/restarts 확인 뒤 새 Slack thread 실제 검색 결과를 원래 SHKO 표식 thread 원문·수정 댓글 출처와 대조해야 한다.
-4. 조회 API 응답/합성 테스트/로그만으로 실제 검색 PASS를 주장하지 않는다. 검색 없는 unavailable를 PASS로 대체하지 않는다. 추가 스키마·링크 정책 변경은 별도 승인/설계가 필요하다.
+3. 그 trusted requestId의 기존 token 단계와 response/check/failure reason/schemaField 또는 permalink predicate flags/고정 보조 enum, 충돌 역할/원천/available 비교 vector 및 thread/channel read reason을 bot 응답과 대조한다. 필요하면 같은 이벤트 안에서 원래 대상에 대한 명시적 thread read를 사용한다. raw response/debug/credential 공유 금지. 배포 SUCCESS/live SHA/restarts 확인 뒤 새 Slack thread 실제 검색 결과를 원래 SHKO 표식 thread 원문·수정 댓글 출처와 대조해야 한다.
+4. 조회 API 응답/합성 테스트/로그만으로 실제 검색 PASS를 주장하지 않는다. 검색 없는 unavailable/채널 부모 발견을 PASS로 대체하지 않는다. 근거 확인 후 최소 fix를 별도 task/PR로 설계하며, 실제 검색/source 및 thread read 통과까지 후속 진행은 owner main 책임이다. 이 진단 PR 자체에는 acceptance 변경이 없다.
 5. 근거 확보 후 **임시 response 및 action-token 진단 제거 후속 PR** 필요. worker 제출 후 수정 대기; 최종 stop/워크트리·브랜치 정리 및 `cleanup_completed` 종료 증명은 owner main 담당이다.
