@@ -49,7 +49,10 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     expect(d.records()).toHaveLength(3);
     expect(d.records().at(-1)).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", requestId: "event:1", correlationAvailable: true,
       priorRole, currentRole, priorOrigin: "page", firstPage: true, cursorPresent: false,
-      comparisonAvailable: true, trimEqual: false, lineEndingEqual: false, prefixRelation: "neither" });
+      comparisonAvailable: true, trimEqual: false, lineEndingEqual: false, prefixRelation: "neither",
+      failure: priorRole === currentRole ? "same_role_text" : "cross_role_text_relation",
+      primaryKnownKinds: priorRole === currentRole ? "none" : "participant", contextKnownKinds: "none",
+      primaryKindSource: priorRole === currentRole ? "unknown" : "explicit_participant", contextKindSource: "unknown" });
     for (const value of ["other", "first", "match 2", ts(2), "C1", "T1", token, "launch"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(value));
   });
   it.each(["primary", "context"] as const)("uses cursor delivered %s role, never persists or recovers prior text", async priorRole => {
@@ -65,7 +68,10 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
       expect(d.records()).toHaveLength(3);
       expect(d.records().at(-1)).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", requestId: "event:1", correlationAvailable: true,
         priorRole, currentRole, priorOrigin: "cursor", firstPage: false, cursorPresent: true,
-        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" });
+        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown",
+        failure: priorRole === currentRole ? "same_role_text" : "cross_role_seed_unverified",
+        primaryKnownKinds: priorRole !== currentRole && currentRole === "primary" ? "participant" : "none", contextKnownKinds: "none",
+        primaryKindSource: priorRole !== currentRole && currentRole === "primary" ? "explicit_participant" : "unknown", contextKindSource: "unknown" });
     }
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
@@ -91,7 +97,7 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: previous }, { ...message(), content: current }] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [] });
-    expect(d.records().at(-1)).toMatchObject({ comparisonAvailable, trimEqual, lineEndingEqual, prefixRelation });
+    expect(d.records().at(-1)).toMatchObject({ failure: "same_role_text", comparisonAvailable, trimEqual, lineEndingEqual, prefixRelation });
     expect(d.records()).toHaveLength(3);
     expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(previous)); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(current));
   });
@@ -105,6 +111,25 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
     expect(getter).toHaveBeenCalledTimes(1); expect(gets).toEqual(["content"]); expect(toJSON).not.toHaveBeenCalled();
     expect(d.records().at(-1)).toMatchObject({ priorRole: "primary", currentRole: "primary", priorOrigin: "page" });
+  });
+  it("reads author source only from parsed copies, without extra raw getter/proxy/toJSON access", async () => {
+    const d = diagnostics(), f = fixture(), toJSON = vi.fn(() => { throw new Error(token); });
+    const primaryFlag = vi.fn(() => true), contextFlag = vi.fn(() => undefined), botId = vi.fn(() => undefined), user = vi.fn(() => "U2");
+    const contextual = Object.defineProperties({ ts: ts(2), text: "short longer", toJSON }, {
+      is_author_bot: { get: contextFlag, enumerable: true }, bot_id: { get: botId, enumerable: true }, user_id: { get: user, enumerable: true },
+    });
+    const raw = Object.defineProperty({ ...message(), content: "short", toJSON }, "is_author_bot", { get: primaryFlag, enumerable: true });
+    const gets: string[] = [];
+    const proxied = new Proxy(contextual, { get(target, key, receiver) {
+      if (["is_author_bot", "bot_id", "user_id"].includes(String(key))) gets.push(String(key));
+      return Reflect.get(target, key, receiver);
+    } });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [raw, { ...message(4), context_messages: { before: [proxied] } }] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    for (const getter of [primaryFlag, contextFlag, botId, user]) expect(getter).toHaveBeenCalledTimes(1);
+    expect(gets.sort()).toEqual(["bot_id", "is_author_bot", "user_id"]);
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKindSource: "explicit_bot", contextKindSource: "inferred_participant" });
   });
   it("tracks conflicts for budget-omitted candidates and never persists diagnostic text/roles/maps", async () => {
     const d = diagnostics(), f = fixture();
@@ -479,21 +504,99 @@ describe("narrow primary-short/context-long representations (synthetic, not live
   it.each([
     [short, "nonprefix"], [long, short], [" value ", "value"], ["a\r\nb", "a\nb"],
   ])("rejects unverified alternate representations %s / %s", async (primary, contextual) => {
-    const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(primary, contextual) } });
+    const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(primary, contextual) } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_text_relation" });
   });
-  it.each([{ user_id: "UOTHER" }, { is_author_bot: true, bot_id: "BOTHER" }, { thread_ts: ts(3) }])("rejects prefix with conflicting explicit metadata %j", async meta => {
-    const f = fixture(); const messages = pair(short, long, meta).map((m, index) => index === 0 ? { ...m, thread_ts: ts(1) } : m);
+  it.each([
+    [{ user_id: "UOTHER" }, "cross_role_user"],
+    [{ is_author_bot: true, bot_id: "BOTHER" }, "cross_role_kind"],
+    [{ thread_ts: ts(3) }, "cross_role_thread"],
+    [{ user_id: "UOTHER", is_author_bot: true, thread_ts: ts(3) }, "cross_role_user"],
+    [{ is_author_bot: true, thread_ts: ts(3) }, "cross_role_kind"],
+  ])("reports first metadata failure in users → kinds → threads order: %j", async (meta, failure) => {
+    const d = diagnostics(), f = fixture(); const messages = pair(short, long, meta).map((m, index) => index === 0 ? { ...m, thread_ts: ts(1) } : m);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
+    expect(d.records()).toHaveLength(3);
+    expect(d.records().at(-1)).toMatchObject({ failure, primaryKindSource: "explicit_participant" });
+    // Metadata failure precedes even a text-relation failure, matching the old OR guard.
+    d.spy.mockClear();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, "not a prefix", meta).map((m, i) => i === 0 ? { ...m, thread_ts: ts(1) } : m) } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ failure });
+  });
+  it.each([
+    [{ is_author_bot: false }, "none", "explicit_participant", "cross_role_thread"],
+    [{ user_id: "U2", is_author_bot: false }, "participant", "explicit_participant", "cross_role_thread"],
+    [{ user_id: "U2" }, "participant", "inferred_participant", "cross_role_thread"],
+    [{ is_author_bot: true }, "bot", "explicit_bot", "cross_role_kind"],
+    [{ bot_id: "BOTHER" }, "bot", "explicit_bot", "cross_role_kind"],
+    [{ is_author_bot: false, bot_id: "BOTHER" }, "bot", "mixed", "cross_role_kind"],
+    [{}, "none", "unknown", "cross_role_thread"],
+  ])("distinguishes parsed explicit false / absent / bot presence without changing projection: %j", async (meta, contextKnownKinds, contextKindSource, failure) => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, { ...meta as object, thread_ts: ts(3) }).map((m, i) => i === 0 ? { ...m, thread_ts: ts(1) } : m) } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ failure, primaryKnownKinds: "participant", contextKnownKinds,
+      primaryKindSource: "explicit_participant", contextKindSource });
+  });
+  it("preserves successful prefix output/partial and wildcard projection with diagnostic source knowledge", async () => {
+    const d = diagnostics(), f = fixture();
+    const response = () => ({ ok: true, results: { messages: pair(short, long, { is_author_bot: false }).map((m, i) => i === 0 ? { ...m, is_author_bot: true } : m) } });
+    f.apiCall.mockResolvedValueOnce(response());
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true,
+      messages: [{ text: short, textTruncated: true, author: { kind: "bot" } }, {}] });
+    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    for (const field of ["kindSources", "primaryKindSource", "contextKindSource", "failure"]) expect(JSON.stringify(result)).not.toContain(field);
+    d.spy.mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce(response());
+    expect(await f.reader.search({ query: "launch" }, f.context)).toEqual(result);
+  });
+  it("metadata logger throw preserves first guard failure, cursor unlock, seed and successful retry", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(6)] }, next_cursor: "next" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    d.spy.mockClear(); d.spy.mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, { is_author_bot: true }) } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
+    expect(d.records()).toHaveLength(3);
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKindSource: "explicit_participant", contextKindSource: "explicit_bot" });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2, complete: false, messages: [{ text: short, textTruncated: true }, {}] });
+    expect(f.apiCall).toHaveBeenCalledTimes(3);
+  });
+  it("labels inferred participant vs explicit primary bot as policy conflict, not proven explicit contradiction", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, { user_id: "U2" }).map((m, i) => i === 0 ? { ...m, is_author_bot: true } : m) } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKnownKinds: "bot", contextKnownKinds: "participant",
+      primaryKindSource: "explicit_bot", contextKindSource: "inferred_participant" });
+  });
+  it.each([false, true])("aggregates all source observations even with later omitted metadata (%s)", async richLast => {
+    const d = diagnostics(), f = fixture();
+    const contextual = { ts: ts(2), text: long };
+    const observations = [{ ...contextual, is_author_bot: true }, { ...contextual, is_author_bot: false, user_id: "U2" }, { ...contextual, user_id: "U2" }, contextual];
+    if (richLast) observations.reverse();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...message(2), content: short, author_user_id: undefined, is_author_bot: true },
+      { ...message(2), content: short, author_user_id: undefined, is_author_bot: false },
+      { ...message(4), context_messages: { before: observations } },
+    ] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKnownKinds: "bot", contextKnownKinds: "mixed",
+      primaryKindSource: "mixed", contextKindSource: "mixed" });
+    for (const value of [short, long, ts(2), "U2", token]) expect(JSON.stringify(d.records())).not.toContain(value);
   });
   it.each(["primary", "context"])("does not hide same-%s prefix conflicts behind the alternate role", async role => {
-    const f = fixture();
+    const d = diagnostics(), f = fixture();
     const messages = role === "primary" ? [...pair(), { ...message(2), content: long }] : [
       ...pair(), { ...message(5), context_messages: { before: [{ ts: ts(2), text: `${long} changed` }] } },
     ];
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ failure: "same_role_text", priorRole: role, currentRole: role });
   });
   it("reads role hashes back independently, never overwrites primary with context, and retries failures", async () => {
     const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() }, next_cursor: "next1" });
@@ -514,7 +617,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     const first = await f.reader.search({ query: "launch" }, f.context);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(2), content: short }] } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ priorRole: "context", currentRole: "primary", priorOrigin: "cursor", comparisonAvailable: false });
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_seed_unverified", priorRole: "context", currentRole: "primary", priorOrigin: "cursor", comparisonAvailable: false });
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false,
       messages: [{ ts: ts(2), text: short, textTruncated: true, searchMatch: true, permalink: message(2).permalink }] });
@@ -545,7 +648,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     ["author", false, false], ["author", false, true], ["author", true, false], ["author", true, true],
     ["kind", false, false], ["kind", false, true], ["kind", true, false], ["kind", true, true],
   ])("rejects all-observation prefix metadata contradiction despite omitted latest %s (%s/%s)", async (field, primaryExplicitLast, contextExplicitLast) => {
-    const f = fixture();
+    const d = diagnostics(), f = fixture();
     const primary = { ...message(2), content: short, author_user_id: undefined };
     const primaryMeta = field === "thread" ? { thread_ts: ts(1) } : field === "kind" ? { is_author_bot: true } : { author_user_id: "U2" };
     const contextual = { ts: ts(2), text: long };
@@ -560,6 +663,8 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       { ...message(5), context_messages: { before: [contextObjects[1]] } },
     ] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
+    expect(d.records().at(-1)).toMatchObject({ failure: field === "thread" ? "cross_role_thread" : field === "kind" ? "cross_role_kind" : "cross_role_user",
+      contextKindSource: field === "thread" ? "unknown" : "mixed" });
   });
   it.each([[false, false], [false, true], [true, false], [true, true]])("keeps unknown metadata a wildcard without synthesizing primary provenance (%s/%s)", async (primaryKnown, contextKnown) => {
     const f = fixture();
@@ -588,10 +693,11 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       messages: [{ ts: ts(2), text: short, textTruncated: false, threadTs: ts(1), author: { userId: "U2" } }, {}, {}] });
   });
   it("rejects primary-only cursor seed versus a longer context without current-page primary evidence", async () => {
-    const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(0, 1) }, next_cursor: "next" });
+    const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(0, 1) }, next_cursor: "next" });
     const first = await f.reader.search({ query: "launch" }, f.context);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(1) } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_seed_unverified", priorRole: "primary", currentRole: "context", comparisonAvailable: false });
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false, messages: [{ ts: ts(4) }] });
   });

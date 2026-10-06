@@ -125,6 +125,30 @@ main의 `/tmp/shookie-e2e/pr102-results.md` / `pr102-new-thread-diagnostics.log`
 
 독립 리뷰가 발견한 양 역할의 최신 객체에서 metadata가 생략되어 앞선 명시적 충돌이 지워지는 경우를 수정했다. 미수정 SHA `33d58e556d8ab472fc94b7963cc22d13797c8eaf`에서 새 합성 회귀 8개 중 thread/author 각각 1개(총2개)가 status=ok로 실패하는 것을 먼저 실행 확인했다. 수정 후 상호 최신 생략/순서 permutation, unknown metadata positive 및 exact-equal 기존 계약 회귀가 통과했다. fixtures는 합성값이며 원문 운영 본문/URL/수정값을 복사하지 않았다.
 
+### PR103 후속: metadata 거부 원인 분리 (진단 전용)
+
+owner main이 전달한 PR103 운영 요약에서는 배포 성공/live SHA/restarts=0 이후 새 이벤트의 search가 여전히 `fingerprint_conflict`로 실패했다. `primary→context`, page/firstPage, comparisonAvailable=true, trim/lineEndingEqual=false, previous_prefix였다. 즉 same-page primary-prefix-context인데 기존 aggregate users/kinds/threads 중 하나 이상에서 거부되었으며 **정확한 첫 필드는 아직 미확정**이다. 같은 운영 요약에서 독립 명시적 thread read는 실제 3페이지/complete=true와 원문·수정 댓글·출처 대조로 **PASS**, search는 **FAIL**이다. worker는 원문 응답/본문/URL/토큰을 조회·복사하지 않았다. client의 SDK14/public15 및 thread handling을 변경하지 않는다.
+
+정적 가설: context의 optional `is_author_bot`가 빠지고 user가 존재하면 기존 projection은 participant를 추론한다. primary의 required boolean은 명시적이다. 그러나 실제 실패 필드와 flag 존재 여부는 아직 관측하지 않았으므로 **추론된 participant를 명시적 모순이나 실제 원인으로 단정하지 않는다**. 공식 예시/런타임 가정/합성 테스트는 실제 관측 증명이 아니다.
+
+기존 마지막 fingerprint 레코드에 다음 **고정 enum만** 추가한다. 성공 호출에 새 content/결과 로그는 없고 최대 3개는 유지한다.
+
+| 필드 | 고정값 및 의미 |
+|---|---|
+| `failure` | `same_role_text`: 기존 같은 역할 hash 충돌. `cross_role_seed_unverified`: 다른 역할 hash가 달라도 현재 페이지 양쪽 증거가 없음. `cross_role_user` / `cross_role_kind` / `cross_role_thread`: 기존 aggregate compatibility의 첫 실패. `cross_role_text_relation`: 위 metadata를 통과했으나 context가 primary의 정확 prefix 확장이 아님. `unknown`: 진단 sentinel/runtime 비허용 입력 |
+| `primaryKnownKinds`, `contextKnownKinds` | `none` / `bot` / `participant` / `mixed`. **기존 policy가 사용하는 projected non-system kind Set**의 요약이지 명시적 지식이 아니다. inferred participant도 포함한다 |
+| `primaryKindSource`, `contextKindSource` | `explicit_bot` / `explicit_participant` / `inferred_participant` / `unknown` / `mixed`. 아래 source 근거를 모든 page-local 관측에서 누적한 요약 |
+
+source 근거는 schema-parsed projection 시점에 캐시한 primitive 값만 사용한다. primary의 required true/false는 각각 explicit_bot/explicit_participant이며 user가 없어 projected system이어도 false의 명시적 근거는 유지한다. context의 제공된 boolean true 또는 bot_id 존재는 explicit_bot, 제공된 false는 user 부재여도 explicit_participant다. false와 bot_id가 함께 있으면 mixed다. optional boolean 부재/undefined이고 bot_id도 없을 때 user 존재로 projected participant가 되면 inferred_participant, 그 외에는 unknown이다. bot_id/user ID **값은 source side metadata에 넣거나 출력하지 않는다**. schema에 boolean으로 파싱된 값만 명시적 flag로 취급하며 raw own-property/getter를 추가 검사하지 않는다.
+
+각 역할의 모든 관측 source를 유한 enum Set으로 누적한다. 서로 다른 근거(unknown 포함)가 함께 있으면 mixed다. 이는 명시적 모순 확정이 아니라 **근거가 혼합됨**을 뜻한다. 최신 context가 flag/user를 생략해도 앞선 근거를 지우지 않는다. 같은 역할 text guard는 aggregate 완성 전 먼저 실패하므로 이 경우 knownKinds=none/source=unknown은 **미평가 sentinel**이다. cross-role seed의 부재 역할도 none/unknown이며 cursor에 source를 저장·복구하지 않는다.
+
+guard 순서는 그대로다: 모든 same-role hash → 기존 seed repeat 예외 → 양쪽 page 증거 → users → kinds → threads → 본문 prefix. OR/AND의 기존 short-circuit 순서대로 첫 실패 하나만 분류한다. exact-equal cross-role의 metadata 처리도 바꾸지 않는다. `failure=cross_role_kind`는 **기존 projected-kind policy 거부**만 증명하며 양 역할 source가 명시적이라는 증명은 아니다. source enum으로 security guard를 완화하지 않는다. body/hash/역할 반환/source/provenance/partial/cursor/dedup/budget/권한/token/취소 정책은 유지한다.
+
+side metadata는 기존 최대 820개 관측의 페이지 안에서만 존재한다. logger는 primitive 인수와 runtime allowlist만 받으며 실패 분류·source에는 외부 문자열/ID/hash/길이/ts/URL/본문/토큰/커서/count가 없다. object cast/폐기 Proxy/getter/toJSON은 실행하지 않고 logger throw를 삼킨다. cursor/DB/도구 output에는 새 진단 metadata를 저장하지 않는다. 합성 회귀는 첫 실패 순서, explicit false vs omitted/user 추론/bot flag/bot_id, 최신 생략·순서별 all-observation 집계, 성공 partial/동일 output, generic unavailable/throwing logger/cursor unlock, registered tool/DB redaction 및 raw getter 접근 불증가를 검증한다.
+
+main은 최종 SHA 실제 diff/fresh review 후 pinned squash와 deploy SUCCESS/live SHA/restarts를 확인하고 **새 actual search 이벤트 1회**에서 failure와 두 역할 source/knownKinds를 대조한다. 검색 성공은 이 PR에서 보장하지 않는다. 그 실제 근거를 사용한 최소 기능 수정은 새 task/PR에서 진행하며 actual search matches/source 및 독립 thread read PASS까지 후속 검증한다. worker는 merge/배포/서버/E2E를 실행하지 않는다. 실제 검색 성공 후 임시 진단 제거는 별도 PR이다.
+
 ### 승인된 검색 permalink 정규화
 
 1. 입력 URL 최대 512자와 기존 parse/href canonical/HTTPS/trusted workspace host/no userinfo/no port/no nonempty hash/정확한 current channel + canonical message_ts path 가드를 그대로 유지한다.
