@@ -1,5 +1,7 @@
 # Slack 검색 action_token 임시 안전 진단
 
+후속 운영 근거와 API 이후 실패 단계 관측은 [검색 응답 검증 임시 진단](slack-search-response-diagnostics.md)을 참고한다. 아래 초기 absent 관측과 새 usable=true 관측은 서로 다른 요청이다.
+
 이 변경은 원인 확정을 위한 **관찰만** 한다. main의 2026-10-06T14:37:13.022Z UI 재현(`slack-event:Ev0C72JPG022`)에서는 authenticated handler의 네 후보 모두 own slot absent, selectedUsable=false, identityBound=true/tokenBound=false, 같은 상관의 search.tokenBound=false이며 API 직전에 도달하지 않았다. 따라서 API 전송만의 문제는 배제했지만 **Slack omission vs SDK/receiver 전달 문제는 미확정**이다. 이번 후속 구현의 SDK 경계 운영 재현은 아직 수행하지 않았다. “Slack이 토큰을 보내지 않는다”는 결론을 내리지 않는다. 검색 권한/범위, 인증, 토큰 선택/validation, 검색 결과, 시간 제한/취소는 기존 동작 그대로다. 다른 위치에서 토큰을 발견해도 자동 fallback 하지 않는다.
 
 ## 전달 경로 조사와 고정 후보

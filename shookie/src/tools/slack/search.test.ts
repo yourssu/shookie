@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../../logger.js";
+import { unavailable } from "./errors.js";
 import { RequestContext } from "@mastra/core/request-context";
 import { bindSlackReadContext, getSlackReadIdentity } from "./context.js";
 import { SlackReader, type SlackReadClient } from "./client.js";
@@ -23,6 +25,120 @@ function fixture() {
   const client = { auth: { test: auth }, conversations: { info, members, history, replies }, apiCall } as unknown as SlackReadClient;
   return { auth, info, members, apiCall, history, replies, reader: new SlackReader(client), context: ctx() };
 }
+afterEach(() => vi.restoreAllMocks());
+function diagnostics() {
+  const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+  return { spy, records: () => spy.mock.calls.filter(([name]) => name === "slack_search_response_diagnostic").map(([, record]) => record as Record<string, unknown>) };
+}
+function localUnavailable() {
+  try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
+}
+
+describe("search response safe diagnostics", () => {
+  it.each([
+    ["schema_invalid", { ok: true, results: { messages: [{ ...message(), team_id: undefined }] } }],
+    ["warning_present", { ok: true, results: { messages: [] }, warning: token }],
+    ["result_limit_exceeded", { ok: true, results: { messages: [message(), message(3)] } }],
+    ["scope_mismatch", { ok: true, results: { messages: [{ ...message(), team_id: "TOTHER" }] } }],
+    ["permalink_invalid", { ok: true, results: { messages: [{ ...message(), permalink: token }] } }],
+    ["permalink_invalid", { ok: true, results: { messages: [{ ...message(), permalink: "https://private.invalid/" }] } }],
+    ["context_time_invalid", { ok: true, results: { messages: [{ ...message(), context_messages: { before: [{ ts: ts(3), text: token }] } }] } }],
+    ["thread_scope_mismatch", { ok: true, results: { messages: [{ ...message(), thread_ts: ts(1), context_messages: { after: [{ ts: ts(3), text: token, thread_ts: ts(2) }] } }] } }],
+    ["fingerprint_conflict", { ok: true, results: { messages: [message(), { ...message(), content: token }] } }],
+    ["cursor_conflict", { ok: true, results: { messages: [] }, next_cursor: token, response_metadata: { next_cursor: "other" } }],
+  ])("maps local rejection to %s without changing failure/API calls", async (reason, raw) => {
+    const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValue(raw);
+    const result = await f.reader.search({ query: "launch", limit: reason === "result_limit_exceeded" ? 1 : 20 }, f.context);
+    expect(result).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], complete: false, nextCursor: null });
+    expect(f.apiCall).toHaveBeenCalledTimes(1);
+    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed", reason]);
+    expect(d.records().at(-1)).toMatchObject({ requestId: "event:1", correlationAvailable: true });
+    expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+    expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
+  });
+  it("distinguishes API call rejection, check failure and schema failure without error codes", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockRejectedValueOnce({ message: token });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().map(r => r.reason)).toEqual(["api_call_failed"]);
+    d.spy.mockClear(); f.apiCall.mockResolvedValueOnce({ ok: false, error: token });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_failed"]);
+    d.spy.mockClear(); f.apiCall.mockResolvedValueOnce({ ok: true });
+    expect((await f.reader.search({ query: "launch" }, f.context)).message).toBe(localUnavailable());
+    expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: "results", schemaCode: "invalid_type", schemaMissing: true });
+    expect(f.apiCall).toHaveBeenCalledTimes(3); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+  });
+  it.each(["message_ts", "content", "team_id", "channel_id", "is_author_bot"] as const)("distinguishes missing/invalid required %s in the unchanged response schema", async field => {
+    const d = diagnostics(), f = fixture();
+    for (const value of [undefined, null]) {
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), [field]: value }] } });
+      expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+      expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: `message_${field}`, schemaCode: "invalid_type", schemaMissing: value === undefined });
+    }
+    expect(f.apiCall).toHaveBeenCalledTimes(2);
+  });
+  it("maps nonempty metadata warnings to the existing schema rejection", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [] }, response_metadata: { warnings: [token] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).message).toBe(localUnavailable());
+    expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: "metadata_warnings", schemaCode: "too_big", schemaMissing: false });
+    expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+  });
+  it("classifies existing parser/check exceptions without diagnostic response reads", async () => {
+    const d = diagnostics(), f = fixture(), execute = vi.fn(() => { throw new Error(token); });
+    const raw = Object.defineProperty({ ok: true }, "results", { get: execute });
+    f.apiCall.mockResolvedValueOnce(raw);
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(execute).toHaveBeenCalledTimes(1); // Existing Zod parser read only; diagnostics never inspect raw.
+    expect(d.records().at(-1)).toMatchObject({ stage: "schema", reason: "schema_exception" });
+    execute.mockClear(); f.apiCall.mockResolvedValueOnce(Object.defineProperty({}, "ok", { get: execute }));
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(execute).toHaveBeenCalledTimes(1); expect(d.records().at(-1)).toMatchObject({ reason: "check_failed" });
+    expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+  });
+  it("observes missing prerequisites and authorization failures before API", async () => {
+    const d = diagnostics(), f = fixture(); f.auth.mockResolvedValueOnce({ ok: true, bot_id: "B1", team_id: "T1" });
+    expect((await f.reader.search({ query: "launch" }, f.context)).message).toBe(localUnavailable());
+    expect(d.records().at(-1)).toMatchObject({ reason: "prerequisites_missing", stage: "prerequisites" });
+    f.members.mockResolvedValueOnce({ ok: true, members: [] });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("access_denied");
+    expect(d.records().at(-1)).toMatchObject({ reason: "authorization_failed" }); expect(f.apiCall).not.toHaveBeenCalled();
+  });
+  it("identifies the defensive header budget path without changing its failure", async () => {
+    const d = diagnostics(), f = fixture(); const byteLength = Buffer.byteLength;
+    vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) =>
+      typeof value === "string" && value.includes('"text":""') ? 24_001 : byteLength(value, encoding));
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+    expect(d.records().at(-1)).toMatchObject({ reason: "budget_exceeded" }); expect(f.apiCall).toHaveBeenCalledTimes(1);
+  });
+  it("logger exceptions cannot alter success, local rejection or cursor unlock/retry", async () => {
+    const d = diagnostics(), f = fixture(); d.spy.mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, next_cursor: token });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first.status).toBe("ok");
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [] }, next_cursor: token });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+    d.spy.mockImplementation(() => {});
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [] }, next_cursor: token });
+    expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ reason: "cursor_replay" });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(3)] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
+    expect(f.apiCall).toHaveBeenCalledTimes(4);
+  });
+  it("success logs only response/check states, never result bodies or metadata", async () => {
+    const d = diagnostics(), f = fixture(); const secret = "SECRET_SUCCESS_CONTENT";
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: secret }] }, secret: token });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("ok");
+    expect(d.records()).toEqual([
+      { stage: "transport", reason: "response_received", correlationAvailable: true, requestId: "event:1" },
+      { stage: "api_check", reason: "check_passed", correlationAvailable: true, requestId: "event:1" },
+    ]);
+    for (const value of [secret, token, "synthetic.slack.com", "U2", "C1", "T1", "launch", ts(2)]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
+  });
+});
+
 describe("bot + trusted event action_token Real-time Search", () => {
   it("calls the official endpoint with fixed public/messages/current-channel filters and safe literal terms", async () => {
     const f = fixture(); const result = await f.reader.search({ query: "출시 plan" }, f.context);
