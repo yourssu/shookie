@@ -36,6 +36,13 @@ describe("bounded conflict comparison and primitive diagnostic", () => {
     expect(spy.mock.calls.at(-1)?.[1]).toMatchObject({ failure, comparisonAvailable: false,
       primaryKnownKinds: "bot", contextKnownKinds: "mixed", primaryKindSource: "explicit_bot", contextKindSource: "mixed" });
   });
+  it.each(["none", "bot", "participant", "mixed"] as const)("keeps explicit-known summary %s independent of mixed source provenance", known => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    logSlackSearchConflictDiagnostic(undefined, "primary", "context", "page", true, false, true, false, false, "previous_prefix",
+      "cross_role_thread", "bot", known, "explicit_bot", "mixed");
+    expect(spy.mock.calls.at(-1)?.[1]).toMatchObject({ failure: "cross_role_thread", primaryKnownKinds: "bot",
+      contextKnownKinds: known, primaryKindSource: "explicit_bot", contextKindSource: "mixed" });
+  });
   it("never executes object casts/getters/proxies/toJSON, logs only allowlisted primitives and WeakMap correlation", () => {
     const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
     const execute = vi.fn(() => { throw new Error(secret); });

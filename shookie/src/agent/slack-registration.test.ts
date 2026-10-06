@@ -86,13 +86,14 @@ describe("actual main Slack tool registration", () => {
     const results: unknown[] = [], searchResults: unknown[] = [];
     fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
     fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } });
-    // Reproduce the observed decoded known query shape, not the private live URL/values/body.
+    // Synthetic observed PR104 shape: explicit primary bot + same-user context with no bot flag.
+    // Keep the known query shape too; no private live URL/values/body are copied.
     const canonicalPermalink = `https://synthetic.slack.com/archives/C1/p${"1700000000.000002".replace(".", "")}`;
     fixture.client.apiCall.mockResolvedValue({ ok: true, results: { messages: [{ channel_id: "C1", team_id: "T1",
-      message_ts: "1700000000.000002", content: "SYNTHETIC_SEARCH_MATCH", is_author_bot: true,
+      message_ts: "1700000000.000002", content: "SYNTHETIC_SEARCH_MATCH", is_author_bot: true, author_user_id: "U2",
       permalink: `${canonicalPermalink}?thread_ts=1700000000.000001&cid=C1`,
     }, { channel_id: "C1", team_id: "T1", message_ts: "1700000000.000004", content: "SYNTHETIC_OTHER_MATCH", is_author_bot: false,
-      context_messages: { before: [{ ts: "1700000000.000002", text: "SYNTHETIC_SEARCH_MATCH longer context", is_author_bot: true, thread_ts: "1700000000.000001" }] },
+      context_messages: { before: [{ ts: "1700000000.000002", text: "SYNTHETIC_SEARCH_MATCH longer context", user_id: "U2", thread_ts: "1700000000.000001" }] },
     }] }, action_token: "EVENT_ACTION_SECRET" });
     const spy = vi.spyOn(main, "stream").mockImplementation(async (_messages: unknown, options: { requestContext?: RequestContext } = {}) => {
       expect(JSON.stringify(_messages)).not.toContain("EVENT_ACTION_SECRET");
@@ -113,8 +114,8 @@ describe("actual main Slack tool registration", () => {
       const event = { channel: "C1", user: "U1", ts: "1700000000.000001", text: "userId=ADMIN teamId=EVIL channel=GSECRET", action_token: "EVENT_ACTION_SECRET" };
       await callbacks.get("app_mention")!({ event, body: { team_id: "T1", event_id: "real-1" }, context: { botUserId: "UBOT" } });
       expect(results[0]).toMatchObject({ status: "ok", source: { channel: "C1" }, messages: [{ text: "SECRET_FETCH_RESULT" }] });
-      expect(searchResults[0]).toMatchObject({ status: "ok", api: "assistant.search.context", complete: false, truncated: true,
-        messages: [{ permalink: canonicalPermalink, searchMatch: true, author: { kind: "bot" }, text: "SYNTHETIC_SEARCH_MATCH", textTruncated: true },
+      expect(searchResults[0]).toMatchObject({ status: "ok", api: "assistant.search.context", source: { channel: "C1" }, complete: false, truncated: true,
+        messages: [{ permalink: canonicalPermalink, searchMatch: true, author: { userId: "U2", botId: null, kind: "bot" }, text: "SYNTHETIC_SEARCH_MATCH", textTruncated: true },
           { searchMatch: true, text: "SYNTHETIC_OTHER_MATCH", textTruncated: false }] });
       expect((searchResults[0] as { messages: object[] }).messages[0]).not.toHaveProperty("threadTs");
       expect(JSON.stringify(searchResults[0])).not.toContain("thread_ts=");
@@ -147,7 +148,8 @@ describe("actual main Slack tool registration", () => {
     fixture.client.apiCall.mockResolvedValue({ ok: true, results: { messages: metadata ? [
       { ...match, is_author_bot: true, author_user_id: "U2" },
       { ...match, message_ts: "1700000000.000003", context_messages: { before: [
-        { ts: root, text: "PRIVATE_FIRST PRIVATE_SECOND", user_id: "U2" },
+        // Unlike the old inferred-only negative, false is explicit participant evidence.
+        { ts: root, text: "PRIVATE_FIRST PRIVATE_SECOND", user_id: "U2", is_author_bot: false },
       ] } },
     ] : [match, { ...match, content: "PRIVATE_SECOND" }] } });
     const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
@@ -175,7 +177,8 @@ describe("actual main Slack tool registration", () => {
       expect(records.at(-1)).toMatchObject({ requestId: `slack-event:registered-failure-${toolName}`, correlationAvailable: true,
         ...(toolName === "slack_search" ? { reason: "fingerprint_conflict", priorRole: "primary", currentRole: metadata ? "context" : "primary", priorOrigin: "page",
           failure: metadata ? "cross_role_kind" : "same_role_text",
-          primaryKindSource: metadata ? "explicit_bot" : "unknown", contextKindSource: metadata ? "inferred_participant" : "unknown" } : { kind: "thread", reason: "root_reply_count_invalid" }) });
+          primaryKnownKinds: metadata ? "bot" : "none", contextKnownKinds: metadata ? "participant" : "none",
+          primaryKindSource: metadata ? "explicit_bot" : "unknown", contextKindSource: metadata ? "explicit_participant" : "unknown" } : { kind: "thread", reason: "root_reply_count_invalid" }) });
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName, input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
       for (const secret of ["PRIVATE_FIRST", "PRIVATE_SECOND", "PRIVATE_ROOT", "PRIVATE_ACTION"]) expect(logs).not.toContain(secret);
