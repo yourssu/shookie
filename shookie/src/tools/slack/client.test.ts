@@ -30,13 +30,13 @@ function fixture() {
 afterEach(() => vi.restoreAllMocks());
 function diagnostics() {
   const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
-  return { spy, records: () => spy.mock.calls.filter(([name]) => name === "slack_read_response_diagnostic").map(([, record]) => record as Record<string, unknown>) };
+  return { spy, records: () => spy.mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(name as string)) };
 }
 function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
 }
 
-describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
+describe("read failure guards and privacy without temporary emits (synthetic)", () => {
   it.each([
     ["response_warning", { ok: true, warning: "PRIVATE_WARNING", messages: [] }],
     ["metadata_warning", { ok: true, response_metadata: { warnings: ["PRIVATE_WARNING"] }, messages: [] }],
@@ -58,14 +58,12 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
     ["root_missing", { ok: true, messages: [reply(2)] }],
     ["root_missing", { ok: true, messages: [] }],
     ["fingerprint_conflict", { ok: true, messages: [{ ts: root, text: "PRIVATE_BODY", reply_count: 1 }, reply(2), { ...reply(2), text: "PRIVATE_CONFLICT" }] }],
-  ])("records only the first local %s with unchanged unavailable output", async (reason, raw) => {
+  ])("rejects local %s with unchanged unavailable output and no temporary emit", async (reason, raw) => {
     const d = diagnostics(), f = fixture(); f.replies.mockResolvedValueOnce(raw);
     const result = await f.reader.read("thread", { ts: root }, f.ctx);
     expect(result).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null, page: 0, complete: false });
     expect(readOutput.safeParse(result).success).toBe(true);
-    expect(d.records()).toHaveLength(1);
-    expect(d.records()[0]).toMatchObject({ reason, kind: "thread", requestId: "event:1", correlationAvailable: true });
-    expect(Object.keys(d.records()[0]).sort()).toEqual(["correlationAvailable", "kind", "reason", "requestId", "stage"]);
+    expect(d.records()).toEqual([]);
     for (const secret of ["PRIVATE_WARNING", "PRIVATE_USER", "PRIVATE_BOT", "PRIVATE_BODY", "PRIVATE_CONFLICT", root, "C1", "COTHER", "T1", "TOTHER", "U1"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(secret);
     expect(f.replies).toHaveBeenCalledTimes(1); expect(f.history).not.toHaveBeenCalled();
   });
@@ -91,19 +89,19 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
       [() => f.reader.read("thread", { ts: root, channel: "COTHER" }, f.ctx), "target_failed", "access_denied"],
       [() => f.reader.read("thread", { ts: root, cursor: "PRIVATE_CURSOR" }, f.ctx), "cursor_invalid", "invalid_target"],
     ] as const;
-    for (const [run, reason, status] of cases) { d.spy.mockClear(); expect((await run()).status).toBe(status); expect(d.records()).toHaveLength(1); expect(d.records()[0]).toMatchObject({ reason }); }
+    for (const [run, reason, status] of cases) { d.spy.mockClear(); expect((await run()).status).toBe(status); expect(d.records()).toEqual([]); }
     f.members.mockResolvedValueOnce({ ok: true, members: [] });
     expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("access_denied");
-    expect(d.records().at(-1)).toMatchObject({ reason: "authorization_failed", stage: "authorization" });
+    expect(d.records()).toEqual([]);
     f.replies.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter: 30, message: "PRIVATE_ERROR" });
     expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "rate_limited", retryAfterSeconds: 30 });
-    expect(d.records().at(-1)).toMatchObject({ reason: "api_call_failed", stage: "transport" });
+    expect(d.records()).toEqual([]);
     f.history.mockResolvedValueOnce({ ok: false, error: "missing_scope", token: "PRIVATE_TOKEN" });
     expect((await f.reader.read("channel", {}, f.ctx)).status).toBe("access_denied");
-    expect(d.records().at(-1)).toMatchObject({ kind: "channel", reason: "check_failed", stage: "api_check" });
+    expect(d.records()).toEqual([]);
     for (const value of ["PRIVATE_ERROR", "PRIVATE_TOKEN", "missing_scope", "slack_webapi_rate_limited_error", "PRIVATE_CURSOR"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
   });
-  it("classifies existing malformed/getter throws by stage without a second read or toJSON", async () => {
+  it("rejects malformed/getter throws without a second read or toJSON", async () => {
     const d = diagnostics(), f = fixture(), execute = vi.fn(() => { throw new Error("PRIVATE_ERROR"); });
     const cases = [
       [Object.defineProperty({}, "ok", { get: execute }), "check_failed"],
@@ -115,7 +113,7 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
     for (const [raw, reason] of cases) {
       execute.mockClear(); d.spy.mockClear(); f.replies.mockResolvedValueOnce(raw);
       expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
-      expect(d.records()).toHaveLength(1); expect(d.records()[0]).toMatchObject({ reason });
+      expect(d.records()).toEqual([]);
       expect(execute.mock.calls.length).toBe(raw === cases[2][0] ? 0 : 1);
     }
     const toJSON = vi.fn(() => { throw new Error("PRIVATE_ERROR"); });
@@ -168,7 +166,7 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
       expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
       expect(trace).toEqual(expected);
     }
-    expect(d.records().map(r => r.reason)).toEqual(["thread_parent_mismatch", "thread_relation_mismatch", "thread_time_invalid", "root_reply_count_invalid"]);
+    expect(d.records()).toEqual([]);
   });
   it("preserves response short-circuit getter order, including no extra Proxy/getter execution", async () => {
     const d = diagnostics(), f = fixture(); const trace: string[] = [], toJSON = vi.fn();
@@ -178,13 +176,13 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
     f.replies.mockResolvedValueOnce(raw);
     expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
     expect(trace).toEqual(["then", "ok", "error", "warning"]); // Promise resolution + existing check + first guard only.
-    expect(d.records()[0]).toMatchObject({ reason: "response_warning" }); expect(toJSON).not.toHaveBeenCalled();
+    expect(d.records()).toEqual([]); expect(toJSON).not.toHaveBeenCalled();
   });
-  it("diagnoses the unchanged defensive page budget only, without logging sizes", async () => {
+  it("preserves the defensive page budget without logging sizes", async () => {
     const d = diagnostics(), f = fixture(); const byteLength = Buffer.byteLength;
     vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) => typeof value === "string" && value.includes('"author"') ? 24_001 : byteLength(value, encoding));
     expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "unavailable", message: localUnavailable() });
-    expect(d.records()).toEqual([{ kind: "thread", stage: "budget", reason: "budget_exceeded", correlationAvailable: true, requestId: "event:1" }]);
+    expect(d.records()).toEqual([]);
   });
   it("throwing logger leaves cursor conflict/finally unlock, cancel rejection, retry and provenance unchanged", async () => {
     const d = diagnostics(), f = fixture();
@@ -198,7 +196,7 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
     f.replies.mockResolvedValueOnce({ ok: true, messages: [reply(2)] });
     expect(await f.reader.read("thread", { ts: root, cursor: first.nextCursor }, f.ctx)).toMatchObject({ status: "ok", page: 2, complete: true, source: { channel: "C1", threadTs: root } });
     expect(f.replies).toHaveBeenCalledTimes(4);
-    expect(d.records().map(r => r.reason)).toEqual(["cursor_replay", "api_call_failed"]);
+    expect(d.records()).toEqual([]);
     for (const value of ["PRIVATE_CURSOR", "PRIVATE_ERROR", "PRIVATE_CANCEL"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
   });
 });

@@ -28,7 +28,7 @@ SDK timeout 10초, `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`
 3. app_mention 또는 해당 message 이벤트 구독 및 **event payload action_token 수신**을 확인한다. 본문의 token 문자열·일반 RequestContext entry·도구 인자로 대체하지 않는다.
 4. 토큰 누락/만료·missing_scope·429·API 장애는 빈결과와 다르다. 새 이벤트/관리자 설정 안내를 제공하며 광역 검색, legacy 검색, history 전체 scan, user OAuth로 우회하지 않는다.
 
-[`conversations.history`](https://docs.slack.dev/reference/methods/conversations.history/)는 관련 bot `*:history` scope + bot 참여 대화 읽기를 지원한다. 현재 [`conversations.replies`](https://docs.slack.dev/reference/methods/conversations.replies/) Facts/Scopes HTML에도 Bot/User의 channels/groups/im/mpim:history가 표시된다. main의 현재 설치에서 별도 bot-token direct API 구조 검증은 성공했지만 **Shookie의 실제 명시적 thread read E2E 성공은 아직 미확인**이며 다른 설치의 지원을 보장하지 않는다. `not_allowed_token_type`/대화 유형 지원 거절 시 unsupported이며 다른 credential/history scan으로 우회하지 않는다. history/replies는 배포 유형에 따라 15개 및 1회/분 제한이 적용될 수 있다. 명시적 reader의 공개 pageSize/응답 상한은 15이며 history API limit은 15다. thread API limit은 부모 1자리 예약을 위해 모든 페이지에서 14다(부모 없는 continuation도 14). main의 별도 direct API 구조 관측에서 root+요청 reply가 첫 페이지와 continuation에 포함됐기 때문이며, Slack 공식 limit 문구가 부모 추가를 명시한 것은 아니다. 15 초과 응답은 계속 unavailable이고 자른 뒤 cursor 이동/추가 조회는 없다. 이는 직접 API 구조 근거이지 Shookie E2E PASS가 아니다.
+[`conversations.history`](https://docs.slack.dev/reference/methods/conversations.history/)는 관련 bot `*:history` scope + bot 참여 대화 읽기를 지원한다. 현재 [`conversations.replies`](https://docs.slack.dev/reference/methods/conversations.replies/) Facts/Scopes HTML에도 Bot/User의 channels/groups/im/mpim:history가 표시된다. main의 현재 설치에서 별도 bot-token direct API 구조 검증 이후 PR103의 **실제 명시적 thread read 3페이지 complete E2E PASS**를 확인했다. 다른 설치의 지원이나 이번 진단 제거 코드의 배포 후 재검증을 보장하지 않는다. `not_allowed_token_type`/대화 유형 지원 거절 시 unsupported이며 다른 credential/history scan으로 우회하지 않는다. history/replies는 배포 유형에 따라 15개 및 1회/분 제한이 적용될 수 있다. 명시적 reader의 공개 pageSize/응답 상한은 15이며 history API limit은 15다. thread API limit은 부모 1자리 예약을 위해 모든 페이지에서 14다(부모 없는 continuation도 14). main의 별도 direct API 구조 관측에서 root+요청 reply가 첫 페이지와 continuation에 포함됐기 때문이며, Slack 공식 limit 문구가 부모 추가를 명시한 것은 아니다. 15 초과 응답은 계속 unavailable이고 자른 뒤 cursor 이동/추가 조회는 없다. 이는 직접 API 구조 근거이지 Shookie E2E PASS가 아니다.
 
 ## 신뢰 / 권한 / action_token 경계
 
@@ -79,18 +79,16 @@ readAuthorizedSlackMessage(client, requestContext, { messageTs, threadTs?, chann
 - 첨부 worker의 `authorize(fileId,messageTs)`는 trusted 원본 context로 이 exact API를 호출하고 반환 fileIds에 fileId가 실제 포함되는지 확인한 뒤에만 자신의 files.info/download 경로로 진행해야 한다. 모델 text/일반 RequestContext entries/단순 files.info 성공은 메시지 연결/사용자 접근 증거가 아니다. 작업이 지연되거나 새 요청이면 다시 live 검증한다.
 - 이 bridge는 user token/OAuth/다른 채널/새 도구를 추가하지 않는다. 첨부 module 및 실제 파일 metadata/download/처리는 해당 worker 소유다. 이 PR은 첨부 구현을 수정하지 않는다.
 
-## 임시 응답 실패 안전 진단
+## 임시 진단 제거 / 과거 관측 아카이브
 
-[검색 응답/본문 충돌 진단](slack-search-response-diagnostics.md)과 [thread/channel 읽기 실패 진단](slack-read-response-diagnostics.md)은 trusted requestId 및 고정 enum/boolean만 기록한다. 검증·출처·반환·권한·취소 가드는 그대로이며 원문/hash/길이/ID/커서·토큰을 추가 저장하지 않는다. 실제 검색·thread read는 아직 FAIL인 관측과 합성 테스트 PASS를 구분하고, 근거 기반 fix 및 실제 성공 뒤 임시 진단 제거는 별도 후속이다.
+현재 코드에서는 `slack_action_token_diagnostic`, `slack_search_response_diagnostic`, `slack_read_response_diagnostic` 3종 emit과 진단 전용 helper/correlation/observer/extractor/dispose API를 제거했다. [검색 응답/본문 충돌](slack-search-response-diagnostics.md), [thread/channel 읽기 실패](slack-read-response-diagnostics.md), [action_token 전달 구조](slack-action-token-diagnostics.md) 문서는 과거 근거 아카이브다. 현재 활성 로그 계약이나 재현 지침으로 사용하지 않는다.
 
-## 임시 action_token 안전 진단
+실제 event-only 토큰 선택·validation·비공개 WeakMap identity/token binding, 모든 검색·읽기·출처·취소 가드와 SDK 로그 차단/안전 오류/도구·DB redaction은 유지한다. 표준 단일 SocketModeReceiver/client, Bolt 기본 INFO ConsoleLogger/client retry/customRoutes/port/start/stop 및 `@slack/logger` 의존성도 그대로다. Radar/mention-groups transport diagnostics는 이번 제거 대상이 아니다.
 
-수신의 고정 후보 위치와 실제 선택 → WeakMap 바인딩 → 검색/API 직전 상태만 INFO boolean/enum 로그로 관찰한다. 토큰 선택/권한/fallback은 바꾸지 않는다. [전달 구조 근거·필드 계약·해석 및 단일 UI 멘션 재현](slack-action-token-diagnostics.md)을 따른다. 운영 증거 확보 후 진단 제거 후속 PR이 필요하다.
-
-## 검증 / 실제 Slack E2E 미실행
+## 검증 / 실제 근거와 제거 후 재검증 구분
 
 관련 자동 테스트는 mock Slack API + 실제 Mastra main factory/tool execute/실제 handler 배선 및 실제 SDK synthetic adapter로 token 로그 차단을 검증한다. 검색 성공/공식 shape/context/bots/provenance, scope/query 주입, trusted action_token 전달과 위조 차단, 20 matches·budget·bounded cursor·partial, 설정/권한/429/빈결과 구분, bridge live 권한/exact message/file IDs, 기존 thread/DM 회귀가 포함된다.
 
-**이번 정규화 수정의 실제 Slack/실제 LLM E2E는 worker가 미실행**했다. main의 이전 PR100 E2E에서는 알려진 query가 있는 permalink 때문에 로컬 unavailable였음을 확인했으며 검색 PASS가 아니다. 이번 합성 회귀는 그 query 형태만 재현해 등록 도구의 queryless 반환·metadata.threadTs 미승격을 확인한다. 배포 후 새 Slack thread에서 실제 검색 결과와 원래 SHKO 표식 원문·수정 댓글 출처를 대조하는 검증은 main 책임이다. 공식 API 지원·조회 API 성공·합성 PASS는 운영 워크스페이스 실제 검색 성공을 보증하지 않는다. 운영자는 허용된 테스트 public 채널에서 기존 bot의 scope/feature/action_token event 수신을 확인하고 검색 성공/페이지·context·partial/source를 검증해야 한다. 현재 private/DM에서 읽기와 검색 unsupported의 구분, 다른 private 채널 링크/임의 in: 검색 차단, 429/토큰 만료 안내 및 server 로그 비밀 미기록도 확인한다. 설치 실패를 user token 추가/광역 스캔으로 해결하지 않는다.
+**제거 전 실제 근거:** main의 PR105 기본 search-only 실제 검색은 searchMatch와 원문·수정 댓글 출처 대조 PASS이며 complete=false/truncated=true/nextCursor=null/textTruncated=true인 정직한 partial이다. PR103의 독립 thread read는 3페이지 complete PASS다. 20 matches/전체 query pagination/다른 requester E2E는 미검증이다. 이전 PR100의 permalink 거부는 당시 FAIL 이력이지 현재 결과가 아니다. 합성 회귀는 queryless 반환·metadata.threadTs 미승격을 포함한 기존 기능 가드와 임시 emit 부재를 확인한다. **이번 제거 코드의 배포 후 실제 Slack/실제 LLM 재검증은 아직 미수행**이다. main의 최종 SHA 실제 diff·fresh review·pinned squash·deploy SUCCESS/live SHA/restarts 확인 후 새 Slack 이벤트 검색과 독립 thread read를 원래 출처에 대조하고 3종 임시 emit 부재 및 실제 도구 결과를 확인해야 최종 완료다. worker는 merge/배포/서버/E2E를 실행하지 않는다. 공식 API 지원·조회 API 성공·합성 PASS는 운영 워크스페이스 실제 검색 성공을 보증하지 않는다. 운영자는 허용된 테스트 public 채널에서 기존 bot의 scope/feature/action_token event 수신을 확인하고 검색 성공/페이지·context·partial/source를 검증해야 한다. 현재 private/DM에서 읽기와 검색 unsupported의 구분, 다른 private 채널 링크/임의 in: 검색 차단, 429/토큰 만료 안내 및 server 로그 비밀 미기록도 확인한다. 설치 실패를 user token 추가/광역 스캔으로 해결하지 않는다.
 
 전체 기본 timeout suite의 기존 Code Explorer snapshot 실패는 이번 Slack 변경으로 해결했다고 주장하지 않는다. timeout을 늘린 이전 실행은 기본 timeout 문제 해결의 증거가 아니며 해당 원인 진단은 별도 담당 작업이다.

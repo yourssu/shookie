@@ -1,4 +1,8 @@
-# Slack thread/channel 읽기 실패 임시 안전 진단
+# Slack thread/channel 읽기 실패 임시 안전 진단 (아카이브)
+
+> **현재 코드: 임시 진단 제거됨.** 아래 로그 계약·reason 표·진단 전용 테스트와 운영 절차는 과거 이력이며 현재 emit 계약이 아니다. `read-diagnostics.ts` 및 pendingFailure/diagnosed/reason helper를 제거했다. 동일 unavailable/errorResult/throw/finally 흐름, response/message getter 접근 순서·횟수, thread API14/public15/history15·부모 dedup/count/root/budget/maxPages 가드는 유지한다. 실제 보안 로깅·SDK 차단·DB redaction은 제거 대상이 아니다.
+>
+> main의 PR103 독립 thread read는 실제 3페이지 complete PASS, PR105 기본 검색은 정직한 partial PASS다. **이 제거 코드의 배포 후 실제 재검증은 아직 미수행**이며 main이 새 검색 이벤트 및 독립 thread read의 출처와 도구 결과·임시 3종 emit 부재를 확인해야 한다. 모든 query pagination/20 matches/다른 requester E2E 성공으로 일반화하지 않는다. 기존 client/registered/handler/cancellation의 기능·getter·privacy 회귀는 유지한다.
 
 [검색 충돌 진단과 실제 E2E FAIL 근거](slack-search-response-diagnostics.md)를 함께 참고한다. 이 변경은 **진단 전용**이다. 읽기 반환, 검증·권한·bot/event token·current channel·live membership·team/user·parser/limit/queue/cancel·cursor·redaction/provenance 정책을 변경하지 않는다.
 

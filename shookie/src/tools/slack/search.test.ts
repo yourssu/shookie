@@ -28,13 +28,13 @@ function fixture() {
 afterEach(() => vi.restoreAllMocks());
 function diagnostics() {
   const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
-  return { spy, records: () => spy.mock.calls.filter(([name]) => name === "slack_search_response_diagnostic").map(([, record]) => record as Record<string, unknown>) };
+  return { spy, records: () => spy.mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(name as string)) };
 }
 function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
 }
 
-describe("role-aware fingerprint conflict vector (synthetic)", () => {
+describe("role-aware fingerprint guards without temporary emits (synthetic)", () => {
   it.each([
     ["primary", "primary", [message(), { ...message(), content: "other" }]],
     ["primary", "context", [message(), { ...message(3), context_messages: { before: [{ ts: ts(2), text: "other" }] } }]],
@@ -43,16 +43,10 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     ["context", "context", [message(), { ...message(3), context_messages: { before: [
       { ts: ts(2), text: "match 2" }, { ts: ts(2), text: "other" },
     ] } }]],
-  ])("reports latest page role %s -> %s, not first/winning representative", async (priorRole, currentRole, messages) => {
+  ])("rejects conflicting page roles %s -> %s, including nonwinning observations", async (priorRole, currentRole, messages) => {
     const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
-    expect(d.records()).toHaveLength(3);
-    expect(d.records().at(-1)).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", requestId: "event:1", correlationAvailable: true,
-      priorRole, currentRole, priorOrigin: "page", firstPage: true, cursorPresent: false,
-      comparisonAvailable: true, trimEqual: false, lineEndingEqual: false, prefixRelation: "neither",
-      failure: priorRole === currentRole ? "same_role_text" : "cross_role_text_relation",
-      primaryKnownKinds: priorRole === currentRole ? "none" : "participant", contextKnownKinds: "none",
-      primaryKindSource: priorRole === currentRole ? "unknown" : "explicit_participant", contextKindSource: "unknown" });
+    expect(d.records()).toEqual([]);
     for (const value of ["other", "first", "match 2", ts(2), "C1", "T1", token, "launch"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(value));
   });
   it.each(["primary", "context"] as const)("uses cursor delivered %s role, never persists or recovers prior text", async priorRole => {
@@ -65,13 +59,7 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
       const current = currentRole === "primary" ? [{ ...message(), content: "other" }] : [{ ...message(4), context_messages: { before: [{ ts: ts(2), text: "other" }] } }];
       f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: current } });
       expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
-      expect(d.records()).toHaveLength(3);
-      expect(d.records().at(-1)).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", requestId: "event:1", correlationAvailable: true,
-        priorRole, currentRole, priorOrigin: "cursor", firstPage: false, cursorPresent: true,
-        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown",
-        failure: priorRole === currentRole ? "same_role_text" : "cross_role_seed_unverified",
-        primaryKnownKinds: priorRole !== currentRole && currentRole === "primary" ? "participant" : "none", contextKnownKinds: "none",
-        primaryKindSource: priorRole !== currentRole && currentRole === "primary" ? "explicit_participant" : "unknown", contextKindSource: "unknown" });
+      expect(d.records()).toEqual([]);
     }
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
@@ -84,8 +72,7 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
       { ts: ts(2), text: "match 2" }, { ts: ts(2), text: "match 2 tail" },
     ] } }] } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ priorRole: "context", currentRole: "context", priorOrigin: "page", firstPage: false, cursorPresent: true,
-      comparisonAvailable: true, prefixRelation: "previous_prefix" });
+    expect(d.records()).toEqual([]);
   });
   it.each([
     [" value ", "value", true, true, false, "neither"],
@@ -93,12 +80,11 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     ["a tail", "a", true, false, false, "current_prefix"],
     ["a".repeat(24_001), "a", false, false, false, "unknown"],
     ["a", "😀".repeat(6_001), false, false, false, "unknown"],
-  ])("adds bounded comparison flags without ever relaxing the hash guard", async (previous, current, comparisonAvailable, trimEqual, lineEndingEqual, prefixRelation) => {
+  ])("fails closed for unequal same-role text regardless of normalization, prefix or size", async (previous, current) => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: previous }, { ...message(), content: current }] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [] });
-    expect(d.records().at(-1)).toMatchObject({ failure: "same_role_text", comparisonAvailable, trimEqual, lineEndingEqual, prefixRelation });
-    expect(d.records()).toHaveLength(3);
+    expect(d.records()).toEqual([]);
     expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(previous)); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(current));
   });
   it("uses only parsed/projected copies; raw content getter/proxy accesses and toJSON are not increased", async () => {
@@ -110,7 +96,7 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(), proxied] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
     expect(getter).toHaveBeenCalledTimes(1); expect(gets).toEqual(["content"]); expect(toJSON).not.toHaveBeenCalled();
-    expect(d.records().at(-1)).toMatchObject({ priorRole: "primary", currentRole: "primary", priorOrigin: "page" });
+    expect(d.records()).toEqual([]);
   });
   it("reads explicit kind evidence only from parsed copies, without extra raw getter/proxy/toJSON access", async () => {
     const d = diagnostics(), f = fixture(), toJSON = vi.fn(() => { throw new Error(token); });
@@ -130,9 +116,9 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
     for (const getter of [primaryFlag, contextFlag, botId, user]) expect(getter).toHaveBeenCalledTimes(1);
     expect(gets.sort()).toEqual(["bot_id", "is_author_bot", "user_id"]);
     expect(toJSON).not.toHaveBeenCalled();
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    expect(d.records()).toEqual([]);
   });
-  it("tracks conflicts for budget-omitted candidates and never persists diagnostic text/roles/maps", async () => {
+  it("tracks conflicts for budget-omitted candidates and keeps cursor state role-hash-only", async () => {
     const d = diagnostics(), f = fixture();
     const before = Array.from({ length: 20 }, (_, n) => ({ ts: ts(n + 1), text: `PRIVATE_CONTEXT_${n}` }));
     const messages = Array.from({ length: 20 }, (_, n) => message(100 + n));
@@ -154,8 +140,7 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
       ...messages.slice(2),
     ] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records()).toHaveLength(3);
-    expect(d.records().at(-1)).toMatchObject({ priorRole: "context", currentRole: "context", priorOrigin: "page", comparisonAvailable: true });
+    expect(d.records()).toEqual([]);
     for (const text of ["PRIVATE_CONTEXT_", "PRIVATE_OMITTED", "PRIVATE_CHANGED"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(text);
   });
   it("throwing logger preserves conflict failure, cursor finally unlock and retry promotion", async () => {
@@ -171,15 +156,8 @@ describe("role-aware fingerprint conflict vector (synthetic)", () => {
   });
 });
 
-describe("permalink rejection predicate vector", () => {
+describe("permalink rejection guards without temporary emits", () => {
   const canonical = message().permalink;
-  const validFlags = {
-    permalinkParsed: true, permalinkCanonicalHref: true, permalinkHttps: true, permalinkHost: true,
-    permalinkNoUserinfo: true, permalinkNoPort: true, permalinkNoHash: true, permalinkNoQuery: true,
-    permalinkPath: true, hostClass: "workspace", pathShape: "archives_message", pathChannelMatch: true,
-    pathMessageTsMatch: true, queryClass: "none", queryThreadTsPresent: false, queryCidPresent: false,
-    queryThreadTsAvailable: true, queryThreadTsMatch: false, queryCidMatch: false, queryDuplicate: false,
-  };
   it.each([
     [token, { permalinkParsed: false, permalinkCanonicalHref: false, permalinkHttps: false, permalinkHost: false,
       permalinkNoUserinfo: false, permalinkNoPort: false, permalinkNoHash: false, permalinkNoQuery: false,
@@ -209,35 +187,29 @@ describe("permalink rejection predicate vector", () => {
       pathChannelMatch: false, pathMessageTsMatch: false, queryClass: "unknown" }],
     [`${canonical}?${"a&".repeat(200)}`, { permalinkNoQuery: false, queryClass: "unknown" }],
     [`${canonical}?&&`, { permalinkNoQuery: false, queryClass: "unknown" }],
-  ])("reports all fixed flags for a rejected synthetic URL", async (permalink, changes) => {
+  ])("rejects each unsafe synthetic URL without logging it", async (permalink, _changes) => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), thread_ts: ts(1), permalink }] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
-    expect(d.records()).toHaveLength(3);
-    expect(d.records().at(-1)).toEqual({ stage: "permalink", reason: "permalink_invalid", correlationAvailable: true,
-      requestId: "event:1", ...validFlags, ...changes });
+    expect(d.records()).toEqual([]);
     expect(f.apiCall).toHaveBeenCalledTimes(1);
     for (const secret of [token, "synthetic.slack.com", "private.invalid", "external.invalid", "COTHER", "C1", "T1", ts(1), ts(2), "launch"]) {
       expect(JSON.stringify(d.spy.mock.calls)).not.toContain(secret);
     }
   });
-  it("keeps the original 512-char schema bound before any URL observation", async () => {
+  it("keeps the original 512-char schema bound before URL parsing", async () => {
     const d = diagnostics(), f = fixture();
     const prefix = `${canonical}?cid=`;
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: prefix + "x".repeat(513 - prefix.length) }] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: "message_permalink", schemaCode: "too_big" });
-    expect(d.records().at(-1)).not.toHaveProperty("permalinkParsed");
+    expect(d.records()).toEqual([]);
   });
-  it("auxiliary query observation exceptions retain required flags and local rejection", async () => {
+  it("query parser exceptions retain local rejection", async () => {
     const d = diagnostics(), f = fixture();
     vi.spyOn(URL.prototype, "searchParams", "get").mockImplementation(() => { throw new Error(token); });
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${canonical}?cid=C1` }] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
-    expect(d.records().at(-1)).toMatchObject({ permalinkParsed: true, permalinkCanonicalHref: true, permalinkHttps: true,
-      permalinkHost: true, permalinkNoUserinfo: true, permalinkNoPort: true, permalinkNoHash: true,
-      permalinkNoQuery: false, permalinkPath: true, queryClass: "unknown" });
-    expect(d.records()).toHaveLength(3); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+    expect(d.records()).toEqual([]); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
   });
   it("does not emit a rejection vector for accepted canonical or missing permalinks", async () => {
     const d = diagnostics(), f = fixture();
@@ -247,15 +219,14 @@ describe("permalink rejection predicate vector", () => {
       const result = await f.reader.search({ query: "launch" }, f.context);
       expect(result.status).toBe("ok");
       expect(result.messages[0].permalink).toBe(permalink || undefined);
-      expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+      expect(d.records()).toEqual([]);
     }
   });
-  it("query diagnostic metadata match remains false when parent thread timestamp is absent", async () => {
+  it("rejects empty cid even when parent thread timestamp is absent", async () => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${canonical}?thread_ts=${ts(1)}&cid=` }] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ queryClass: "known", queryThreadTsAvailable: false, queryThreadTsPresent: true,
-      queryThreadTsMatch: false, queryCidPresent: true, queryCidMatch: false });
+    expect(d.records()).toEqual([]);
   });
   it("never adds accesses to raw response getters, metadata or toJSON", async () => {
     const d = diagnostics(), f = fixture();
@@ -297,7 +268,7 @@ describe("validated navigation query normalization (synthetic Slack API)", () =>
     expect(result.messages[1]).toMatchObject({ ts: ts(2), permalink: message().permalink, searchMatch: true });
     expect(result.messages.every(m => m.threadTs === undefined)).toBe(true);
     expect(result.messages[0]).toMatchObject({ searchMatch: false, contextForTs: ts(2), contextPosition: "before" });
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    expect(d.records()).toEqual([]);
     expect(f.apiCall).toHaveBeenCalledTimes(1); expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
     for (const secret of [query, message().permalink, ts(1), ts(2), token, "context", "C1", "U3"]) {
       expect(JSON.stringify(d.spy.mock.calls)).not.toContain(secret);
@@ -334,7 +305,7 @@ describe("validated navigation query normalization (synthetic Slack API)", () =>
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(1), { ...message(), permalink: `${message().permalink}?${query}` }] }, next_cursor: "page-3" });
     const result = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
     expect(result).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null, complete: false });
-    expect(d.records().at(-1)).toMatchObject({ reason: "permalink_invalid" });
+    expect(d.records()).toEqual([]);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(4)] } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2, complete: true });
     expect(f.apiCall).toHaveBeenCalledTimes(3);
@@ -379,7 +350,7 @@ describe("validated navigation query normalization (synthetic Slack API)", () =>
   });
 });
 
-describe("search response safe diagnostics", () => {
+describe("search response guards and privacy without temporary emits", () => {
   it.each([
     ["schema_invalid", { ok: true, results: { messages: [{ ...message(), team_id: undefined }] } }],
     ["warning_present", { ok: true, results: { messages: [] }, warning: token }],
@@ -396,8 +367,7 @@ describe("search response safe diagnostics", () => {
     const result = await f.reader.search({ query: "launch", limit: reason === "result_limit_exceeded" ? 1 : 20 }, f.context);
     expect(result).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], complete: false, nextCursor: null });
     expect(f.apiCall).toHaveBeenCalledTimes(1);
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed", reason]);
-    expect(d.records().at(-1)).toMatchObject({ requestId: "event:1", correlationAvailable: true });
+    expect(d.records()).toEqual([]);
     expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
     expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
   });
@@ -405,13 +375,13 @@ describe("search response safe diagnostics", () => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockRejectedValueOnce({ message: token });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().map(r => r.reason)).toEqual(["api_call_failed"]);
+    expect(d.records()).toEqual([]);
     d.spy.mockClear(); f.apiCall.mockResolvedValueOnce({ ok: false, error: token });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_failed"]);
+    expect(d.records()).toEqual([]);
     d.spy.mockClear(); f.apiCall.mockResolvedValueOnce({ ok: true });
     expect((await f.reader.search({ query: "launch" }, f.context)).message).toBe(localUnavailable());
-    expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: "results", schemaCode: "invalid_type", schemaMissing: true });
+    expect(d.records()).toEqual([]);
     expect(f.apiCall).toHaveBeenCalledTimes(3); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
   });
   it.each(["message_ts", "content", "team_id", "channel_id", "is_author_bot"] as const)("distinguishes missing/invalid required %s in the unchanged response schema", async field => {
@@ -419,7 +389,7 @@ describe("search response safe diagnostics", () => {
     for (const value of [undefined, null]) {
       f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), [field]: value }] } });
       expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
-      expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: `message_${field}`, schemaCode: "invalid_type", schemaMissing: value === undefined });
+      expect(d.records()).toEqual([]);
     }
     expect(f.apiCall).toHaveBeenCalledTimes(2);
   });
@@ -427,35 +397,35 @@ describe("search response safe diagnostics", () => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [] }, response_metadata: { warnings: [token] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).message).toBe(localUnavailable());
-    expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: "metadata_warnings", schemaCode: "too_big", schemaMissing: false });
+    expect(d.records()).toEqual([]);
     expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
   });
-  it("classifies existing parser/check exceptions without diagnostic response reads", async () => {
+  it("rejects parser/check exceptions without additional response reads", async () => {
     const d = diagnostics(), f = fixture(), execute = vi.fn(() => { throw new Error(token); });
     const raw = Object.defineProperty({ ok: true }, "results", { get: execute });
     f.apiCall.mockResolvedValueOnce(raw);
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(execute).toHaveBeenCalledTimes(1); // Existing Zod parser read only; diagnostics never inspect raw.
-    expect(d.records().at(-1)).toMatchObject({ stage: "schema", reason: "schema_exception" });
+    expect(execute).toHaveBeenCalledTimes(1); // Existing Zod parser read only.
+    expect(d.records()).toEqual([]);
     execute.mockClear(); f.apiCall.mockResolvedValueOnce(Object.defineProperty({}, "ok", { get: execute }));
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(execute).toHaveBeenCalledTimes(1); expect(d.records().at(-1)).toMatchObject({ reason: "check_failed" });
+    expect(execute).toHaveBeenCalledTimes(1); expect(d.records()).toEqual([]);
     expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
   });
   it("observes missing prerequisites and authorization failures before API", async () => {
     const d = diagnostics(), f = fixture(); f.auth.mockResolvedValueOnce({ ok: true, bot_id: "B1", team_id: "T1" });
     expect((await f.reader.search({ query: "launch" }, f.context)).message).toBe(localUnavailable());
-    expect(d.records().at(-1)).toMatchObject({ reason: "prerequisites_missing", stage: "prerequisites" });
+    expect(d.records()).toEqual([]);
     f.members.mockResolvedValueOnce({ ok: true, members: [] });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("access_denied");
-    expect(d.records().at(-1)).toMatchObject({ reason: "authorization_failed" }); expect(f.apiCall).not.toHaveBeenCalled();
+    expect(d.records()).toEqual([]); expect(f.apiCall).not.toHaveBeenCalled();
   });
   it("identifies the defensive header budget path without changing its failure", async () => {
     const d = diagnostics(), f = fixture(); const byteLength = Buffer.byteLength;
     vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) =>
       typeof value === "string" && value.includes('"text":""') ? 24_001 : byteLength(value, encoding));
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
-    expect(d.records().at(-1)).toMatchObject({ reason: "budget_exceeded" }); expect(f.apiCall).toHaveBeenCalledTimes(1);
+    expect(d.records()).toEqual([]); expect(f.apiCall).toHaveBeenCalledTimes(1);
   });
   it("logger exceptions cannot alter success, local rejection or cursor unlock/retry", async () => {
     const d = diagnostics(), f = fixture(); d.spy.mockImplementation(() => { throw new Error(token); });
@@ -467,19 +437,16 @@ describe("search response safe diagnostics", () => {
     d.spy.mockImplementation(() => {});
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [] }, next_cursor: token });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ reason: "cursor_replay" });
+    expect(d.records()).toEqual([]);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(3)] } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
     expect(f.apiCall).toHaveBeenCalledTimes(4);
   });
-  it("success logs only response/check states, never result bodies or metadata", async () => {
+  it("success emits no temporary diagnostics or result bodies/metadata", async () => {
     const d = diagnostics(), f = fixture(); const secret = "SECRET_SUCCESS_CONTENT";
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: secret }] }, secret: token });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("ok");
-    expect(d.records()).toEqual([
-      { stage: "transport", reason: "response_received", correlationAvailable: true, requestId: "event:1" },
-      { stage: "api_check", reason: "check_passed", correlationAvailable: true, requestId: "event:1" },
-    ]);
+    expect(d.records()).toEqual([]);
     for (const value of [secret, token, "synthetic.slack.com", "U2", "C1", "T1", "launch", ts(2)]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
   });
 });
@@ -498,7 +465,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     expect(result.messages[0]).toEqual({ channel: "C1", ts: ts(2), text: short, textTruncated: true,
       author: { userId: "U2", botId: null, kind: "participant" }, searchMatch: true, permalink: message(2).permalink });
     expect(result.messages).toHaveLength(2); expect(readOutput.safeParse(result).success).toBe(true);
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    expect(d.records()).toEqual([]);
     for (const value of [short, long, token, message(2).permalink, ts(2)]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
     expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
   });
@@ -507,7 +474,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
   ])("rejects unverified alternate representations %s / %s", async (primary, contextual) => {
     const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(primary, contextual) } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_text_relation" });
+    expect(d.records()).toEqual([]);
   });
   it.each([
     [{ user_id: "UOTHER" }, "cross_role_user"],
@@ -515,17 +482,16 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     [{ thread_ts: ts(3) }, "cross_role_thread"],
     [{ user_id: "UOTHER", is_author_bot: true, thread_ts: ts(3) }, "cross_role_user"],
     [{ is_author_bot: true, thread_ts: ts(3) }, "cross_role_kind"],
-  ])("reports first metadata failure in users → kinds → threads order: %j", async (meta, failure) => {
+  ])("rejects incompatible user/kind/thread metadata: %j", async (meta, _failure) => {
     const d = diagnostics(), f = fixture(); const messages = pair(short, long, meta).map((m, index) => index === 0 ? { ...m, thread_ts: ts(1) } : m);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
-    expect(d.records()).toHaveLength(3);
-    expect(d.records().at(-1)).toMatchObject({ failure, primaryKindSource: "explicit_participant" });
+    expect(d.records()).toEqual([]);
     // Metadata failure precedes even a text-relation failure, matching the old OR guard.
     d.spy.mockClear();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, "not a prefix", meta).map((m, i) => i === 0 ? { ...m, thread_ts: ts(1) } : m) } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure });
+    expect(d.records()).toEqual([]);
   });
   it.each([
     [{ is_author_bot: false }, "participant", "explicit_participant", "cross_role_thread"],
@@ -535,12 +501,11 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     [{ bot_id: "BOTHER" }, "bot", "explicit_bot", "cross_role_kind"],
     [{ is_author_bot: false, bot_id: "BOTHER" }, "mixed", "mixed", "cross_role_kind"],
     [{}, "none", "unknown", "cross_role_thread"],
-  ])("distinguishes parsed explicit false / absent / bot presence without changing projection: %j", async (meta, contextKnownKinds, contextKindSource, failure) => {
+  ])("rejects explicit kind or thread contradictions with false / absent / bot presence: %j", async (meta, _contextKnownKinds, _contextKindSource, _failure) => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, { ...meta as object, thread_ts: ts(3) }).map((m, i) => i === 0 ? { ...m, thread_ts: ts(1) } : m) } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure, primaryKnownKinds: "participant", contextKnownKinds,
-      primaryKindSource: "explicit_participant", contextKindSource });
+    expect(d.records()).toEqual([]);
   });
   it("preserves successful prefix output/partial and unknown wildcard without explicit false", async () => {
     const d = diagnostics(), f = fixture();
@@ -549,21 +514,20 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     const result = await f.reader.search({ query: "launch" }, f.context);
     expect(result).toMatchObject({ status: "ok", complete: false, truncated: true,
       messages: [{ text: short, textTruncated: true, author: { kind: "bot" } }, {}] });
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    expect(d.records()).toEqual([]);
     for (const field of ["kindSources", "primaryKindSource", "contextKindSource", "failure"]) expect(JSON.stringify(result)).not.toContain(field);
     d.spy.mockImplementation(() => { throw new Error(token); });
     f.apiCall.mockResolvedValueOnce(response());
     expect(await f.reader.search({ query: "launch" }, f.context)).toEqual(result);
   });
-  it("metadata logger throw preserves first guard failure, cursor unlock, seed and successful retry", async () => {
+  it("metadata guard failure preserves cursor unlock, seed and successful retry even with a throwing logger", async () => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(6)] }, next_cursor: "next" });
     const first = await f.reader.search({ query: "launch" }, f.context);
     d.spy.mockClear(); d.spy.mockImplementation(() => { throw new Error(token); });
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, { is_author_bot: true }) } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
-    expect(d.records()).toHaveLength(3);
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKindSource: "explicit_participant", contextKindSource: "explicit_bot" });
+    expect(d.records()).toEqual([]);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2, complete: false, messages: [{ text: short, textTruncated: true }, {}] });
     expect(f.apiCall).toHaveBeenCalledTimes(3);
@@ -575,29 +539,26 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     expect(result).toMatchObject({ status: "ok", source: { channel: "C1" }, complete: false, truncated: true,
       messages: [{ text: short, textTruncated: true, author: { kind: "bot", userId: "U2" }, searchMatch: true }, {}] });
     expect(result.messages[0]).not.toHaveProperty("threadTs");
-    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    expect(d.records()).toEqual([]);
   });
   it.each([{ is_author_bot: false }, { is_author_bot: false, user_id: "U2" }, { is_author_bot: false, bot_id: "BOTHER" }])("rejects explicit false vs primary bot even when projected system/bot: %j", async meta => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, meta).map((m, i) => i === 0 ? { ...m, is_author_bot: true } : m) } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKnownKinds: "bot",
-      contextKnownKinds: "bot_id" in meta ? "mixed" : "participant", primaryKindSource: "explicit_bot",
-      contextKindSource: "bot_id" in meta ? "mixed" : "explicit_participant" });
+    expect(d.records()).toEqual([]);
   });
   it.each([{ is_author_bot: true }, { bot_id: "BOTHER" }, { is_author_bot: true, bot_id: "BOTHER", user_id: "U2" }])("accepts explicit bot context vs primary bot: %j", async meta => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, meta).map((m, i) => i === 0 ? { ...m, is_author_bot: true } : m) } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok", complete: false,
       messages: [{ author: { kind: "bot", botId: null }, text: short, textTruncated: true }, {}] });
-    expect(d.records()).toHaveLength(2);
+    expect(d.records()).toEqual([]);
   });
   it.each([{ is_author_bot: true }, { bot_id: "BOTHER" }])("primary explicit false is known participant even with system projection: %j", async meta => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, meta).map((m, i) => i === 0 ? { ...m, author_user_id: undefined } : m) } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKnownKinds: "participant", contextKnownKinds: "bot",
-      primaryKindSource: "explicit_participant", contextKindSource: "explicit_bot" });
+    expect(d.records()).toEqual([]);
   });
   it.each([
     [true, false, false], [true, false, true], [true, true, false], [true, true, true],
@@ -613,12 +574,11 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     ] } });
     f.apiCall.mockResolvedValueOnce(response(true));
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_thread", primaryKnownKinds: bot ? "bot" : "participant",
-      contextKnownKinds: bot ? "bot" : "participant", primaryKindSource: bot ? "explicit_bot" : "explicit_participant", contextKindSource: "mixed" });
+    expect(d.records()).toEqual([]);
     d.spy.mockClear(); f.apiCall.mockResolvedValueOnce(response());
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok", complete: false,
       messages: [{ text: short, textTruncated: true, author: { kind: bot ? "bot" : "participant" } }, {}] });
-    expect(d.records()).toHaveLength(2);
+    expect(d.records()).toEqual([]);
   });
   it("preserves unknown context wildcard even when all primary observations contain a known contradiction", async () => {
     const d = diagnostics(), f = fixture();
@@ -629,7 +589,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     ] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok", complete: false,
       messages: [{ text: short, textTruncated: true, searchMatch: true, author: { kind: "system", userId: null, botId: null } }, {}] });
-    expect(d.records()).toHaveLength(2);
+    expect(d.records()).toEqual([]);
   });
   it.each([true, false])("earlier context true/false contradiction survives latest omission against primary %s", async bot => {
     const d = diagnostics(), f = fixture();
@@ -640,8 +600,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       ] } },
     ] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKnownKinds: bot ? "bot" : "participant",
-      contextKnownKinds: "mixed", contextKindSource: "mixed" });
+    expect(d.records()).toEqual([]);
   });
   it.each([
     [{ user_id: "U2" }, "participant"], [{ is_author_bot: false }, "system"],
@@ -667,8 +626,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       { ...message(4), context_messages: { before: observations } },
     ] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_kind", primaryKnownKinds: "mixed", contextKnownKinds: "mixed",
-      primaryKindSource: "mixed", contextKindSource: "mixed" });
+    expect(d.records()).toEqual([]);
     for (const value of [short, long, ts(2), "U2", token]) expect(JSON.stringify(d.records())).not.toContain(value);
   });
   it.each(["primary", "context"])("does not hide same-%s prefix conflicts behind the alternate role", async role => {
@@ -678,7 +636,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     ];
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "same_role_text", priorRole: role, currentRole: role });
+    expect(d.records()).toEqual([]);
   });
   it("reads role hashes back independently, never overwrites primary with context, and retries failures", async () => {
     const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() }, next_cursor: "next1" });
@@ -699,7 +657,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     const first = await f.reader.search({ query: "launch" }, f.context);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(2), content: short }] } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_seed_unverified", priorRole: "context", currentRole: "primary", priorOrigin: "cursor", comparisonAvailable: false });
+    expect(d.records()).toEqual([]);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false,
       messages: [{ ts: ts(2), text: short, textTruncated: true, searchMatch: true, permalink: message(2).permalink }] });
@@ -746,8 +704,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       { ...message(5), context_messages: { before: [contextObjects[1]] } },
     ] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
-    expect(d.records().at(-1)).toMatchObject({ failure: field === "thread" ? "cross_role_thread" : field === "kind" ? "cross_role_kind" : "cross_role_user",
-      contextKindSource: field === "thread" ? "unknown" : "mixed" });
+    expect(d.records()).toEqual([]);
   });
   it.each([[false, false], [false, true], [true, false], [true, true]])("keeps unknown metadata a wildcard without synthesizing primary provenance (%s/%s)", async (primaryKnown, contextKnown) => {
     const f = fixture();
@@ -786,20 +743,19 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     [{ user_id: "UOTHER" }, long, "cross_role_user"],
     [{ user_id: "U2", thread_ts: ts(3) }, long, "cross_role_thread"],
     [{ user_id: "U2" }, "nonprefix", "cross_role_text_relation"],
-  ])("unknown context kind cannot bypass bot-primary user/thread/text guard: %j", async (meta, text, failure) => {
+  ])("unknown context kind cannot bypass bot-primary user/thread/text guard: %j", async (meta, text, _failure) => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, text, meta).map((m, i) =>
       i === 0 ? { ...m, is_author_bot: true, thread_ts: ts(1) } : m) } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
-    expect(d.records().at(-1)).toMatchObject({ failure, primaryKnownKinds: "bot", contextKnownKinds: "none",
-      primaryKindSource: "explicit_bot", contextKindSource: "inferred_participant" });
+    expect(d.records()).toEqual([]);
   });
   it("rejects primary-only cursor seed versus a longer context without current-page primary evidence", async () => {
     const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(0, 1) }, next_cursor: "next" });
     const first = await f.reader.search({ query: "launch" }, f.context);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(1) } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
-    expect(d.records().at(-1)).toMatchObject({ failure: "cross_role_seed_unverified", priorRole: "primary", currentRole: "context", comparisonAvailable: false });
+    expect(d.records()).toEqual([]);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false, messages: [{ ts: ts(4) }] });
   });

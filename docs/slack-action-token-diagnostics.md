@@ -1,4 +1,8 @@
-# Slack 검색 action_token 임시 안전 진단
+# Slack 검색 action_token 임시 안전 진단 (아카이브)
+
+> **현재 코드: 임시 진단 제거됨.** 아래 전달 조사·로그 계약·운영 절차·전용 테스트 목록은 과거 이력이며 현재 emit 계약이 아니다. `action-token-diagnostics.ts`, 진단 correlation/alias WeakMap, SDK 공개 observer 및 receiver customPropertiesExtractor, `disposeDiagnostics` API를 제거했다. 실제 `event.action_token` 단일 선택, 기존 validation, 비공개 identity/token WeakMap, 표준 단일 receiver/client와 Bolt INFO ConsoleLogger/retry/customRoutes/port/start/stop은 유지한다. `@slack/logger` 직접 의존성도 유지한다.
+>
+> main의 PR105 운영 요약에서 기본 실제 검색(정직한 partial)과 PR103 독립 thread read(3페이지 complete)는 PASS다. **이 제거 코드의 배포 후 재검증은 아직 미수행**이며 main 책임이다. 과거 관측을 모든 검색·20 matches·전체 query pagination·다른 requester E2E로 일반화하지 않는다. 새 이벤트 실제 검색/독립 thread read·출처 대조와 임시 3종 emit 부재 확인 뒤 최종 완료를 판단한다. 현재 합성 회귀는 `action-token-validation.test.ts`, handler/socket/registered-tool 테스트에서 validation·authority·privacy·진단 부재를 유지한다.
 
 후속 운영 근거와 API 이후 실패 단계 관측은 [검색 응답 검증 임시 진단](slack-search-response-diagnostics.md)을 참고한다. 아래 초기 absent 관측과 새 usable=true 관측은 서로 다른 요청이다.
 

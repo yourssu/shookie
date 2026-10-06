@@ -26,13 +26,12 @@ import { createSocketModeApp } from "./socket-mode-app.js";
 import { registerHandlers } from "./handlers.js";
 import { logger } from "../logger.js";
 import { SlackReader, type SlackReadClient } from "../tools/slack/client.js";
-import { logSlackSocketTokenBoundary } from "../tools/slack/action-token-diagnostics.js";
+import { getSlackReadIdentity, getSlackSearchActionToken } from "../tools/slack/context.js";
 
 const TOKEN = "SYNTHETIC_ACTION_SECRET";
 const ALTERNATE = "ALTERNATE_ACTION_SECRET";
-const cleanups: (() => void)[] = [];
 function records() {
-  return vi.mocked(logger.info).mock.calls.filter(c => c[0] === "slack_action_token_diagnostic").map(c => c[1] as Record<string, unknown>);
+  return vi.mocked(logger.info).mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(name as string));
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -41,11 +40,9 @@ beforeEach(() => {
     return { ok: true, ts: "reply" };
   });
 });
-afterEach(() => { for (const dispose of cleanups.splice(0)) dispose(); vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); });
 function fixture() {
-  const f = createSocketModeApp({ token: "xoxb-synthetic", appToken: "xapp-synthetic" });
-  cleanups.push(f.disposeDiagnostics);
-  return f;
+  return createSocketModeApp({ token: "xoxb-synthetic", appToken: "xapp-synthetic" });
 }
 const human = () => ({ type: "app_mention", channel: "C1", user: "U1", ts: "1700000000.000001", text: "<@BOT> launch" });
 const envelope = (event: unknown = human()) => ({ type: "event_callback", event_id: "EvSYNTHETIC0001", team_id: "T1", event });
@@ -70,8 +67,9 @@ describe("installed SDK public events → receiver → authenticated Bolt handle
     const reader = new SlackReader({ auth: { test: vi.fn(async () => ({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" })) },
       conversations: { info: vi.fn(async () => ({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } })),
         members: vi.fn(async () => ({ ok: true, members: ["U1"] })), history: vi.fn(), replies: vi.fn() }, apiCall } as unknown as SlackReadClient);
-    let result: unknown;
+    let result: unknown, boundContext: object | undefined;
     const stream = vi.fn(async (_messages, options) => {
+      boundContext = options.requestContext;
       result = await reader.search({ query: "launch" }, options.requestContext);
       return { fullStream: new ReadableStream({ start(c) { c.close(); } }), text: Promise.resolve("answer"),
         usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), steps: Promise.resolve([]), finishReason: Promise.resolve("stop") };
@@ -86,34 +84,27 @@ describe("installed SDK public events → receiver → authenticated Bolt handle
     expect(ack).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ status: usable ? "ok" : "unsupported" });
     const logs = records();
-    expect(logs.map(r => r.stage)).toEqual(["socket_sdk", "socket_receiver", "receive", "selection", "binding", "search", ...(usable ? ["search_api"] : [])]);
-    expect(logs[0]).toMatchObject({ eventCorrelationId: "slack-event:EvSYNTHETIC0001", correlationTrust: "untrusted_event_id",
-      sdkBodyAlias: true, sdkEventAlias: true, receiverBodyAlias: false });
-    expect(logs[0]).not.toHaveProperty("requestId");
-    expect(logs[1]).toMatchObject({ sdkBodyAlias: true, sdkEventAlias: true, receiverBodyAlias: true });
-    expect(logs[2]).toMatchObject({ requestId: logs[0].eventCorrelationId, requestIdTrust: "authenticated_handler",
-      sdkBodyAlias: true, sdkEventAlias: true, receiverBodyAlias: true });
-    for (const r of logs.slice(0, 3)) expect(r).toMatchObject({ eventTokenUsable: usable, bodyEventTokenUsable: usable, bodyTokenUsable: alternate });
-    expect(logs.find(r => r.stage === "binding")).toMatchObject({ identityBound: true, tokenBound: usable });
+    expect(logs).toEqual([]);
+    expect(getSlackReadIdentity(boundContext)).toEqual({ userId: "U1", teamId: "T1", channel: "C1", requestId: "slack-event:EvSYNTHETIC0001" });
+    expect(getSlackSearchActionToken(boundContext)).toBe(usable ? TOKEN : undefined);
     expect(apiCall).toHaveBeenCalledTimes(usable ? 1 : 0);
     if (usable) expect(apiCall).toHaveBeenCalledWith("assistant.search.context", expect.objectContaining({ action_token: TOKEN }));
-    for (const value of [logs, stream.mock.calls.map(c => c[0]), complete.mock.calls, result]) {
+    for (const value of [vi.mocked(logger.info).mock.calls, stream.mock.calls.map(c => c[0]), complete.mock.calls, result]) {
       expect(JSON.stringify(value)).not.toContain(TOKEN); expect(JSON.stringify(value)).not.toContain(ALTERNATE);
     }
     expect(WebClient.prototype.apiCall).toHaveBeenCalledWith("auth.test", { token: "xoxb-synthetic" });
   });
 
-  it("contains observer logger exceptions without affecting actual receiver ack/delivery", async () => {
+  it("delivers and acknowledges through the standard receiver without temporary observers", async () => {
     const f = fixture();
     const delivery = vi.fn();
     f.app.event("app_mention", async () => { delivery(); });
-    vi.mocked(logger.info).mockImplementationOnce(() => { throw new Error(TOKEN); }).mockImplementationOnce(() => { throw new Error(TOKEN); });
     const ack = emitParsed(f, envelope());
     await vi.waitFor(() => expect(delivery).toHaveBeenCalledTimes(1));
     expect(ack).toHaveBeenCalledTimes(1);
   });
 
-  it("uses one receiver/client, preserves constructor auth defaults and removes only diagnostic listeners", async () => {
+  it("uses one receiver/client, preserves constructor auth defaults and installs no diagnostic plumbing", async () => {
     const f = fixture();
     expect(SocketModeReceiver).toHaveBeenCalledTimes(1); expect(App).toHaveBeenCalledTimes(1);
     const opts = vi.mocked(App).mock.calls[0][0]!;
@@ -126,7 +117,8 @@ describe("installed SDK public events → receiver → authenticated Bolt handle
     expect(vi.mocked(SocketModeReceiver).mock.calls[0][0].installerOptions?.clientOptions).toMatchObject({ logger: opts.logger });
     expect(f.receiver.client.listenerCount("slack_event")).toBe(1);
     const delivery = vi.fn(); f.app.event("app_mention", async () => { delivery(); });
-    f.disposeDiagnostics(); f.disposeDiagnostics();
+    expect(vi.mocked(SocketModeReceiver).mock.calls[0][0]).not.toHaveProperty("customPropertiesExtractor");
+    expect(f).not.toHaveProperty("disposeDiagnostics");
     expect(f.receiver.client.listenerCount("app_mention")).toBe(0); expect(f.receiver.client.listenerCount("message")).toBe(0);
     expect(f.receiver.client.listenerCount("slack_event")).toBe(1);
     emitParsed(f, envelope());
@@ -145,7 +137,7 @@ describe("installed SDK public events → receiver → authenticated Bolt handle
     expect(ack).toHaveBeenCalledTimes(1);
   });
 
-  it("removes observer listeners if App construction fails before startup", () => {
+  it("propagates App construction failure without installing observers or starting a connection", () => {
     vi.mocked(App).mockImplementationOnce(() => { throw new Error("synthetic constructor failure"); });
     expect(() => fixture()).toThrow("synthetic constructor failure");
     const receiver = vi.mocked(SocketModeReceiver).mock.results[0].value as SocketModeReceiver;
@@ -169,7 +161,6 @@ describe("installed SDK public events → receiver → authenticated Bolt handle
     const callback = vi.fn((_req, res) => { res.writeHead(200); res.end("synthetic callback"); });
     const f = createSocketModeApp({ token: "xoxb-synthetic", appToken: "xapp-synthetic",
       customRoutes: [{ path: "/user/oauth/callback", method: "GET", handler: callback }], installerOptions: { port } });
-    cleanups.push(f.disposeDiagnostics);
     const start = vi.spyOn(f.receiver.client, "start").mockResolvedValue({ ok: true });
     const disconnect = vi.spyOn(f.receiver.client, "disconnect").mockResolvedValue(undefined);
     try {
@@ -177,56 +168,7 @@ describe("installed SDK public events → receiver → authenticated Bolt handle
       expect(await (await fetch(`http://127.0.0.1:${port}/user/oauth/callback?code=synthetic`)).text()).toBe("synthetic callback");
       expect(callback).toHaveBeenCalledTimes(1); expect(start).toHaveBeenCalledTimes(1);
       expect(SocketModeReceiver).toHaveBeenCalledTimes(1);
-    } finally { f.disposeDiagnostics(); await f.app.stop(); }
+    } finally { await f.app.stop(); }
     expect(disconnect).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("fixed-slot fail-safe Socket Mode projection", () => {
-  it("never executes getters, proxy traps, toJSON or malformed/irrelevant event logging", () => {
-    const trap = vi.fn(() => { throw new Error(TOKEN); });
-    const proxy = new Proxy({}, { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap });
-    const revoked = Proxy.revocable({}, {}); revoked.revoke();
-    for (const args of [undefined, null, 1, {}, proxy, revoked.proxy,
-      { type: "hello" }, { type: "disconnect" }, { body: { type: "block_actions" } },
-      { body: envelope({ ...human(), type: "reaction_added" }) },
-      { body: envelope({ ...human(), type: "message", channel_type: "channel" }) },
-      { body: envelope({ ...human(), bot_id: "B1" }) }, { body: envelope({ ...human(), subtype: "bot_message" }) },
-      { body: envelope(proxy) }, { body: envelope(Object.defineProperty(human(), "user", { get: trap })) },
-      Object.defineProperty({}, "body", { get: trap }), { body: Object.defineProperty(envelope(), "event", { get: trap }) }]) {
-      logSlackSocketTokenBoundary("socket_sdk", args); logSlackSocketTokenBoundary("socket_receiver", args);
-    }
-    expect(records()).toEqual([]);
-    const event = Object.defineProperties(human(), { action_token: { get: trap }, text: { get: trap }, files: { get: trap }, toJSON: { get: trap } });
-    const body = Object.defineProperty(envelope(event), "action_token", { value: { toJSON: trap } });
-    const args = Object.defineProperty({ body, event }, "ack", { get: trap });
-    logSlackSocketTokenBoundary("socket_sdk", args); logSlackSocketTokenBoundary("socket_receiver", args);
-    expect(records()[0]).toMatchObject({ eventTokenObservation: "accessor", eventTokenPresent: true, eventTokenUsable: false, bodyTokenPresent: true, bodyTokenUsable: false });
-    expect(trap).not.toHaveBeenCalled(); expect(JSON.stringify(records())).not.toContain(TOKEN);
-  });
-
-  it("reports separate SDK event vs body.event candidates and does not claim alias equality", () => {
-    const body = envelope({ ...human(), action_token: TOKEN });
-    logSlackSocketTokenBoundary("socket_sdk", { body, event: human() });
-    logSlackSocketTokenBoundary("socket_receiver", { body });
-    expect(records()[0]).toMatchObject({ sdkBodyAlias: true, sdkEventAlias: false, eventTokenUsable: false, bodyEventTokenUsable: true });
-    expect(records()[1]).toMatchObject({ sdkBodyAlias: true, sdkEventAlias: false, eventTokenUsable: true, bodyEventTokenUsable: true });
-    const allowed = new Set(["stage", "eventKind", "correlationTrust", "correlationAvailable", "eventCorrelationId",
-      "sdkBodyAlias", "sdkEventAlias", "receiverBodyAlias", "eventTokenObservation", "eventTokenPresent", "eventTokenUsable",
-      "bodyEventTokenObservation", "bodyEventTokenPresent", "bodyEventTokenUsable", "bodyTokenObservation", "bodyTokenPresent", "bodyTokenUsable",
-      "contextTokenObservation", "contextTokenPresent", "contextTokenUsable"]);
-    for (const r of records()) for (const [key, value] of Object.entries(r)) {
-      expect(allowed.has(key)).toBe(true); expect(["boolean", "string"]).toContain(typeof value);
-    }
-    expect(JSON.stringify(records())).not.toContain(TOKEN);
-  });
-
-  it.each([undefined, TOKEN, "Ev" + "A".repeat(63), "EvSECRET\n12345", {}, 42])("omits nonconforming untrusted correlation IDs", event_id => {
-    const body = { ...envelope(), event_id };
-    logSlackSocketTokenBoundary("socket_sdk", { body, event: body.event });
-    expect(records()[0]).toMatchObject({ correlationAvailable: false, correlationTrust: "untrusted_event_id" });
-    expect(records()[0]).not.toHaveProperty("eventCorrelationId");
-    expect(records()[0]).not.toHaveProperty("requestId");
-    expect(JSON.stringify(records())).not.toContain(TOKEN);
   });
 });

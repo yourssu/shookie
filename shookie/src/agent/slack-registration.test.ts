@@ -135,7 +135,7 @@ describe("actual main Slack tool registration", () => {
       expect(repository.complete).toHaveBeenCalledTimes(2);
     } finally { spy.mockRestore(); }
   });
-  it.each([["slack_search", false], ["slack_search", true], ["slack_read_thread", false]] as const)("correlates registered %s failures (metadata=%s) via real handler WeakMap and keeps tool logger/DB redaction", async (toolName, metadata) => {
+  it.each([["slack_search", false], ["slack_search", true], ["slack_read_thread", false]] as const)("preserves registered %s failures (metadata=%s) via real handler WeakMap and tool logger/DB redaction without temporary emits", async (toolName, metadata) => {
     vi.mocked(logger.info).mockClear(); vi.mocked(logger.debug).mockClear(); vi.mocked(logToolCall).mockClear();
     const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient });
     const tools = await main.listTools();
@@ -171,18 +171,13 @@ describe("actual main Slack tool registration", () => {
       await callbacks.get("app_mention")!({ event: { channel: "C1", user: "U1", ts: root, text: "진단 요청", action_token: "PRIVATE_ACTION" },
         body: { team_id: "T1", event_id: `registered-failure-${toolName}` }, context: { botUserId: "UBOT" } });
       expect(results[0]).toMatchObject({ status: "unavailable", messages: [], nextCursor: null, complete: false });
-      const name = toolName === "slack_search" ? "slack_search_response_diagnostic" : "slack_read_response_diagnostic";
-      const records = vi.mocked(logger.info).mock.calls.filter(([message]) => message === name).map(([, record]) => record);
-      expect(records).toHaveLength(toolName === "slack_search" ? 3 : 1);
-      expect(records.at(-1)).toMatchObject({ requestId: `slack-event:registered-failure-${toolName}`, correlationAvailable: true,
-        ...(toolName === "slack_search" ? { reason: "fingerprint_conflict", priorRole: "primary", currentRole: metadata ? "context" : "primary", priorOrigin: "page",
-          failure: metadata ? "cross_role_kind" : "same_role_text",
-          primaryKnownKinds: metadata ? "bot" : "none", contextKnownKinds: metadata ? "participant" : "none",
-          primaryKindSource: metadata ? "explicit_bot" : "unknown", contextKindSource: metadata ? "explicit_participant" : "unknown" } : { kind: "thread", reason: "root_reply_count_invalid" }) });
+      const records = vi.mocked(logger.info).mock.calls.filter(([message]) =>
+        ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(message as string));
+      expect(records).toEqual([]);
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName, input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
       for (const secret of ["PRIVATE_FIRST", "PRIVATE_SECOND", "PRIVATE_ROOT", "PRIVATE_ACTION"]) expect(logs).not.toContain(secret);
-      // Existing streaming logs include event IDs; this PR only promises identifier-free new diagnostics.
+      // Existing streaming logs remain; temporary diagnostic records are absent.
       const diagnosticLogs = JSON.stringify(records);
       for (const secret of [root, "1700000000.000003", "C1", "T1", "U1", "U2"]) expect(diagnosticLogs).not.toContain(secret);
       expect(repository.complete).toHaveBeenCalledTimes(1);

@@ -63,7 +63,7 @@ async function main() {
   const agent = createAgent();
 
   // 4. Slack 앱 초기화
-  const { app, disposeDiagnostics } = createSocketModeApp({
+  const { app } = createSocketModeApp({
     token: config.SLACK_BOT_TOKEN,
     appToken: config.SLACK_APP_TOKEN,
     ...(userOAuth && userOAuthConfig
@@ -116,19 +116,17 @@ async function main() {
   try {
     await app.start();
   } catch (error) {
-    disposeDiagnostics();
     await app.stop();
     throw error;
   }
   logger.info("슈키가 시작되었습니다! 🚀");
 
-  // 7. 단일 Socket Mode 연결과 진단 listener, DB 연결 정리
+  // 7. 단일 Socket Mode 연결과 DB 연결 정리
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info("종료 중...");
-    disposeDiagnostics();
     try {
       await app.stop();
     } finally {

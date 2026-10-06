@@ -1,6 +1,12 @@
-# Slack 검색 응답 검증 임시 안전 진단
+# Slack 검색 응답 검증 임시 안전 진단 (아카이브)
 
-> PR99~104 항목은 당시 정책/관측의 이력이다. 현재 kind 호환성 및 knownKinds 진단 의미는 아래 **PR104 후속: 명시적 kind 지식과 출력 추론 분리**를 따른다. 기존 PR104 로그의 projected Set을 새 explicit-known Set으로 소급 해석하지 않는다.
+> **현재 코드: 임시 진단 제거됨.** 아래 로그 계약·진단 필드·당시 테스트/운영 절차는 과거 이력이며 현재 emit 계약이 아니다. `search-diagnostics.ts`의 첫 Zod issue 요약·permalink predicate·role 비교/로거 및 source-only 집계를 제거했다. 기능용 KindEvidence의 bot/participant 캐시, PageMetadata의 users/knownKinds/threads, pageObserved는 유지한다. 아래 명시적 kind 지식과 known query 정규화 기능 가드는 그대로이며 오래된 projected-kind 진단을 현재 explicit-known Set으로 소급 해석하지 않는다.
+>
+> **main이 전달한 제거 전 실제 근거:** PR105 배포 및 live SHA/restarts=0 확인 뒤 search-only 새 이벤트에서 실제 searchMatch·원문/수정 댓글 출처 대조가 PASS였다. 검색은 complete=false/truncated=true/nextCursor=null/textTruncated=true인 정직한 partial이다. PR103 독립 thread read는 3페이지 complete PASS다(안전 요약: `/tmp/shookie-e2e/pr105-results.md`). history fallback을 검색 PASS로 대체하지 않았다. 20 matches/전체 query pagination/다른 requester E2E는 미검증이다.
+>
+> **현재 제거 코드 vs 운영 완료:** 임시 action-token/search/read 3종 emit 및 전용 plumbing을 코드에서 제거했지만 이 변경의 배포 후 실제 재검증은 아직 미수행이다. main이 최종 SHA 전체 diff·fresh review·pinned squash·deploy SUCCESS/live SHA/restarts=0 확인 후 새 Slack 이벤트 실제 검색과 독립 thread read·출처/도구 결과 및 3종 임시 emit 부재를 재검증해야 한다. worker는 merge/배포/서버/E2E를 실행하지 않는다. stop/exit/cleanup_completed까지 main이 확인한 뒤 최종 완료로 보고한다.
+
+## 과거 근거 및 진단 계약 (아카이브)
 
 ## 현재 근거와 범위
 
