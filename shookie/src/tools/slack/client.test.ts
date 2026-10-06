@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../../logger.js";
+import { unavailable } from "./errors.js";
 import { RequestContext } from "@mastra/core/request-context";
 import { SlackReader, type SlackReadClient } from "./client.js";
 import { bindSlackReadContext } from "./context.js";
-import { readOutput } from "./schemas.js";
+import { readOutput, slackTs } from "./schemas.js";
 
 const root = "1700000000.000001";
 const reply = (n: number) => ({ ts: `1700000000.${String(n).padStart(6, "0")}`, thread_ts: root, user: "U2", text: `reply ${n}` });
@@ -24,6 +26,182 @@ function fixture() {
   const client = { auth: { test: auth }, conversations: { info, members, replies, history } } as unknown as SlackReadClient;
   return { reader: new SlackReader(client), client, auth, info, members, replies, history, ctx: context() };
 }
+
+afterEach(() => vi.restoreAllMocks());
+function diagnostics() {
+  const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+  return { spy, records: () => spy.mock.calls.filter(([name]) => name === "slack_read_response_diagnostic").map(([, record]) => record as Record<string, unknown>) };
+}
+function localUnavailable() {
+  try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
+}
+
+describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
+  it.each([
+    ["response_warning", { ok: true, warning: "PRIVATE_WARNING", messages: [] }],
+    ["metadata_warning", { ok: true, response_metadata: { warnings: ["PRIVATE_WARNING"] }, messages: [] }],
+    ["messages_shape_invalid", { ok: true }],
+    ["messages_shape_invalid", { ok: true, messages: {} }],
+    ["result_limit_exceeded", { ok: true, messages: Array.from({ length: 16 }, () => reply(2)) }],
+    ["message_ts_invalid", { ok: true, messages: [{ ...reply(2), ts: "bad" }] }],
+    ["message_text_invalid", { ok: true, messages: [{ ...reply(2), text: null }] }],
+    ["message_channel_mismatch", { ok: true, messages: [{ ...reply(2), channel: "COTHER" }] }],
+    ["message_team_mismatch", { ok: true, messages: [{ ...reply(2), team: "TOTHER" }] }],
+    ["message_thread_ts_invalid", { ok: true, messages: [{ ...reply(2), thread_ts: "bad" }] }],
+    ["message_user_invalid", { ok: true, messages: [{ ...reply(2), user: "PRIVATE_USER" }] }],
+    ["message_bot_id_invalid", { ok: true, messages: [{ ...reply(2), bot_id: "PRIVATE_BOT" }] }],
+    ["thread_parent_mismatch", { ok: true, messages: [{ ...reply(2), thread_ts: undefined }] }],
+    ["thread_relation_mismatch", { ok: true, messages: [{ ts: root, text: "PRIVATE_BODY", thread_ts: reply(3).ts }] }],
+    ["thread_time_invalid", { ok: true, messages: [reply(0)] }],
+    ["root_reply_count_invalid", { ok: true, messages: [{ ts: root, text: "PRIVATE_BODY", reply_count: -1 }] }],
+    ["root_reply_count_invalid", { ok: true, messages: [{ ts: root, text: "PRIVATE_BODY", reply_count: 1.5 }] }],
+    ["root_missing", { ok: true, messages: [reply(2)] }],
+    ["root_missing", { ok: true, messages: [] }],
+    ["fingerprint_conflict", { ok: true, messages: [{ ts: root, text: "PRIVATE_BODY", reply_count: 1 }, reply(2), { ...reply(2), text: "PRIVATE_CONFLICT" }] }],
+  ])("records only the first local %s with unchanged unavailable output", async (reason, raw) => {
+    const d = diagnostics(), f = fixture(); f.replies.mockResolvedValueOnce(raw);
+    const result = await f.reader.read("thread", { ts: root }, f.ctx);
+    expect(result).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null, page: 0, complete: false });
+    expect(readOutput.safeParse(result).success).toBe(true);
+    expect(d.records()).toHaveLength(1);
+    expect(d.records()[0]).toMatchObject({ reason, kind: "thread", requestId: "event:1", correlationAvailable: true });
+    expect(Object.keys(d.records()[0]).sort()).toEqual(["correlationAvailable", "kind", "reason", "requestId", "stage"]);
+    for (const secret of ["PRIVATE_WARNING", "PRIVATE_USER", "PRIVATE_BOT", "PRIVATE_BODY", "PRIVATE_CONFLICT", root, "C1", "COTHER", "T1", "TOTHER", "U1"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(secret);
+    expect(f.replies).toHaveBeenCalledTimes(1); expect(f.history).not.toHaveBeenCalled();
+  });
+  it("leaves channel/thread success, actor roles, missing/count drift and truncation unchanged and silent", async () => {
+    const d = diagnostics(), f = fixture();
+    expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "ok", complete: true, messages: [{ text: "original" }, {}, { author: { kind: "bot" } }] });
+    expect(await f.reader.read("channel", {}, f.ctx)).toMatchObject({ status: "ok", messages: [], complete: true });
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, thread_ts: root, text: "PRIVATE_BODY" }, reply(2)] });
+    expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "ok", complete: false });
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "root", reply_count: 2 }], response_metadata: { next_cursor: "PRIVATE_CURSOR" } });
+    const first = await f.reader.read("thread", { ts: root }, f.ctx);
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "root", reply_count: 3 }, reply(2), reply(3)] });
+    expect(await f.reader.read("thread", { ts: root, cursor: first.nextCursor }, f.ctx)).toMatchObject({ status: "ok", complete: false, truncated: true });
+    f.history.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "😀".repeat(10_000) }] });
+    expect(await f.reader.read("channel", {}, f.ctx)).toMatchObject({ status: "ok", truncated: true });
+    expect(d.records()).toEqual([]);
+  });
+  it("keeps preflight/auth/transport/check classifications and public statuses without inspecting error content", async () => {
+    const d = diagnostics(), f = fixture();
+    const cases = [
+      [() => f.reader.read("thread", { ts: root }, {}), "identity_failed", "access_denied"],
+      [() => f.reader.read("thread", { ts: "invalid" }, f.ctx), "input_failed", "invalid_target"],
+      [() => f.reader.read("thread", { ts: root, channel: "COTHER" }, f.ctx), "target_failed", "access_denied"],
+      [() => f.reader.read("thread", { ts: root, cursor: "PRIVATE_CURSOR" }, f.ctx), "cursor_invalid", "invalid_target"],
+    ] as const;
+    for (const [run, reason, status] of cases) { d.spy.mockClear(); expect((await run()).status).toBe(status); expect(d.records()).toHaveLength(1); expect(d.records()[0]).toMatchObject({ reason }); }
+    f.members.mockResolvedValueOnce({ ok: true, members: [] });
+    expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("access_denied");
+    expect(d.records().at(-1)).toMatchObject({ reason: "authorization_failed", stage: "authorization" });
+    f.replies.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter: 30, message: "PRIVATE_ERROR" });
+    expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "rate_limited", retryAfterSeconds: 30 });
+    expect(d.records().at(-1)).toMatchObject({ reason: "api_call_failed", stage: "transport" });
+    f.history.mockResolvedValueOnce({ ok: false, error: "missing_scope", token: "PRIVATE_TOKEN" });
+    expect((await f.reader.read("channel", {}, f.ctx)).status).toBe("access_denied");
+    expect(d.records().at(-1)).toMatchObject({ kind: "channel", reason: "check_failed", stage: "api_check" });
+    for (const value of ["PRIVATE_ERROR", "PRIVATE_TOKEN", "missing_scope", "slack_webapi_rate_limited_error", "PRIVATE_CURSOR"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
+  });
+  it("classifies existing malformed/getter throws by stage without a second read or toJSON", async () => {
+    const d = diagnostics(), f = fixture(), execute = vi.fn(() => { throw new Error("PRIVATE_ERROR"); });
+    const cases = [
+      [Object.defineProperty({}, "ok", { get: execute }), "check_failed"],
+      [Object.defineProperty({ ok: true }, "warning", { get: execute }), "response_exception"],
+      [{ ok: true, messages: [null] }, "message_exception"],
+      [{ ok: true, messages: [Object.defineProperty({}, "ts", { get: execute })] }, "message_exception"],
+      [{ ok: true, messages: [Object.defineProperty({ ts: root, text: "body" }, "reply_count", { get: execute })] }, "root_reply_count_exception"],
+    ] as const;
+    for (const [raw, reason] of cases) {
+      execute.mockClear(); d.spy.mockClear(); f.replies.mockResolvedValueOnce(raw);
+      expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
+      expect(d.records()).toHaveLength(1); expect(d.records()[0]).toMatchObject({ reason });
+      expect(execute.mock.calls.length).toBe(raw === cases[2][0] ? 0 : 1);
+    }
+    const toJSON = vi.fn(() => { throw new Error("PRIVATE_ERROR"); });
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ...reply(2), toJSON }] });
+    expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
+    expect(toJSON).not.toHaveBeenCalled(); expect(JSON.stringify(d.spy.mock.calls)).not.toContain("PRIVATE_ERROR");
+  });
+  it("preserves exact original short-circuit access sequence for each failed message field", async () => {
+    const fields = ["ts", "text", "channel", "team", "thread_ts", "user", "bot_id"] as const;
+    const invalidValues = ["invalid", null, "COTHER", "TOTHER", "invalid", "invalid", "invalid"];
+    const originalGuard = (m: Record<string, any>) => !slackTs.safeParse(m.ts).success || typeof m.text !== "string" ||
+      (m.channel !== undefined && m.channel !== "C1") || (m.team !== undefined && m.team !== "T1") ||
+      (m.thread_ts !== undefined && !slackTs.safeParse(m.thread_ts).success) ||
+      (m.user !== undefined && !/^[UW][A-Z0-9]{1,63}$/.test(m.user)) ||
+      (m.bot_id !== undefined && !/^B[A-Z0-9]{1,63}$/.test(m.bot_id));
+    for (const [index, field] of fields.entries()) {
+      const trace: string[] = [], f = fixture(); const values = { ...reply(2), channel: "C1", team: "T1", bot_id: "B1", [field]: invalidValues[index] };
+      const raw = Object.fromEntries(fields.map(key => [key, undefined]));
+      for (const key of fields) Object.defineProperty(raw, key, { get: () => { trace.push(key); return values[key]; } });
+      expect(originalGuard(raw)).toBe(true); const expected = [...trace]; trace.length = 0;
+      f.history.mockResolvedValueOnce({ ok: true, messages: [raw] });
+      expect((await f.reader.read("channel", {}, f.ctx)).status).toBe("unavailable");
+      expect(trace).toEqual(expected);
+    }
+  });
+  it("preserves original thread relation/time and reply-count short-circuit access sequences", async () => {
+    const d = diagnostics();
+    const cases = [
+      { ...reply(2), thread_ts: undefined },
+      { ts: root, text: "body", thread_ts: reply(3).ts },
+      reply(0),
+      { ts: root, text: "body", reply_count: -1 },
+    ];
+    for (const values of cases) {
+      const trace: string[] = [], raw: Record<string, any> = {};
+      for (const key of ["ts", "text", "channel", "team", "thread_ts", "user", "bot_id", "reply_count"]) {
+        Object.defineProperty(raw, key, { get: () => { trace.push(key); return (values as Record<string, unknown>)[key]; } });
+      }
+      // Original validation expressions, used as an access-order oracle only.
+      const m = raw;
+      if (!slackTs.safeParse(m.ts).success || typeof m.text !== "string" ||
+          (m.channel !== undefined && m.channel !== "C1") || (m.team !== undefined && m.team !== "T1") ||
+          (m.thread_ts !== undefined && !slackTs.safeParse(m.thread_ts).success) ||
+          (m.user !== undefined && !/^[UW][A-Z0-9]{1,63}$/.test(m.user)) || (m.bot_id !== undefined && !/^B[A-Z0-9]{1,63}$/.test(m.bot_id))) throw new Error("bad fixture");
+      const threadFailure = (m.ts !== root && m.thread_ts !== root) || (m.thread_ts && m.thread_ts !== root) ||
+        BigInt(m.ts.replace(".", "")) < BigInt(root.replace(".", ""));
+      if (!threadFailure && m.ts === root) expect(m.reply_count !== undefined && (!Number.isSafeInteger(m.reply_count) || m.reply_count < 0)).toBe(true);
+      const expected = [...trace]; trace.length = 0;
+      const f = fixture(); f.replies.mockResolvedValueOnce({ ok: true, messages: [raw] });
+      expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
+      expect(trace).toEqual(expected);
+    }
+    expect(d.records().map(r => r.reason)).toEqual(["thread_parent_mismatch", "thread_relation_mismatch", "thread_time_invalid", "root_reply_count_invalid"]);
+  });
+  it("preserves response short-circuit getter order, including no extra Proxy/getter execution", async () => {
+    const d = diagnostics(), f = fixture(); const trace: string[] = [], toJSON = vi.fn();
+    const raw = new Proxy({ ok: true, warning: "PRIVATE_WARNING", response_metadata: {}, messages: [], toJSON }, {
+      get(target, key, receiver) { trace.push(String(key)); return Reflect.get(target, key, receiver); },
+    });
+    f.replies.mockResolvedValueOnce(raw);
+    expect((await f.reader.read("thread", { ts: root }, f.ctx)).status).toBe("unavailable");
+    expect(trace).toEqual(["then", "ok", "error", "warning"]); // Promise resolution + existing check + first guard only.
+    expect(d.records()[0]).toMatchObject({ reason: "response_warning" }); expect(toJSON).not.toHaveBeenCalled();
+  });
+  it("diagnoses the unchanged defensive page budget only, without logging sizes", async () => {
+    const d = diagnostics(), f = fixture(); const byteLength = Buffer.byteLength;
+    vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) => typeof value === "string" && value.includes('"author"') ? 24_001 : byteLength(value, encoding));
+    expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+    expect(d.records()).toEqual([{ kind: "thread", stage: "budget", reason: "budget_exceeded", correlationAvailable: true, requestId: "event:1" }]);
+  });
+  it("throwing logger leaves cursor conflict/finally unlock, cancel rejection, retry and provenance unchanged", async () => {
+    const d = diagnostics(), f = fixture();
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "root", reply_count: 1 }], response_metadata: { next_cursor: "PRIVATE_CURSOR" } });
+    const first = await f.reader.read("thread", { ts: root }, f.ctx);
+    d.spy.mockImplementation(() => { throw new Error("PRIVATE_ERROR"); });
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [], response_metadata: { next_cursor: "PRIVATE_CURSOR" } });
+    expect(await f.reader.read("thread", { ts: root, cursor: first.nextCursor }, f.ctx)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+    f.replies.mockRejectedValueOnce(new DOMException("PRIVATE_CANCEL", "AbortError"));
+    expect((await f.reader.read("thread", { ts: root, cursor: first.nextCursor }, f.ctx)).status).toBe("unavailable");
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [reply(2)] });
+    expect(await f.reader.read("thread", { ts: root, cursor: first.nextCursor }, f.ctx)).toMatchObject({ status: "ok", page: 2, complete: true, source: { channel: "C1", threadTs: root } });
+    expect(f.replies).toHaveBeenCalledTimes(4);
+    expect(d.records().map(r => r.reason)).toEqual(["cursor_replay", "api_call_failed"]);
+    for (const value of ["PRIVATE_CURSOR", "PRIVATE_ERROR", "PRIVATE_CANCEL"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
+  });
+});
 
 describe("bot-only current-channel Slack reads", () => {
   it("preserves originals and all bot actors, sorts chronologically and reports source/completeness", async () => {
