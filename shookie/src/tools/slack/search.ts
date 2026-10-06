@@ -4,7 +4,7 @@ import type { SlackReadClient } from "./client.js";
 import { authorizeCurrentSlackChannel, requireSlackReadIdentity } from "./authorization.js";
 import { getSlackSearchActionToken } from "./context.js";
 import { logSlackTokenSearch } from "./action-token-diagnostics.js";
-import { compareSlackSearchConflict, logSlackSearchConflictDiagnostic, logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues, type SearchDiagnosticReason } from "./search-diagnostics.js";
+import { compareSlackSearchConflict, logSlackSearchConflictDiagnostic, logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues, type SearchDiagnosticReason, type SearchConflictFailure, type SearchKnownKinds, type SearchKindSource } from "./search-diagnostics.js";
 import { check, deny, errorResult, failure, invalid, unavailable } from "./errors.js";
 import { searchInput, type ReadResult } from "./schemas.js";
 import { jsonTextPrefix } from "./projection.js";
@@ -27,7 +27,12 @@ const responseSchema = z.object({ results: z.object({ messages: z.array(searchMe
 type DeliveryRole = "primary" | "context";
 type RoleHashes = Partial<Record<DeliveryRole, string>>;
 type SearchMessage = ReadResult["messages"][number];
-type PageMetadata = { users: Set<string>; kinds: Set<string>; threads: Set<string> };
+type PageMetadata = { users: Set<string>; kinds: Set<string>; threads: Set<string>; kindSources: Set<SearchKindSource> };
+// Diagnostic summaries only. Projected kind remains the existing policy, not explicit knowledge.
+const summarizeKinds = (metadata?: PageMetadata): SearchKnownKinds => !metadata?.kinds.size ? "none" :
+  metadata.kinds.size > 1 ? "mixed" : metadata.kinds.has("bot") ? "bot" : "participant";
+const summarizeKindSources = (metadata?: PageMetadata): SearchKindSource => !metadata?.kindSources.size ? "unknown" :
+  metadata.kindSources.size > 1 ? "mixed" : metadata.kindSources.values().next().value!;
 type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, RoleHashes>;
   deliveredRoles: Record<string, DeliveryRole>; used: string[]; expires: number };
 const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 24_000 };
@@ -120,6 +125,8 @@ export class SlackSearcher {
       const data = response.data;
       if (data.warning || data.results.messages.length > limit) reject(data.warning ? "warning_present" : "result_limit_exceeded");
       const candidates: ReadResult["messages"] = [], contexts: ReadResult["messages"] = [];
+      // Bounded page-local side metadata from parsed values only; never output or cursor state.
+      const kindSources = new WeakMap<SearchMessage, SearchKindSource>();
       const validateScope = (m: { channel_id?: string; channel?: string; team_id?: string; team?: string }) => {
         if ((m.channel_id !== undefined && m.channel_id !== identity.channel) || (m.channel !== undefined && m.channel !== identity.channel) ||
             (m.team_id !== undefined && m.team_id !== identity.teamId) || (m.team !== undefined && m.team !== identity.teamId)) reject("scope_mismatch");
@@ -175,9 +182,12 @@ export class SlackSearcher {
           normalizedPermalink = normalizeSearchPermalink(url, permalink, access.workspaceHost!, identity.channel, m.message_ts, m.thread_ts);
           if (normalizedPermalink === undefined) rejectPermalink(url);
         }
-        candidates.push({ channel: identity.channel, ts: m.message_ts, text: m.content, textTruncated: false,
-          author: { userId: m.author_user_id ?? null, botId: null, kind: m.is_author_bot ? "bot" : m.author_user_id ? "participant" : "system" },
-          ...(m.thread_ts ? { threadTs: m.thread_ts } : {}), ...(normalizedPermalink ? { permalink: normalizedPermalink } : {}), searchMatch: true });
+        const primaryBot = m.is_author_bot, primaryUser = m.author_user_id;
+        const candidate: SearchMessage = { channel: identity.channel, ts: m.message_ts, text: m.content, textTruncated: false,
+          author: { userId: primaryUser ?? null, botId: null, kind: primaryBot ? "bot" : primaryUser ? "participant" : "system" },
+          ...(m.thread_ts ? { threadTs: m.thread_ts } : {}), ...(normalizedPermalink ? { permalink: normalizedPermalink } : {}), searchMatch: true };
+        candidates.push(candidate);
+        kindSources.set(candidate, primaryBot ? "explicit_bot" : "explicit_participant");
         for (const position of ["before", "after"] as const) for (const c of m.context_messages?.[position] ?? []) {
           // Official contextual objects omit scope: they inherit the verified parent result's channel/team.
           // Any explicit scope, including alternate field names, must agree; never silently discard leaks.
@@ -185,9 +195,16 @@ export class SlackSearcher {
           const contextTime = BigInt(c.ts.replace(".", "")), matchTime = BigInt(m.message_ts.replace(".", ""));
           if ((position === "before" && contextTime >= matchTime) || (position === "after" && contextTime <= matchTime)) reject("context_time_invalid");
           if (m.thread_ts && c.thread_ts && c.thread_ts !== m.thread_ts) reject("thread_scope_mismatch");
-          contexts.push({ channel: identity.channel, ts: c.ts, text: c.text, textTruncated: false,
-            author: { userId: c.user_id ?? c.user ?? null, botId: c.bot_id ?? null, kind: c.is_author_bot || c.bot_id ? "bot" : c.user_id || c.user ? "participant" : "system" },
-            ...(c.thread_ts ? { threadTs: c.thread_ts } : {}), searchMatch: false, contextForTs: m.message_ts, contextPosition: position });
+          const contextBot = c.is_author_bot, contextBotId = c.bot_id, contextUser = c.user_id, alternateUser = c.user;
+          const contextual: SearchMessage = { channel: identity.channel, ts: c.ts, text: c.text, textTruncated: false,
+            author: { userId: contextUser ?? alternateUser ?? null, botId: contextBotId ?? null, kind: contextBot || contextBotId ? "bot" : contextUser || alternateUser ? "participant" : "system" },
+            ...(c.thread_ts ? { threadTs: c.thread_ts } : {}), searchMatch: false, contextForTs: m.message_ts, contextPosition: position };
+          contexts.push(contextual);
+          // Explicit false is known participant even without a user; bot_id is only a presence signal.
+          // Retain contradictory explicit signals as mixed, without changing the projected kind.
+          kindSources.set(contextual, contextBot === false && contextBotId ? "mixed" :
+            contextBot === true || contextBotId ? "explicit_bot" : contextBot === false ? "explicit_participant" :
+              contextUser || alternateUser ? "inferred_participant" : "unknown");
         }
       }
       const fingerprints: Record<string, RoleHashes> = {};
@@ -198,10 +215,13 @@ export class SlackSearcher {
       const pageObserved = new Map<string, Partial<Record<DeliveryRole, SearchMessage>>>();
       // Page-local primitives only. Missing metadata never removes an earlier explicit value.
       const pageMetadata = new Map<string, Partial<Record<DeliveryRole, PageMetadata>>>();
-      const conflict = (message: SearchMessage, priorRole: DeliveryRole, prior?: SearchMessage): never => {
+      const conflict = (message: SearchMessage, priorRole: DeliveryRole, prior: SearchMessage | undefined,
+        failure: SearchConflictFailure, metadata?: Partial<Record<DeliveryRole, PageMetadata>>): never => {
         const comparison = compareSlackSearchConflict(prior?.text, message.text);
         logSlackSearchConflictDiagnostic(context, priorRole, message.searchMatch ? "primary" : "context", prior ? "page" : "cursor",
-          !previous, !!cursor, comparison.comparisonAvailable, comparison.trimEqual, comparison.lineEndingEqual, comparison.prefixRelation);
+          !previous, !!cursor, comparison.comparisonAvailable, comparison.trimEqual, comparison.lineEndingEqual, comparison.prefixRelation,
+          failure, summarizeKinds(metadata?.primary), summarizeKinds(metadata?.context),
+          summarizeKindSources(metadata?.primary), summarizeKindSources(metadata?.context));
         diagnosed = true; return unavailable();
       };
       // Same-role conflicts always fail, even exact prefixes or normalized-equivalent strings.
@@ -211,24 +231,27 @@ export class SlackSearcher {
         const fingerprint = createHash("sha256").update(message.text).digest("hex");
         const hashes = observed.get(message.ts) ?? {};
         const pageRoles = pageObserved.get(message.ts) ?? {};
-        if (hashes[role] && hashes[role] !== fingerprint) conflict(message, role, pageRoles[role]);
+        if (hashes[role] && hashes[role] !== fingerprint) conflict(message, role, pageRoles[role], "same_role_text");
         hashes[role] = fingerprint; observed.set(message.ts, hashes);
         pageRoles[role] = message; pageObserved.set(message.ts, pageRoles);
         const metadata = pageMetadata.get(message.ts) ?? {};
-        const roleMetadata = metadata[role] ?? { users: new Set<string>(), kinds: new Set<string>(), threads: new Set<string>() };
+        const roleMetadata = metadata[role] ?? { users: new Set<string>(), kinds: new Set<string>(), threads: new Set<string>(), kindSources: new Set<SearchKindSource>() };
         if (message.author.userId) roleMetadata.users.add(message.author.userId);
         if (message.author.kind !== "system") roleMetadata.kinds.add(message.author.kind);
         if (message.threadTs) roleMetadata.threads.add(message.threadTs);
+        roleMetadata.kindSources.add(kindSources.get(message) ?? "unknown");
         metadata[role] = roleMetadata; pageMetadata.set(message.ts, metadata);
       }
-      // Equivalent to comparing every primary with every context's explicit metadata,
+      // Equivalent to comparing every primary with every context's projected metadata,
       // without an unbounded Cartesian scan. Unknown on either role remains a wildcard.
       const compatibleKnownValues = (primary: Set<string>, contextual: Set<string>) =>
         !primary.size || !contextual.size || (primary.size === 1 && contextual.size === 1 &&
           primary.values().next().value === contextual.values().next().value);
-      const compatiblePrefixMetadata = (primary: PageMetadata, contextual: PageMetadata) =>
-        compatibleKnownValues(primary.users, contextual.users) && compatibleKnownValues(primary.kinds, contextual.kinds) &&
-        compatibleKnownValues(primary.threads, contextual.threads);
+      // Same short-circuit order and compatibility policy; classify only the first failure.
+      const prefixMetadataFailure = (primary: PageMetadata, contextual: PageMetadata): SearchConflictFailure | undefined =>
+        !compatibleKnownValues(primary.users, contextual.users) ? "cross_role_user" :
+          !compatibleKnownValues(primary.kinds, contextual.kinds) ? "cross_role_kind" :
+            !compatibleKnownValues(primary.threads, contextual.threads) ? "cross_role_thread" : undefined;
       const shortPrimary = new Set<string>();
       for (const [ts, pageRoles] of pageObserved) {
         const hashes = observed.get(ts)!;
@@ -240,9 +263,12 @@ export class SlackSearcher {
         // Unequal cross-role seeds cannot prove a prefix without BOTH validated page-local
         // representations. Their same-role seed comparisons above must also have passed.
         const metadata = pageMetadata.get(ts)!;
-        if (!primary || !contextual || !compatiblePrefixMetadata(metadata.primary!, metadata.context!) || !contextual.text.startsWith(primary.text)) {
-          if (contextual) conflict(contextual, "primary", primary);
-          else conflict(primary!, "context");
+        const failure = !primary || !contextual ? "cross_role_seed_unverified" :
+          prefixMetadataFailure(metadata.primary!, metadata.context!) ??
+            (!contextual.text.startsWith(primary.text) ? "cross_role_text_relation" : undefined);
+        if (failure) {
+          if (contextual) conflict(contextual, "primary", primary, failure, metadata);
+          else conflict(primary!, "context", undefined, failure, metadata);
         }
         shortPrimary.add(ts);
       }

@@ -52,12 +52,22 @@ const prefixRelations = ["previous_prefix", "current_prefix", "neither", "unknow
 type ConflictRole = typeof conflictRoles[number];
 type ConflictOrigin = typeof conflictOrigins[number];
 type PrefixRelation = typeof prefixRelations[number];
+const conflictFailures = ["same_role_text", "cross_role_user", "cross_role_kind", "cross_role_thread",
+  "cross_role_text_relation", "cross_role_seed_unverified", "unknown"] as const;
+const knownKinds = ["none", "bot", "participant", "mixed"] as const;
+const kindSources = ["explicit_bot", "explicit_participant", "inferred_participant", "unknown", "mixed"] as const;
+export type SearchConflictFailure = typeof conflictFailures[number];
+export type SearchKnownKinds = typeof knownKinds[number];
+export type SearchKindSource = typeof kindSources[number];
 
 /** The existing failure record only. All arguments after context are re-projected primitives. */
 export function logSlackSearchConflictDiagnostic(context: object | undefined,
   priorRole: ConflictRole, currentRole: ConflictRole, priorOrigin: ConflictOrigin,
   firstPage: boolean, cursorPresent: boolean, comparisonAvailable: boolean,
-  trimEqual: boolean, lineEndingEqual: boolean, prefixRelation: PrefixRelation): void {
+  trimEqual: boolean, lineEndingEqual: boolean, prefixRelation: PrefixRelation,
+  failure: SearchConflictFailure = "unknown", primaryKnownKinds: SearchKnownKinds = "none",
+  contextKnownKinds: SearchKnownKinds = "none", primaryKindSource: SearchKindSource = "unknown",
+  contextKindSource: SearchKindSource = "unknown"): void {
   try {
     const identity = getSlackReadIdentity(context);
     logger.info("slack_search_response_diagnostic", {
@@ -71,6 +81,11 @@ export function logSlackSearchConflictDiagnostic(context: object | undefined,
       trimEqual: comparisonAvailable === true && trimEqual === true,
       lineEndingEqual: comparisonAvailable === true && lineEndingEqual === true,
       prefixRelation: comparisonAvailable === true ? prefixRelations.find(known => known === prefixRelation) ?? "unknown" : "unknown",
+      failure: conflictFailures.find(known => known === failure) ?? "unknown",
+      primaryKnownKinds: knownKinds.find(known => known === primaryKnownKinds) ?? "none",
+      contextKnownKinds: knownKinds.find(known => known === contextKnownKinds) ?? "none",
+      primaryKindSource: kindSources.find(known => known === primaryKindSource) ?? "unknown",
+      contextKindSource: kindSources.find(known => known === contextKindSource) ?? "unknown",
     });
   } catch { /* Observation cannot affect rejection, cancellation or cursor unlock. */ }
 }

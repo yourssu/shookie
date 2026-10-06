@@ -28,6 +28,14 @@ describe("bounded conflict comparison and primitive diagnostic", () => {
     vi.spyOn(Buffer, "byteLength").mockImplementation(() => { throw new Error("private"); });
     expect(compareSlackSearchConflict("a", "b")).toEqual(unknown);
   });
+  it.each(["same_role_text", "cross_role_user", "cross_role_kind", "cross_role_thread",
+    "cross_role_text_relation", "cross_role_seed_unverified", "unknown"] as const)("preserves fixed failure %s independently of comparison availability", failure => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    logSlackSearchConflictDiagnostic(undefined, "primary", "context", "page", true, false, false, false, false, "unknown",
+      failure, "bot", "mixed", "explicit_bot", "mixed");
+    expect(spy.mock.calls.at(-1)?.[1]).toMatchObject({ failure, comparisonAvailable: false,
+      primaryKnownKinds: "bot", contextKnownKinds: "mixed", primaryKindSource: "explicit_bot", contextKindSource: "mixed" });
+  });
   it("never executes object casts/getters/proxies/toJSON, logs only allowlisted primitives and WeakMap correlation", () => {
     const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
     const execute = vi.fn(() => { throw new Error(secret); });
@@ -38,10 +46,12 @@ describe("bounded conflict comparison and primitive diagnostic", () => {
     for (const forged of [object, proxy, revoked.proxy, secret, undefined, 1]) {
       if (typeof forged !== "string") expect(compareSlackSearchConflict(forged, "a").comparisonAvailable).toBe(false);
       logSlackSearchConflictDiagnostic(context, forged as never, forged as never, forged as never,
-        forged as never, forged as never, forged as never, forged as never, forged as never, forged as never);
+        forged as never, forged as never, forged as never, forged as never, forged as never, forged as never,
+        forged as never, forged as never, forged as never, forged as never, forged as never);
       expect(spy.mock.calls.at(-1)?.[1]).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", correlationAvailable: false,
         priorRole: "unknown", currentRole: "unknown", priorOrigin: "unknown", firstPage: false, cursorPresent: false,
-        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" });
+        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown",
+        failure: "unknown", primaryKnownKinds: "none", contextKnownKinds: "none", primaryKindSource: "unknown", contextKindSource: "unknown" });
     }
     bindSlackReadContext(context, { requestId: "trusted-request", teamId: "TSECRET", userId: "USECRET", channel: "CSECRET" }, secret);
     logSlackSearchConflictDiagnostic(context, "context", "primary", "cursor", false, true, false, true, true, "previous_prefix");
