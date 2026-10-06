@@ -34,6 +34,117 @@ function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
 }
 
+describe("fingerprint conflict vector (synthetic, acceptance unchanged)", () => {
+  it.each([
+    ["primary", "primary", [message(), { ...message(), content: "other" }]],
+    ["primary", "context", [message(), { ...message(3), context_messages: { before: [{ ts: ts(2), text: "other" }] } }]],
+    ["context", "context", [{ ...message(3), context_messages: { before: [{ ts: ts(2), text: "first" }, { ts: ts(2), text: "other" }] } }]],
+    // Last equal observation is context, even though the projected representative remains primary.
+    ["context", "context", [message(), { ...message(3), context_messages: { before: [
+      { ts: ts(2), text: "match 2" }, { ts: ts(2), text: "other" },
+    ] } }]],
+  ])("reports latest page role %s -> %s, not first/winning representative", async (priorRole, currentRole, messages) => {
+    const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
+    expect(d.records()).toHaveLength(3);
+    expect(d.records().at(-1)).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", requestId: "event:1", correlationAvailable: true,
+      priorRole, currentRole, priorOrigin: "page", firstPage: true, cursorPresent: false,
+      comparisonAvailable: true, trimEqual: false, lineEndingEqual: false, prefixRelation: "neither" });
+    for (const value of ["other", "first", "match 2", ts(2), "C1", "T1", token, "launch"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(value));
+  });
+  it.each(["primary", "context"] as const)("uses cursor delivered %s role, never persists or recovers prior text", async priorRole => {
+    const d = diagnostics(), f = fixture();
+    const messages = priorRole === "primary" ? [message()] : [{ ...message(3), context_messages: { before: [{ ts: ts(2), text: "match 2" }] } }];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages }, next_cursor: token });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    for (const currentRole of ["primary", "context"] as const) {
+      d.spy.mockClear();
+      const current = currentRole === "primary" ? [{ ...message(), content: "other" }] : [{ ...message(4), context_messages: { before: [{ ts: ts(2), text: "other" }] } }];
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: current } });
+      expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+      expect(d.records()).toHaveLength(3);
+      expect(d.records().at(-1)).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", requestId: "event:1", correlationAvailable: true,
+        priorRole, currentRole, priorOrigin: "cursor", firstPage: false, cursorPresent: true,
+        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" });
+    }
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
+  });
+  it("after an equal cursor-to-primary promotion observes the latest page context, not seed role", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(3), context_messages: { before: [{ ts: ts(2), text: "match 2" }] } }] }, next_cursor: token });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(), { ...message(4), context_messages: { before: [
+      { ts: ts(2), text: "match 2" }, { ts: ts(2), text: "match 2 tail" },
+    ] } }] } });
+    expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ priorRole: "context", currentRole: "context", priorOrigin: "page", firstPage: false, cursorPresent: true,
+      comparisonAvailable: true, prefixRelation: "previous_prefix" });
+  });
+  it.each([
+    [" value ", "value", true, true, false, "neither"],
+    ["a\r\nb", "a\nb", true, false, true, "neither"],
+    ["a tail", "a", true, false, false, "current_prefix"],
+    ["a".repeat(24_001), "a", false, false, false, "unknown"],
+    ["a", "😀".repeat(6_001), false, false, false, "unknown"],
+  ])("adds bounded comparison flags without ever relaxing the hash guard", async (previous, current, comparisonAvailable, trimEqual, lineEndingEqual, prefixRelation) => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: previous }, { ...message(), content: current }] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [] });
+    expect(d.records().at(-1)).toMatchObject({ comparisonAvailable, trimEqual, lineEndingEqual, prefixRelation });
+    expect(d.records()).toHaveLength(3);
+    expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(previous)); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(JSON.stringify(current));
+  });
+  it("uses only parsed/projected copies; raw content getter/proxy accesses and toJSON are not increased", async () => {
+    const d = diagnostics(), f = fixture(); const toJSON = vi.fn(() => { throw new Error(token); });
+    const getter = vi.fn(() => "other");
+    const raw = Object.defineProperty({ ...message(), toJSON }, "content", { get: getter });
+    const gets: string[] = [];
+    const proxied = new Proxy(raw, { get(target, key, receiver) { if (key === "content") gets.push("content"); return Reflect.get(target, key, receiver); } });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(), proxied] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(getter).toHaveBeenCalledTimes(1); expect(gets).toEqual(["content"]); expect(toJSON).not.toHaveBeenCalled();
+    expect(d.records().at(-1)).toMatchObject({ priorRole: "primary", currentRole: "primary", priorOrigin: "page" });
+  });
+  it("tracks conflicts for budget-omitted candidates and never persists diagnostic text/roles/maps", async () => {
+    const d = diagnostics(), f = fixture();
+    const before = Array.from({ length: 20 }, (_, n) => ({ ts: ts(n + 1), text: `PRIVATE_CONTEXT_${n}` }));
+    const messages = Array.from({ length: 20 }, (_, n) => message(100 + n));
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...messages[0], context_messages: { before } },
+      { ...messages[1], context_messages: { before: [{ ts: ts(21), text: "PRIVATE_OMITTED" }] } },
+      ...messages.slice(2),
+    ] }, next_cursor: "safe-cursor" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first).toMatchObject({ status: "ok", truncated: true }); expect(first.messages).toHaveLength(40);
+    const searcher = (f.reader as unknown as { searcher: { cursors: Map<string, object> } }).searcher;
+    const state = searcher.cursors.get(first.nextCursor!)!;
+    expect(Object.keys(state).sort()).toEqual(["binding", "cursor", "deliveredRoles", "expires", "fingerprints", "lossy", "page", "used"]);
+    for (const text of ["PRIVATE_CONTEXT_", "PRIVATE_OMITTED", "match 100"]) expect(JSON.stringify(state)).not.toContain(text);
+    d.spy.mockClear();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...messages[0], context_messages: { before } },
+      { ...messages[1], context_messages: { before: [{ ts: ts(21), text: "PRIVATE_OMITTED" }, { ts: ts(21), text: "PRIVATE_CHANGED" }] } },
+      ...messages.slice(2),
+    ] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records()).toHaveLength(3);
+    expect(d.records().at(-1)).toMatchObject({ priorRole: "context", currentRole: "context", priorOrigin: "page", comparisonAvailable: true });
+    for (const text of ["PRIVATE_CONTEXT_", "PRIVATE_OMITTED", "PRIVATE_CHANGED"]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(text);
+  });
+  it("throwing logger preserves conflict failure, cursor finally unlock and retry promotion", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(3), context_messages: { before: [{ ts: ts(2), text: "match 2" }] } }] }, next_cursor: token });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    d.spy.mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: "other" }] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [] });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2, messages: [{ searchMatch: true }] });
+    expect(f.apiCall).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("permalink rejection predicate vector", () => {
   const canonical = message().permalink;
   const validFlags = {

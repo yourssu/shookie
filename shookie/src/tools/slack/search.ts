@@ -4,7 +4,7 @@ import type { SlackReadClient } from "./client.js";
 import { authorizeCurrentSlackChannel, requireSlackReadIdentity } from "./authorization.js";
 import { getSlackSearchActionToken } from "./context.js";
 import { logSlackTokenSearch } from "./action-token-diagnostics.js";
-import { logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues, type SearchDiagnosticReason } from "./search-diagnostics.js";
+import { compareSlackSearchConflict, logSlackSearchConflictDiagnostic, logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues, type SearchDiagnosticReason } from "./search-diagnostics.js";
 import { check, deny, errorResult, failure, invalid, unavailable } from "./errors.js";
 import { searchInput, type ReadResult } from "./schemas.js";
 import { jsonTextPrefix } from "./projection.js";
@@ -192,13 +192,26 @@ export class SlackSearcher {
       // Validate conflicts across ALL observed objects, even ones omitted by the page budget.
       // Persist only delivered objects below, keeping continuation memory bounded.
       const observed = new Map(Object.entries(fingerprints));
+      // Diagnostic references only: at most 20 primary + 20*40 context objects under responseSchema.
+      // Track the most recent observation, not the first projected representative or winning role.
+      // Never add text to continuation state. These objects have already passed schema/scope checks.
+      const pageObserved = new Map<string, ReadResult["messages"][number]>();
       const projected = new Map<string, ReadResult["messages"][number]>();
       let lossy = previous?.lossy ?? false;
       for (const message of [...candidates, ...contexts]) {
         const fingerprint = createHash("sha256").update(message.text).digest("hex");
         const previousText = observed.get(message.ts);
-        if (previousText && previousText !== fingerprint) reject("fingerprint_conflict");
+        if (previousText && previousText !== fingerprint) {
+          const prior = pageObserved.get(message.ts);
+          const comparison = compareSlackSearchConflict(prior?.text, message.text);
+          logSlackSearchConflictDiagnostic(context,
+            prior ? (prior.searchMatch ? "primary" : "context") : previous?.deliveredRoles[message.ts] ?? "unknown",
+            message.searchMatch ? "primary" : "context", prior ? "page" : previousText ? "cursor" : "unknown",
+            !previous, !!cursor, comparison.comparisonAvailable, comparison.trimEqual, comparison.lineEndingEqual, comparison.prefixRelation);
+          diagnosed = true; unavailable();
+        }
         observed.set(message.ts, fingerprint);
+        if (pageObserved.has(message.ts) || pageObserved.size < 820) pageObserved.set(message.ts, message);
         const role: DeliveryRole = message.searchMatch ? "primary" : "context";
         // Context delivery is not proof of match delivery. Return the full primary object on promotion.
         if (deliveredRoles[message.ts] === "primary" || (role === "context" && deliveredRoles[message.ts] === "context")) continue;

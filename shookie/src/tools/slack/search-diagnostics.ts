@@ -46,6 +46,50 @@ export function logSlackSearchPermalinkDiagnostic(context: object | undefined,
   } catch { /* Observation cannot affect local unavailable or cursor finally cleanup. */ }
 }
 
+const conflictRoles = ["primary", "context", "unknown"] as const;
+const conflictOrigins = ["page", "cursor", "unknown"] as const;
+const prefixRelations = ["previous_prefix", "current_prefix", "neither", "unknown"] as const;
+type ConflictRole = typeof conflictRoles[number];
+type ConflictOrigin = typeof conflictOrigins[number];
+type PrefixRelation = typeof prefixRelations[number];
+
+/** The existing failure record only. All arguments after context are re-projected primitives. */
+export function logSlackSearchConflictDiagnostic(context: object | undefined,
+  priorRole: ConflictRole, currentRole: ConflictRole, priorOrigin: ConflictOrigin,
+  firstPage: boolean, cursorPresent: boolean, comparisonAvailable: boolean,
+  trimEqual: boolean, lineEndingEqual: boolean, prefixRelation: PrefixRelation): void {
+  try {
+    const identity = getSlackReadIdentity(context);
+    logger.info("slack_search_response_diagnostic", {
+      stage: "fingerprint", reason: "fingerprint_conflict", correlationAvailable: !!identity?.requestId,
+      ...(identity?.requestId ? { requestId: identity.requestId } : {}),
+      priorRole: conflictRoles.find(known => known === priorRole) ?? "unknown",
+      currentRole: conflictRoles.find(known => known === currentRole) ?? "unknown",
+      priorOrigin: conflictOrigins.find(known => known === priorOrigin) ?? "unknown",
+      firstPage: firstPage === true, cursorPresent: cursorPresent === true,
+      comparisonAvailable: comparisonAvailable === true,
+      trimEqual: comparisonAvailable === true && trimEqual === true,
+      lineEndingEqual: comparisonAvailable === true && lineEndingEqual === true,
+      prefixRelation: comparisonAvailable === true ? prefixRelations.find(known => known === prefixRelation) ?? "unknown" : "unknown",
+    });
+  } catch { /* Observation cannot affect rejection, cancellation or cursor unlock. */ }
+}
+
+/** Page-local validated primitive text only; never persisted or passed to the logger. */
+export function compareSlackSearchConflict(previous: unknown, current: unknown): Readonly<{
+  comparisonAvailable: boolean; trimEqual: boolean; lineEndingEqual: boolean; prefixRelation: PrefixRelation;
+}> {
+  const unknown = { comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" } as const;
+  try {
+    // The cheap code-unit bound prevents scanning an arbitrarily large API string just for diagnosis.
+    if (typeof previous !== "string" || typeof current !== "string" || previous.length > 24_000 || current.length > 24_000 ||
+        Buffer.byteLength(previous) > 24_000 || Buffer.byteLength(current) > 24_000) return unknown;
+    return { comparisonAvailable: true, trimEqual: previous.trim() === current.trim(),
+      lineEndingEqual: previous.replace(/\r\n?/g, "\n") === current.replace(/\r\n?/g, "\n"),
+      prefixRelation: current.startsWith(previous) ? "previous_prefix" : previous.startsWith(current) ? "current_prefix" : "neither" };
+  } catch { return unknown; }
+}
+
 const index = Symbol("item");
 // Complete paths for this fixed responseSchema, not suffix matches on arbitrary metadata keys.
 const paths = {
