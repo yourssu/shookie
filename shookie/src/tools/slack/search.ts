@@ -4,7 +4,7 @@ import type { SlackReadClient } from "./client.js";
 import { authorizeCurrentSlackChannel, requireSlackReadIdentity } from "./authorization.js";
 import { getSlackSearchActionToken } from "./context.js";
 import { logSlackTokenSearch } from "./action-token-diagnostics.js";
-import { logSlackSearchDiagnostic, summarizeSearchSchemaIssues, type SearchDiagnosticReason } from "./search-diagnostics.js";
+import { logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues, type SearchDiagnosticReason } from "./search-diagnostics.js";
 import { check, deny, errorResult, failure, invalid, unavailable } from "./errors.js";
 import { searchInput, type ReadResult } from "./schemas.js";
 import { jsonTextPrefix } from "./projection.js";
@@ -95,9 +95,51 @@ export class SlackSearcher {
       for (const m of data.results.messages) {
         validateScope(m);
         if (m.permalink) {
-          let url: URL; try { url = new URL(m.permalink); } catch { return reject("permalink_invalid"); }
-          if (url.href !== m.permalink || url.protocol !== "https:" || url.hostname !== access.workspaceHost || url.username || url.password || url.port || url.hash || url.search ||
-              url.pathname !== `/archives/${identity.channel}/p${m.message_ts.replace(".", "")}`) reject("permalink_invalid");
+          // Only schema-parsed values and the existing URL parse. Never inspect raw response metadata.
+          const permalink = m.permalink;
+          const rejectPermalink = (url?: URL): never => {
+            try {
+              const canonicalTs = m.message_ts.replace(".", "");
+              const predicates = [!!url, !!url && url.href === permalink,
+                url?.protocol === "https:", !!url && url.hostname === access.workspaceHost,
+                !!url && !url.username && !url.password, !!url && !url.port, !!url && !url.hash, !!url && !url.search,
+                url?.pathname === `/archives/${identity.channel}/p${canonicalTs}`] as const;
+              const path = url?.pathname.match(/^\/archives\/([CGD][A-Z0-9]{1,63})\/p([0-9]{1,22})$/);
+              let queryClass: "none" | "known" | "unknown" = url ? "none" : "unknown";
+              let threadPresent = false, cidPresent = false, threadMatch = true, cidMatch = true, duplicate = false;
+              // The existing schema caps the input URL at 512 chars. Iterate decoded pairs only within
+              // that bound; classify unknown keys without retaining/emitting them or their values.
+              try {
+                if (url?.search) {
+                  queryClass = "known";
+                  let steps = 0;
+                  for (const [key, value] of url.searchParams) {
+                    if (++steps > 512) { queryClass = "unknown"; break; }
+                    if (key === "thread_ts") {
+                      duplicate ||= threadPresent; threadPresent = true; threadMatch &&= value === m.thread_ts;
+                    } else if (key === "cid") {
+                      duplicate ||= cidPresent; cidPresent = true; cidMatch &&= value === identity.channel;
+                    } else queryClass = "unknown";
+                  }
+                  if (!steps) queryClass = "unknown";
+                }
+              } catch {
+                // Auxiliary observation failure must not erase the required predicate vector.
+                queryClass = "unknown"; threadPresent = cidPresent = threadMatch = cidMatch = duplicate = false;
+              }
+              logSlackSearchPermalinkDiagnostic(context, ...predicates,
+                !url ? "other" : url.hostname === access.workspaceHost ? "workspace" :
+                  url.hostname === "app.slack.com" ? "app.slack.com" : url.hostname === "slack.com" ? "slack.com" : "other",
+                path ? "archives_message" : "other", !!path && path[1] === identity.channel, !!path && path[2] === canonicalTs,
+                queryClass, threadPresent, cidPresent, !!m.thread_ts,
+                threadPresent && threadMatch, cidPresent && cidMatch, duplicate);
+            } catch { logSlackSearchDiagnostic(context, "permalink_invalid"); }
+            diagnosed = true; return unavailable();
+          };
+          let url: URL; try { url = new URL(permalink); } catch { return rejectPermalink(); }
+          // Acceptance predicates are unchanged; diagnostics run only after the same rejection.
+          if (url.href !== permalink || url.protocol !== "https:" || url.hostname !== access.workspaceHost || url.username || url.password || url.port || url.hash || url.search ||
+              url.pathname !== `/archives/${identity.channel}/p${m.message_ts.replace(".", "")}`) rejectPermalink(url);
         }
         candidates.push({ channel: identity.channel, ts: m.message_ts, text: m.content, textTruncated: false,
           author: { userId: m.author_user_id ?? null, botId: null, kind: m.is_author_bot ? "bot" : m.author_user_id ? "participant" : "system" },

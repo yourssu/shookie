@@ -2,10 +2,41 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { logger } from "../../logger.js";
 import { bindSlackReadContext } from "./context.js";
-import { logSlackSearchDiagnostic, summarizeSearchSchemaIssues } from "./search-diagnostics.js";
+import { logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues } from "./search-diagnostics.js";
 
 const secret = "ARBITRARY_SECRET_TOKEN_METADATA";
 afterEach(() => vi.restoreAllMocks());
+
+describe("primitive-only permalink diagnostic runtime allowlist", () => {
+  it("drops all forged values without getters, proxy traps, coercion or toJSON; correlates only via WeakMap", () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const execute = vi.fn(() => { throw new Error(secret); });
+    const proxy = new Proxy({}, { get: execute, ownKeys: execute, getOwnPropertyDescriptor: execute, getPrototypeOf: execute });
+    const revoked = Proxy.revocable({}, {}); revoked.revoke();
+    const object = Object.defineProperties({ toJSON: execute, toString: execute }, { value: { get: execute } });
+    const context = { requestId: secret, get: execute, toJSON: execute };
+    const args: Parameters<typeof logSlackSearchPermalinkDiagnostic> = [context,
+      true, true, true, true, true, true, true, true, true, "workspace", "archives_message", true, true,
+      "known", true, true, true, true, true, true];
+    for (const forged of [secret, proxy, revoked.proxy, object, 1, undefined]) {
+      // Includes every primitive argument and an untrusted context: no object input reaches logger.
+      logSlackSearchPermalinkDiagnostic(...args.map(() => forged) as unknown as typeof args);
+      const record = spy.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(record).toMatchObject({ stage: "permalink", reason: "permalink_invalid", correlationAvailable: false,
+        hostClass: "other", pathShape: "other", queryClass: "unknown" });
+      expect(Object.entries(record).filter(([, v]) => typeof v === "boolean").every(([, v]) => v === false)).toBe(true);
+    }
+    logSlackSearchPermalinkDiagnostic(...args);
+    expect(spy.mock.calls.at(-1)?.[1]).not.toHaveProperty("requestId");
+    bindSlackReadContext(context, { requestId: "trusted-request", teamId: "TSECRET", userId: "USECRET", channel: "CSECRET" }, secret);
+    logSlackSearchPermalinkDiagnostic(...args);
+    expect(spy.mock.calls.at(-1)?.[1]).toMatchObject({ requestId: "trusted-request", correlationAvailable: true });
+    expect(execute).not.toHaveBeenCalled();
+    for (const value of [secret, "TSECRET", "USECRET", "CSECRET"]) expect(JSON.stringify(spy.mock.calls)).not.toContain(value);
+    spy.mockImplementation(() => { throw new Error(secret); });
+    expect(() => logSlackSearchPermalinkDiagnostic(...args)).not.toThrow();
+  });
+});
 
 describe("bounded fixed-schema issue projection", () => {
   it.each([

@@ -12,6 +12,40 @@ const stages = {
   cursor_conflict: "cursor", cursor_replay: "cursor", validation_exception: "validation",
 } as const;
 export type SearchDiagnosticReason = keyof typeof stages;
+const permalinkHosts = ["workspace", "app.slack.com", "slack.com", "other"] as const;
+const permalinkPaths = ["archives_message", "other"] as const;
+const permalinkQueries = ["none", "known", "unknown"] as const;
+type PermalinkHost = typeof permalinkHosts[number];
+type PermalinkPath = typeof permalinkPaths[number];
+type PermalinkQuery = typeof permalinkQueries[number];
+
+/** Primitive-only predicate vector; never accept/spread URL objects or response metadata. */
+export function logSlackSearchPermalinkDiagnostic(context: object | undefined,
+  parsed: boolean, canonicalHref: boolean, https: boolean, host: boolean, noUserinfo: boolean,
+  noPort: boolean, noHash: boolean, noQuery: boolean, path: boolean,
+  hostClass: PermalinkHost, pathShape: PermalinkPath, pathChannelMatch: boolean, pathMessageTsMatch: boolean,
+  queryClass: PermalinkQuery, queryThreadTsPresent: boolean, queryCidPresent: boolean,
+  queryThreadTsAvailable: boolean, queryThreadTsMatch: boolean, queryCidMatch: boolean, queryDuplicate: boolean): void {
+  try {
+    const identity = getSlackReadIdentity(context);
+    logger.info("slack_search_response_diagnostic", {
+      stage: "permalink", reason: "permalink_invalid", correlationAvailable: !!identity?.requestId,
+      ...(identity?.requestId ? { requestId: identity.requestId } : {}),
+      permalinkParsed: parsed === true, permalinkCanonicalHref: canonicalHref === true,
+      permalinkHttps: https === true, permalinkHost: host === true, permalinkNoUserinfo: noUserinfo === true,
+      permalinkNoPort: noPort === true, permalinkNoHash: noHash === true, permalinkNoQuery: noQuery === true,
+      permalinkPath: path === true,
+      hostClass: permalinkHosts.find(known => known === hostClass) ?? "other",
+      pathShape: permalinkPaths.find(known => known === pathShape) ?? "other",
+      pathChannelMatch: pathChannelMatch === true, pathMessageTsMatch: pathMessageTsMatch === true,
+      queryClass: permalinkQueries.find(known => known === queryClass) ?? "unknown",
+      queryThreadTsPresent: queryThreadTsPresent === true, queryCidPresent: queryCidPresent === true,
+      queryThreadTsAvailable: queryThreadTsAvailable === true, queryThreadTsMatch: queryThreadTsMatch === true,
+      queryCidMatch: queryCidMatch === true, queryDuplicate: queryDuplicate === true,
+    });
+  } catch { /* Observation cannot affect local unavailable or cursor finally cleanup. */ }
+}
+
 const index = Symbol("item");
 // Complete paths for this fixed responseSchema, not suffix matches on arbitrary metadata keys.
 const paths = {

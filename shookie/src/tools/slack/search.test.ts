@@ -34,6 +34,117 @@ function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
 }
 
+describe("permalink rejection predicate vector (observation only)", () => {
+  const canonical = message().permalink;
+  const validFlags = {
+    permalinkParsed: true, permalinkCanonicalHref: true, permalinkHttps: true, permalinkHost: true,
+    permalinkNoUserinfo: true, permalinkNoPort: true, permalinkNoHash: true, permalinkNoQuery: true,
+    permalinkPath: true, hostClass: "workspace", pathShape: "archives_message", pathChannelMatch: true,
+    pathMessageTsMatch: true, queryClass: "none", queryThreadTsPresent: false, queryCidPresent: false,
+    queryThreadTsAvailable: true, queryThreadTsMatch: false, queryCidMatch: false, queryDuplicate: false,
+  };
+  it.each([
+    [token, { permalinkParsed: false, permalinkCanonicalHref: false, permalinkHttps: false, permalinkHost: false,
+      permalinkNoUserinfo: false, permalinkNoPort: false, permalinkNoHash: false, permalinkNoQuery: false,
+      permalinkPath: false, hostClass: "other", pathShape: "other", pathChannelMatch: false, pathMessageTsMatch: false, queryClass: "unknown" }],
+    [canonical.replace("https:", "http:"), { permalinkHttps: false }],
+    [canonical.replace("synthetic", "SYNTHETIC"), { permalinkCanonicalHref: false }],
+    [` ${canonical}`, { permalinkCanonicalHref: false }],
+    [canonical.replace(".com/", ".com:443/"), { permalinkCanonicalHref: false }],
+    [canonical.replace(".com/", ".com:444/"), { permalinkNoPort: false }],
+    [canonical.replace("https://", `https://${token}@`), { permalinkNoUserinfo: false }],
+    [canonical.replace("https://", `https://:${token}@`), { permalinkNoUserinfo: false }],
+    [`${canonical}#${token}`, { permalinkNoHash: false }],
+    [canonical.replace("synthetic.slack.com", "private.invalid"), { permalinkHost: false, hostClass: "other" }],
+    [canonical.replace("synthetic.slack.com", "app.slack.com"), { permalinkHost: false, hostClass: "app.slack.com" }],
+    [canonical.replace("synthetic.slack.com", "slack.com"), { permalinkHost: false, hostClass: "slack.com" }],
+    [canonical.replace("C1", "COTHER"), { permalinkPath: false, pathChannelMatch: false }],
+    [canonical.replace(/000002$/, "000003"), { permalinkPath: false, pathMessageTsMatch: false }],
+    [canonical.replace(/p[0-9]+$/, "p17000000002"), { permalinkPath: false, pathMessageTsMatch: false }],
+    [canonical.replace("/archives/", "/else/"), { permalinkPath: false, pathShape: "other", pathChannelMatch: false, pathMessageTsMatch: false }],
+    [`${canonical}?thread_ts=${ts(1)}&cid=C1`, { permalinkNoQuery: false, queryClass: "known",
+      queryThreadTsPresent: true, queryCidPresent: true, queryThreadTsMatch: true, queryCidMatch: true }],
+    [`${canonical}?thread_ts=1700000000.1&cid=COTHER`, { permalinkNoQuery: false, queryClass: "known", queryThreadTsPresent: true, queryCidPresent: true }],
+    [`${canonical}?%74hread_ts=${ts(1)}&%63id=C1`, { permalinkNoQuery: false, queryClass: "known",
+      queryThreadTsPresent: true, queryCidPresent: true, queryThreadTsMatch: true, queryCidMatch: true }],
+    [`${canonical}?thread_ts=${ts(1)}&thread_ts=${token}&cid=C1&cid=C1`, { permalinkNoQuery: false, queryClass: "known",
+      queryThreadTsPresent: true, queryCidPresent: true, queryCidMatch: true, queryDuplicate: true }],
+    [`${canonical}?${token}=${token}&thread_ts=${ts(1)}`, { permalinkNoQuery: false, queryClass: "unknown", queryThreadTsPresent: true, queryThreadTsMatch: true }],
+    [`http://${token}:${token}@external.invalid:444/archives/COTHER/p123?${token}=${token}#${token}`, {
+      permalinkHttps: false, permalinkHost: false, permalinkNoUserinfo: false, permalinkNoPort: false,
+      permalinkNoHash: false, permalinkNoQuery: false, permalinkPath: false, hostClass: "other",
+      pathChannelMatch: false, pathMessageTsMatch: false, queryClass: "unknown" }],
+    [`${canonical}?${"a&".repeat(200)}`, { permalinkNoQuery: false, queryClass: "unknown" }],
+    [`${canonical}?&&`, { permalinkNoQuery: false, queryClass: "unknown" }],
+  ])("reports all fixed flags for a rejected synthetic URL without relaxing guards", async (permalink, changes) => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), thread_ts: ts(1), permalink }] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
+    expect(d.records()).toHaveLength(3);
+    expect(d.records().at(-1)).toEqual({ stage: "permalink", reason: "permalink_invalid", correlationAvailable: true,
+      requestId: "event:1", ...validFlags, ...changes });
+    expect(f.apiCall).toHaveBeenCalledTimes(1);
+    for (const secret of [token, "synthetic.slack.com", "private.invalid", "external.invalid", "COTHER", "C1", "T1", ts(1), ts(2), "launch"]) {
+      expect(JSON.stringify(d.spy.mock.calls)).not.toContain(secret);
+    }
+  });
+  it("keeps the original 512-char schema bound before any URL observation", async () => {
+    const d = diagnostics(), f = fixture();
+    const prefix = `${canonical}?cid=`;
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: prefix + "x".repeat(513 - prefix.length) }] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ reason: "schema_invalid", schemaField: "message_permalink", schemaCode: "too_big" });
+    expect(d.records().at(-1)).not.toHaveProperty("permalinkParsed");
+  });
+  it("auxiliary query observation exceptions retain required flags and local rejection", async () => {
+    const d = diagnostics(), f = fixture();
+    vi.spyOn(URL.prototype, "searchParams", "get").mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${canonical}?cid=C1` }] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+    expect(d.records().at(-1)).toMatchObject({ permalinkParsed: true, permalinkCanonicalHref: true, permalinkHttps: true,
+      permalinkHost: true, permalinkNoUserinfo: true, permalinkNoPort: true, permalinkNoHash: true,
+      permalinkNoQuery: false, permalinkPath: true, queryClass: "unknown" });
+    expect(d.records()).toHaveLength(3); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+  });
+  it("does not emit a rejection vector for accepted canonical or missing permalinks", async () => {
+    const d = diagnostics(), f = fixture();
+    // Bare delimiters have empty URL.search/hash under the original predicate; keep that behavior too.
+    for (const permalink of [canonical, `${canonical}?`, `${canonical}#`, undefined, ""]) {
+      d.spy.mockClear(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink }] } });
+      expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("ok");
+      expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    }
+  });
+  it("query matches require present parameters and a validated parent thread timestamp", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${canonical}?thread_ts=${ts(1)}&cid=` }] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(d.records().at(-1)).toMatchObject({ queryClass: "known", queryThreadTsAvailable: false, queryThreadTsPresent: true,
+      queryThreadTsMatch: false, queryCidPresent: true, queryCidMatch: false });
+  });
+  it("never adds accesses to raw response getters, metadata or toJSON", async () => {
+    const d = diagnostics(), f = fixture();
+    const getter = vi.fn(() => `${canonical}?${token}=${token}`), toJSON = vi.fn(() => { throw new Error(token); });
+    const item = Object.defineProperty({ ...message(), toJSON }, "permalink", { get: getter });
+    const raw = { ok: true, results: { messages: [item] }, metadata: { toJSON } };
+    f.apiCall.mockResolvedValueOnce(raw);
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(getter).toHaveBeenCalledTimes(1); // Existing Zod access only; observation uses its parsed copy.
+    expect(toJSON).not.toHaveBeenCalled(); expect(JSON.stringify(d.spy.mock.calls)).not.toContain(token);
+  });
+  it("throwing logger preserves permalink failure and continuation cursor unlock/retry", async () => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, next_cursor: token });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    d.spy.mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(3), permalink: `${canonical}?cid=C1` }] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(3)] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
+    expect(f.apiCall).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe("search response safe diagnostics", () => {
   it.each([
     ["schema_invalid", { ok: true, results: { messages: [{ ...message(), team_id: undefined }] } }],
