@@ -110,6 +110,50 @@ describe("actual main Slack tool registration", () => {
       expect(repository.complete).toHaveBeenCalledTimes(2);
     } finally { spy.mockRestore(); }
   });
+  it.each(["slack_search", "slack_read_thread"] as const)("correlates registered %s failures via real handler WeakMap and keeps tool logger/DB redaction", async toolName => {
+    vi.mocked(logger.info).mockClear(); vi.mocked(logger.debug).mockClear(); vi.mocked(logToolCall).mockClear();
+    const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient });
+    const tools = await main.listTools();
+    const root = "1700000000.000001";
+    fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
+    fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } });
+    fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
+    fixture.client.conversations.replies.mockResolvedValue({ ok: true, messages: [{ ts: root, text: "PRIVATE_ROOT", reply_count: -1 }] });
+    const match = { channel_id: "C1", team_id: "T1", message_ts: root, is_author_bot: false, content: "PRIVATE_FIRST" };
+    fixture.client.apiCall.mockResolvedValue({ ok: true, results: { messages: [match, { ...match, content: "PRIVATE_SECOND" }] } });
+    const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
+    const app = { action: vi.fn(), event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback),
+      client: { chat: { postMessage: vi.fn(async () => ({ ok: true, ts: "control" })), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
+    const repository: ConversationRepository = { claim: vi.fn(async () => true), recent: vi.fn(async () => []), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
+    const results: unknown[] = [];
+    const spy = vi.spyOn(main, "stream").mockImplementation(async (_messages: unknown, options: { requestContext?: RequestContext } = {}) => {
+      const input = toolName === "slack_search" ? { query: "synthetic" } : { ts: root };
+      const result = await execute(tools[toolName], input, options.requestContext);
+      results.push(result);
+      const payload = { toolName, toolCallId: "failure-task", args: input };
+      return { fullStream: new ReadableStream({ start(controller) { controller.enqueue({ type: "tool-call", payload }); controller.close(); } }),
+        text: Promise.resolve("안전한 실패 안내"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve("stop"),
+        steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }]) } as never;
+    });
+    try {
+      registerHandlers(app, main, repository);
+      await callbacks.get("app_mention")!({ event: { channel: "C1", user: "U1", ts: root, text: "진단 요청", action_token: "PRIVATE_ACTION" },
+        body: { team_id: "T1", event_id: `registered-failure-${toolName}` }, context: { botUserId: "UBOT" } });
+      expect(results[0]).toMatchObject({ status: "unavailable", messages: [], nextCursor: null, complete: false });
+      const name = toolName === "slack_search" ? "slack_search_response_diagnostic" : "slack_read_response_diagnostic";
+      const records = vi.mocked(logger.info).mock.calls.filter(([message]) => message === name).map(([, record]) => record);
+      expect(records).toHaveLength(toolName === "slack_search" ? 3 : 1);
+      expect(records.at(-1)).toMatchObject({ requestId: `slack-event:registered-failure-${toolName}`, correlationAvailable: true,
+        ...(toolName === "slack_search" ? { reason: "fingerprint_conflict", priorRole: "primary", currentRole: "primary", priorOrigin: "page" } : { kind: "thread", reason: "root_reply_count_invalid" }) });
+      expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName, input: { redacted: true }, output: { redacted: true } }));
+      const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
+      for (const secret of ["PRIVATE_FIRST", "PRIVATE_SECOND", "PRIVATE_ROOT", "PRIVATE_ACTION"]) expect(logs).not.toContain(secret);
+      // Existing streaming logs include event IDs; this PR only promises identifier-free new diagnostics.
+      const diagnosticLogs = JSON.stringify(records);
+      for (const secret of [root, "C1", "T1", "U1"]) expect(diagnosticLogs).not.toContain(secret);
+      expect(repository.complete).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
+  });
   it("keeps prior factory signatures/no-client tools compatible", async () => {
     expect(Object.keys(createMainShookieTools({}))).toEqual(["web_fetch", "web_search", "web_read_more", "web_find_in_content"]);
     const prior = fixture.settings.SLACK_BOT_TOKEN; fixture.settings.SLACK_BOT_TOKEN = "";

@@ -2,7 +2,57 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { logger } from "../../logger.js";
 import { bindSlackReadContext } from "./context.js";
-import { logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues } from "./search-diagnostics.js";
+import { compareSlackSearchConflict, logSlackSearchConflictDiagnostic, logSlackSearchDiagnostic, logSlackSearchPermalinkDiagnostic, summarizeSearchSchemaIssues } from "./search-diagnostics.js";
+
+describe("bounded conflict comparison and primitive diagnostic", () => {
+  it.each([
+    [" value ", "value", true, false, "neither"],
+    ["a\r\nb\rc", "a\nb\nc", false, true, "neither"],
+    ["prefix", "prefix tail", false, false, "previous_prefix"],
+    ["prefix tail", "prefix", false, false, "current_prefix"],
+    ["a", "b", false, false, "neither"],
+    ["", "b", false, false, "previous_prefix"],
+  ])("returns only derived flags for bounded strings", (previous, current, trimEqual, lineEndingEqual, prefixRelation) => {
+    expect(compareSlackSearchConflict(previous, current)).toEqual({ comparisonAvailable: true, trimEqual, lineEndingEqual, prefixRelation });
+  });
+  it("caps both strings by existing 24KB threshold; unavailable is not evidence of inequality", () => {
+    const unknown = { comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" };
+    const boundary = "a".repeat(24_000);
+    expect(compareSlackSearchConflict(boundary, "b".repeat(24_000)).comparisonAvailable).toBe(true);
+    expect(compareSlackSearchConflict("😀".repeat(6_000), "a").comparisonAvailable).toBe(true);
+    for (const oversized of [boundary + "a", "😀".repeat(6_001)]) {
+      expect(compareSlackSearchConflict(oversized, "a")).toEqual(unknown);
+      expect(compareSlackSearchConflict("a", oversized)).toEqual(unknown);
+    }
+    expect(compareSlackSearchConflict(undefined, "a")).toEqual(unknown);
+    vi.spyOn(Buffer, "byteLength").mockImplementation(() => { throw new Error("private"); });
+    expect(compareSlackSearchConflict("a", "b")).toEqual(unknown);
+  });
+  it("never executes object casts/getters/proxies/toJSON, logs only allowlisted primitives and WeakMap correlation", () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const execute = vi.fn(() => { throw new Error(secret); });
+    const proxy = new Proxy({}, { get: execute, ownKeys: execute, getOwnPropertyDescriptor: execute, getPrototypeOf: execute });
+    const revoked = Proxy.revocable({}, {}); revoked.revoke();
+    const object = Object.defineProperty({ toJSON: execute, toString: execute }, "length", { get: execute });
+    const context = { requestId: secret, toJSON: execute };
+    for (const forged of [object, proxy, revoked.proxy, secret, undefined, 1]) {
+      if (typeof forged !== "string") expect(compareSlackSearchConflict(forged, "a").comparisonAvailable).toBe(false);
+      logSlackSearchConflictDiagnostic(context, forged as never, forged as never, forged as never,
+        forged as never, forged as never, forged as never, forged as never, forged as never, forged as never);
+      expect(spy.mock.calls.at(-1)?.[1]).toEqual({ stage: "fingerprint", reason: "fingerprint_conflict", correlationAvailable: false,
+        priorRole: "unknown", currentRole: "unknown", priorOrigin: "unknown", firstPage: false, cursorPresent: false,
+        comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" });
+    }
+    bindSlackReadContext(context, { requestId: "trusted-request", teamId: "TSECRET", userId: "USECRET", channel: "CSECRET" }, secret);
+    logSlackSearchConflictDiagnostic(context, "context", "primary", "cursor", false, true, false, true, true, "previous_prefix");
+    expect(spy.mock.calls.at(-1)?.[1]).toMatchObject({ requestId: "trusted-request", priorRole: "context", currentRole: "primary", priorOrigin: "cursor",
+      comparisonAvailable: false, trimEqual: false, lineEndingEqual: false, prefixRelation: "unknown" });
+    expect(execute).not.toHaveBeenCalled();
+    for (const value of [secret, "TSECRET", "USECRET", "CSECRET"]) expect(JSON.stringify(spy.mock.calls)).not.toContain(value);
+    spy.mockImplementation(() => { throw new Error(secret); });
+    expect(() => logSlackSearchConflictDiagnostic(proxy, "unknown", "unknown", "unknown", false, false, false, false, false, "unknown")).not.toThrow();
+  });
+});
 
 const secret = "ARBITRARY_SECRET_TOKEN_METADATA";
 afterEach(() => vi.restoreAllMocks());
