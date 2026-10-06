@@ -34,7 +34,7 @@ WebSocket 바깥 envelope는 listener body가 아니다. `body.payload.*`, camel
 
 ## 보안 및 필드 계약
 
-기본 INFO 수준의 고정 메시지 `slack_action_token_diagnostic`만 추가한다. 전역 로깅 정책, 환경변수, 의존성은 추가하지 않는다. 기존 로그 전체가 이 계약으로 바뀌는 것은 아니므로 운영 공유 시 **진단 레코드만** 발췌한다.
+기본 INFO 수준의 고정 메시지 `slack_action_token_diagnostic`만 추가한다. 기본 ConsoleLogger를 보존하기 위해 기존 전이 의존성 `@slack/logger`를 직접 의존성으로 명시한다. 그 외 새 의존성이나 전역 로깅·환경변수 정책은 추가하지 않는다. 기존 로그 전체가 이 계약으로 바뀌는 것은 아니므로 운영 공유 시 **진단 레코드만** 발췌한다.
 
 추가 payload 필드는 아래 allowlist만 사용하며, requestId/eventCorrelationId 외의 값은 boolean 또는 고정 enum이다:
 - `stage`: `socket_sdk`, `socket_receiver`, `receive`, `selection`, `binding`, `search`, `search_api`
