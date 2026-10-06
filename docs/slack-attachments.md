@@ -10,6 +10,8 @@
 
 Slack은 정상 TXT/CSV 업로드도 `mode=snippet`, `is_external=false`로 반환할 수 있다. `files.info`가 제공한 MIME을 기존 `attachmentKind`로 분류하여 텍스트·Markdown·CSV인 경우에만 `snippet`을 허용한다. `hosted` 및 기존 mode 누락 처리에는 변화가 없다. PDF·이미지·미지원 MIME의 snippet, 외부 파일(`is_external=true`/`mode=external`), 알 수 없는 mode는 거부한다. 파일명·이벤트 후보·모델 인자로 mode/MIME 정책을 바꿀 수 없으며, 선택적 서버 MIME validator도 이 경계를 넓힐 수 없다. snippet 허용은 새 권한이나 내용 실행 허용이 아니다. 기존 live 신원·현재 채널 membership·정확한 메시지 첨부 관계·다운로드 전 재검증 및 bounded download/격리 parser/요청 취소 경로를 그대로 유지한다.
 
+파일 **format MIME**과 다운로드 **transport MIME**은 구분한다. 파서의 kind는 권한 검증을 통과한 `files.info.mimetype`만으로 선택한다. HTTP MIME은 기존처럼 같은 supported kind여야 하며, 유일한 예외는 metadata kind가 `text` 또는 `csv`일 때의 `application/force-download`이다. 이 generic header는 Slack 전송 방식일 뿐 파일 형식이 아니므로 `attachmentKind`의 지원 목록에는 추가하지 않는다. PDF·이미지·unknown metadata에 형식을 부여하지 않고, `application/octet-stream`, HTML/JSON, 다른 concrete kind, 빈 HTTP header도 계속 거부한다. MIME 대소문자·공백 정규화와 기존 비UTF-8 charset 거부를 양쪽 MIME에 유지하며, generic header도 같은 charset 검사·격리 UTF-8/CSV 파서·signature 검사 및 metadata/body size equality를 통과해야 한다. 다운로드 URL/DNS pin/redirect/4 MiB/timeout/cancel/권한·로그 정책은 변경하지 않는다.
+
 - UTF-8 `text/plain`, `text/markdown`, `text/x-markdown` (BOM 허용). CRLF/CR은 줄 번호를 위해 LF로 정규화하지만 공백·Markdown은 그대로 보존한다.
 - `text/csv`, `application/csv`: RFC 스타일 쉼표/이중 인용부호/인용된 여러 줄/이스케이프된 인용부호. CSV는 순수 문자열 배열이며 `=`, `+`, `-`, `@` 수식을 실행하거나 URL을 방문하지 않는다. 출처 `start/end`는 CSV 논리 행의 **원문 물리 줄 범위**이다.
 - `application/pdf`: PDF 1.0–1.7 텍스트 레이어만 추출한다. 페이지별 출처와 텍스트 없는 페이지 목록을 반환한다. PDF.js 4.10.38 ESM을 고정하며 Node 20+ / Yarn 4에서 실행한다. 공개된 과거 PDF.js eval 취약 버전(<4.2.67)을 사용하지 않으며 `isEvalSupported:false`도 적용한다.
@@ -44,6 +46,10 @@ Slack은 정상 TXT/CSV 업로드도 `mode=snippet`, `is_external=false`로 반�
 **격리는 OS sandbox를 뜻하지 않는다.** V8 heap 제한은 RSS/전체 native memory의 hard rlimit가 아니며, 이 구현은 bounded 입력·해제·출력·페이지·이미지렌더 금지와 kill deadline을 함께 적용한다. 미래 parser 교체/새 filter 허용 시 별도 보안 검토가 필요하다. 에러는 한국어 안내와 안전한 code만 반환하며 토큰, URL, Slack 원본 오류, 파일 본문을 로그/에러로 노출하지 않는다. 요청 전체 timeout/cancel/budget 작업은 포함하지 않는다.
 
 ## 검증 구분
+
+main `6e452186b78198444f57b5443d7e6af89eec7d08`의 **실제 Slack E2E는 TXT/CSV 읽기 FAIL**이었다. main의 별도 인증 GET 조사에서 기존 nonexternal snippet 파일의 metadata는 `text/plain`/98 bytes, `text/csv`/79 bytes였으나, 둘 다 HTTP 200 · `Content-Type: application/force-download` · 동일 Content-Length · redirect 없음으로 확인됐다. 실제 등록 도구 2회가 `UNSUPPORTED_TYPE`으로 실패했고, 기존 HTTP MIME 분류가 generic header를 거부하는 원인이 확인됐다. 이 증거는 수정 후 운영 성공을 의미하지 않는다.
+
+force-download 회귀 테스트는 실제 등록 `slack_read_attachment` → trusted WeakMap Slack bridge → hardened downloader → 별도 프로세스 UTF-8/CSV parser를 사용하되, Slack/HTTP/DNS 응답과 **본문은 합성**이다. 위에서 확인한 GET header/status 및 98/79 byte 크기를 재현하며 원래 private 본문은 복제하지 않는다. multiline CSV·실행하지 않는 formula·출처/완전성, 기존 concrete HTTP MIME, hosted/snippet/mode 누락을 검증한다. malformed UTF-8/CSV·signature·크기 불일치, PDF/이미지/unsupported metadata, octet-stream/HTML/JSON/다른 concrete kind/빈 header/비UTF-8 charset 거부, 위조 context/다른 채널·팀/임의 파일/정확한 댓글 관계/다운로드 직전 live membership 철회도 확인한다. 일반 `attachmentKind`는 force-download 자체를 형식으로 받아들이지 않는다. worker는 운영 E2E/배포/머지를 실행하지 않는다. main의 독립 리뷰·pinned squash·배포와 컨테이너 SHA 확인 뒤, 기존 TXT/CSV를 실제 도구로 재읽고 미리 제공하지 않은 원본 표식·숫자/합계를 fixture와 대조해야 **수정 후 운영 E2E PASS**로 판단한다. 검색/action_token 진단은 이 수정과 별개다.
 
 snippet 수정의 회귀 테스트는 실제 SDK의 `createAgent` 등록 도구와 WeakMap Slack bridge에 합성 `files.info`/HTTP fixture를 연결하여 TXT/CSV bytes 추출, hosted·mode 누락 회귀, PDF/PNG/JPEG/미지원 MIME/외부/unknown mode 거부를 확인한다. snippet에서도 위조 신원·임의 파일·부모 첨부·live membership 철회를 차단하고, 이미지 validator는 TXT/CSV snippet을 이미지로 받아들이지 않는다. 작업자 검증은 합성이며 운영 E2E 성공 주장이 아니다. main의 병합·배포 후 기존 업로드 TXT/CSV 파일을 다시 읽는 운영 검증은 별도로 수행해야 한다.
 
