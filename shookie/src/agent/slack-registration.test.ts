@@ -52,6 +52,27 @@ describe("actual main Slack tool registration", () => {
     expect(await execute(tools.slack_read_channel, {}, context)).toMatchObject({ status: "ok", source: { channel: "C1" }, complete: true });
     expect(await execute(tools.slack_search, { query: "launch" }, context)).toMatchObject({ status: "unsupported", complete: false });
   });
+  it("registered thread tool reserves the root slot on every SDK request and dedupes three public15 pages", async () => {
+    const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient }), tools = await main.listTools();
+    const context = new RequestContext(); bindSlackReadContext(context, { teamId: "T1", userId: "U1", channel: "C1", requestId: "registered-thread" });
+    fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1" });
+    fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", is_channel: true } });
+    fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
+    const root = "1700000000.000001", all: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 1; page <= 3; page++) {
+      fixture.client.conversations.replies.mockResolvedValueOnce({ ok: true, messages: [
+        { ts: root, text: "SYNTHETIC_ROOT", reply_count: 42 },
+        ...Array.from({ length: 14 }, (_, n) => ({ ts: `1700000000.${String(2 + (page - 1) * 14 + n).padStart(6, "0")}`, thread_ts: root, text: `synthetic reply ${n}` })),
+      ], response_metadata: { next_cursor: page < 3 ? `synthetic-${page}` : "" } });
+      const result = await execute(tools.slack_read_thread, { ts: root, ...(cursor ? { cursor } : {}) }, context) as { status: string; messages: { ts: string }[]; nextCursor: string | null; complete: boolean };
+      expect(result).toMatchObject({ status: "ok", complete: page === 3, limits: { pageSize: 15 } });
+      expect(result.messages.length).toBeLessThanOrEqual(15); all.push(...result.messages.map(m => m.ts));
+      expect(fixture.client.conversations.replies).toHaveBeenLastCalledWith({ channel: "C1", ts: root, limit: 14, ...(page > 1 ? { cursor: `synthetic-${page - 1}` } : {}) });
+      cursor = result.nextCursor;
+    }
+    expect(all).toHaveLength(43); expect(new Set(all).size).toBe(43);
+  });
   it.each(["slack_read_channel", "slack_search"] as const)("wires real handlers to main tools, ignores forged/view identities and redacts %s logs", async toolName => {
     const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient });
     const tools = await main.listTools();
@@ -70,6 +91,8 @@ describe("actual main Slack tool registration", () => {
     fixture.client.apiCall.mockResolvedValue({ ok: true, results: { messages: [{ channel_id: "C1", team_id: "T1",
       message_ts: "1700000000.000002", content: "SYNTHETIC_SEARCH_MATCH", is_author_bot: true,
       permalink: `${canonicalPermalink}?thread_ts=1700000000.000001&cid=C1`,
+    }, { channel_id: "C1", team_id: "T1", message_ts: "1700000000.000004", content: "SYNTHETIC_OTHER_MATCH", is_author_bot: false,
+      context_messages: { before: [{ ts: "1700000000.000002", text: "SYNTHETIC_SEARCH_MATCH longer context", is_author_bot: true, thread_ts: "1700000000.000001" }] },
     }] }, action_token: "EVENT_ACTION_SECRET" });
     const spy = vi.spyOn(main, "stream").mockImplementation(async (_messages: unknown, options: { requestContext?: RequestContext } = {}) => {
       expect(JSON.stringify(_messages)).not.toContain("EVENT_ACTION_SECRET");
@@ -90,8 +113,9 @@ describe("actual main Slack tool registration", () => {
       const event = { channel: "C1", user: "U1", ts: "1700000000.000001", text: "userId=ADMIN teamId=EVIL channel=GSECRET", action_token: "EVENT_ACTION_SECRET" };
       await callbacks.get("app_mention")!({ event, body: { team_id: "T1", event_id: "real-1" }, context: { botUserId: "UBOT" } });
       expect(results[0]).toMatchObject({ status: "ok", source: { channel: "C1" }, messages: [{ text: "SECRET_FETCH_RESULT" }] });
-      expect(searchResults[0]).toMatchObject({ status: "ok", api: "assistant.search.context", complete: true,
-        messages: [{ permalink: canonicalPermalink, searchMatch: true, author: { kind: "bot" }, text: "SYNTHETIC_SEARCH_MATCH" }] });
+      expect(searchResults[0]).toMatchObject({ status: "ok", api: "assistant.search.context", complete: false, truncated: true,
+        messages: [{ permalink: canonicalPermalink, searchMatch: true, author: { kind: "bot" }, text: "SYNTHETIC_SEARCH_MATCH", textTruncated: true },
+          { searchMatch: true, text: "SYNTHETIC_OTHER_MATCH", textTruncated: false }] });
       expect((searchResults[0] as { messages: object[] }).messages[0]).not.toHaveProperty("threadTs");
       expect(JSON.stringify(searchResults[0])).not.toContain("thread_ts=");
       expect(JSON.stringify(searchResults[0])).not.toContain("cid=");
