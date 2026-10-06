@@ -77,7 +77,7 @@ describe("actual Slack handler wiring", () => {
     { token: undefined, status: "unsupported", candidate: false },
     { token: "invalid secret", status: "unsupported", candidate: false },
     { token: undefined, status: "unsupported", candidate: true },
-  ])("correlates actual handler selection, WeakMap binding and search without fallback: $status / $candidate", async ({ token, status, candidate }) => {
+  ])("preserves actual handler selection, WeakMap binding and search without fallback or temporary emits: $status / $candidate", async ({ token, status, candidate }) => {
     const h = harness();
     const result = await h.stream(); h.stream.mockClear(); vi.mocked(logger.info).mockClear();
     const apiCall = vi.fn(async (..._args: unknown[]) => ({ ok: true, results: { messages: [] } }));
@@ -101,14 +101,8 @@ describe("actual Slack handler wiring", () => {
     Object.defineProperty(body, "unrelated", { enumerable: true, get: getter });
     const event = { channel: "C1", ts: "diag", user: "U1", text: "<@BOT> launch", ...(token !== undefined ? { action_token: token } : {}) };
     await h.deliver("diag", { event, body, context }, "app_mention");
-    const logs = vi.mocked(logger.info).mock.calls.filter(call => call[0] === "slack_action_token_diagnostic").map(call => call[1] as Record<string, unknown>);
-    expect(logs.map(log => log.stage)).toEqual(status === "ok"
-      ? ["receive", "selection", "binding", "search", "search_api"] : ["receive", "selection", "binding", "search"]);
-    expect(logs.every(log => log.requestId === "slack-event:diag" && log.eventKind === "app_mention")).toBe(true);
-    expect(logs[0]).toMatchObject({ eventTokenPresent: token !== undefined, eventTokenUsable: status === "ok",
-      bodyEventTokenUsable: true, bodyTokenUsable: candidate, contextTokenUsable: candidate });
-    expect(logs[2]).toMatchObject({ bindingAttempted: true, identityBound: true, tokenBound: status === "ok" });
-    expect(logs[3]).toMatchObject({ identityBound: true, tokenBound: status === "ok", correlationAvailable: true });
+    const logs = vi.mocked(logger.info).mock.calls;
+    expect(logs.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(name as string))).toEqual([]);
     expect(searchResult).toMatchObject({ status });
     expect(apiCall).toHaveBeenCalledTimes(status === "ok" ? 1 : 0);
     expect(auth).toHaveBeenCalledTimes(status === "ok" ? 1 : 0);
@@ -121,6 +115,26 @@ describe("actual Slack handler wiring", () => {
     }
     const requestContext = (h.stream.mock.calls[0] as unknown as [unknown, { requestContext: { get(key: string): unknown } }])[1].requestContext;
     expect(requestContext.get("action_token")).toBeUndefined(); expect(requestContext.get("stage")).toBeUndefined();
+    expect(getSlackReadIdentity(requestContext)).toEqual({ userId: "U1", teamId: "T1", channel: "C1", requestId: "slack-event:diag" });
+    expect(getSlackSearchActionToken(requestContext)).toBe(status === "ok" ? token : undefined);
+  });
+
+  it("selects event.action_token once and binds it privately without inspecting alternate token getters", async () => {
+    const h = harness();
+    const selected = vi.fn(() => "SINGLE_EVENT_SECRET");
+    const alternate = vi.fn(() => { throw new Error("ALTERNATE_SECRET"); });
+    const event = Object.defineProperty({ channel: "C1", ts: "single-token", user: "U1", text: "<@BOT> launch" }, "action_token", { get: selected });
+    const body = Object.defineProperty({ event_id: "single-token", team_id: "T1" }, "action_token", { get: alternate });
+    const context = Object.defineProperty({ botUserId: "BOT" }, "action_token", { get: alternate });
+    await h.deliver("single-token", { event, body, context }, "app_mention");
+    expect(selected).toHaveBeenCalledTimes(1); expect(alternate).not.toHaveBeenCalled();
+    const requestContext = h.stream.mock.calls[0][1]!.requestContext as { get(key: string): unknown };
+    expect(getSlackSearchActionToken(requestContext)).toBe("SINGLE_EVENT_SECRET");
+    expect(getSlackReadIdentity(requestContext)).toEqual({ userId: "U1", teamId: "T1", channel: "C1", requestId: "slack-event:single-token" });
+    expect(requestContext.get("action_token")).toBeUndefined();
+    for (const value of [h.stream.mock.calls[0][0], vi.mocked(h.repository.complete).mock.calls, vi.mocked(logger.info).mock.calls]) {
+      expect(JSON.stringify(value)).not.toContain("SINGLE_EVENT_SECRET");
+    }
   });
 
   it("passes native roles and trusted actor context, preserving other mentions", async () => {
