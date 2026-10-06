@@ -1,5 +1,7 @@
 # Slack 검색 응답 검증 임시 안전 진단
 
+> PR99~104 항목은 당시 정책/관측의 이력이다. 현재 kind 호환성 및 knownKinds 진단 의미는 아래 **PR104 후속: 명시적 kind 지식과 출력 추론 분리**를 따른다. 기존 PR104 로그의 projected Set을 새 explicit-known Set으로 소급 해석하지 않는다.
+
 ## 현재 근거와 범위
 
 main의 2026-10-06T16:43:05 새 요청 `slack-event:Ev0C6QG1C3HD`에서는 event/body.event action_token DATA/PRESENT/USABLE=true, SDK/receiver/handler alias 유지, identity/token binding 성공을 확인했다. search_api에 16:43:10.440, 16:43:14.480 두 번 도달했으나 bot은 두 번 모두 로컬 unavailable 안내(`Slack 결과를 안전하게 확인하지 못했습니다...`)를 반환했다. 실제 API 응답은 조회하지 않았다. 이전 missing token 문제는 **이번 요청에서는** 해소되었지만 MCP 설정과 Agent UI upgrade의 별도 인과관계는 미확정이다. 이 근거만으로 실제 거부 필드, API 성공 또는 검색 성공을 주장하지 않는다.
@@ -136,7 +138,7 @@ owner main이 전달한 PR103 운영 요약에서는 배포 성공/live SHA/rest
 | 필드 | 고정값 및 의미 |
 |---|---|
 | `failure` | `same_role_text`: 기존 같은 역할 hash 충돌. `cross_role_seed_unverified`: 다른 역할 hash가 달라도 현재 페이지 양쪽 증거가 없음. `cross_role_user` / `cross_role_kind` / `cross_role_thread`: 기존 aggregate compatibility의 첫 실패. `cross_role_text_relation`: 위 metadata를 통과했으나 context가 primary의 정확 prefix 확장이 아님. `unknown`: 진단 sentinel/runtime 비허용 입력 |
-| `primaryKnownKinds`, `contextKnownKinds` | `none` / `bot` / `participant` / `mixed`. **기존 policy가 사용하는 projected non-system kind Set**의 요약이지 명시적 지식이 아니다. inferred participant도 포함한다 |
+| `primaryKnownKinds`, `contextKnownKinds` | PR104 당시: `none` / `bot` / `participant` / `mixed`. **당시 policy가 사용한 projected non-system kind Set** 요약이며 inferred participant도 포함했다. 후속 수정 이후의 현재 의미는 아래 explicit-known Set 참조 |
 | `primaryKindSource`, `contextKindSource` | `explicit_bot` / `explicit_participant` / `inferred_participant` / `unknown` / `mixed`. 아래 source 근거를 모든 page-local 관측에서 누적한 요약 |
 
 source 근거는 schema-parsed projection 시점에 캐시한 primitive 값만 사용한다. primary의 required true/false는 각각 explicit_bot/explicit_participant이며 user가 없어 projected system이어도 false의 명시적 근거는 유지한다. context의 제공된 boolean true 또는 bot_id 존재는 explicit_bot, 제공된 false는 user 부재여도 explicit_participant다. false와 bot_id가 함께 있으면 mixed다. optional boolean 부재/undefined이고 bot_id도 없을 때 user 존재로 projected participant가 되면 inferred_participant, 그 외에는 unknown이다. bot_id/user ID **값은 source side metadata에 넣거나 출력하지 않는다**. schema에 boolean으로 파싱된 값만 명시적 flag로 취급하며 raw own-property/getter를 추가 검사하지 않는다.
@@ -148,6 +150,31 @@ guard 순서는 그대로다: 모든 same-role hash → 기존 seed repeat 예�
 side metadata는 기존 최대 820개 관측의 페이지 안에서만 존재한다. logger는 primitive 인수와 runtime allowlist만 받으며 실패 분류·source에는 외부 문자열/ID/hash/길이/ts/URL/본문/토큰/커서/count가 없다. object cast/폐기 Proxy/getter/toJSON은 실행하지 않고 logger throw를 삼킨다. cursor/DB/도구 output에는 새 진단 metadata를 저장하지 않는다. 합성 회귀는 첫 실패 순서, explicit false vs omitted/user 추론/bot flag/bot_id, 최신 생략·순서별 all-observation 집계, 성공 partial/동일 output, generic unavailable/throwing logger/cursor unlock, registered tool/DB redaction 및 raw getter 접근 불증가를 검증한다.
 
 main은 최종 SHA 실제 diff/fresh review 후 pinned squash와 deploy SUCCESS/live SHA/restarts를 확인하고 **새 actual search 이벤트 1회**에서 failure와 두 역할 source/knownKinds를 대조한다. 검색 성공은 이 PR에서 보장하지 않는다. 그 실제 근거를 사용한 최소 기능 수정은 새 task/PR에서 진행하며 actual search matches/source 및 독립 thread read PASS까지 후속 검증한다. worker는 merge/배포/서버/E2E를 실행하지 않는다. 실제 검색 성공 후 임시 진단 제거는 별도 PR이다.
+
+### PR104 후속: 명시적 kind 지식과 출력 추론 분리
+
+owner main이 전달한 `/tmp/shookie-e2e/pr104-new-thread-diagnostics.log` / `pr104-results.md` 요약에서 search-only 요청 `slack-event:Ev0C76S997BL`은 response_received/check_passed 이후 두 번 `cross_role_kind`로 실패했다. `primary→context`, page/firstPage, previous_prefix이며 당시 `primaryKnownKinds=bot / primaryKindSource=explicit_bot`, `contextKnownKinds=participant / contextKindSource=inferred_participant`였다. user compatibility는 선행 통과했으나 kind 다음의 thread compatibility는 완료 증명이 없다. 이는 **명시적 primary bot vs user만으로 추론된 context participant**를 당시 정책이 거부한 근거다. context의 명시적 false 모순이 아니다. 실제 검색은 unavailable/FAIL이며 응답 원문/context/URL/token을 조회·복사하지 않았다. PR103의 별도 명시적 thread read 실제 PASS(SDK14)는 유지하며 이 수정은 client/thread reader를 변경하지 않는다.
+
+현재 same-page primary-prefix-context의 kind 호환성은 출력 `author.kind`가 아니라 개별 schema-validated 객체에서 캐시한 boolean/presence 근거로 판단한다:
+
+| validated 근거 | explicit-known kind Set |
+|---|---|
+| primary required `is_author_bot=true` | `{bot}` |
+| primary required `is_author_bot=false` | `{participant}` (user 없어 출력 system이어도 known) |
+| context optional true 또는 유효한 bot_id 존재 | `{bot}` |
+| context optional false | `{participant}` (user 없어도 known) |
+| context false + bot_id 존재 | `{bot, participant}` (개별 명시적 모순) |
+| context flag 부재/undefined + bot_id 부재 | 빈 Set/unknown (user 존재는 human proof가 아님) |
+
+`primaryKnownKinds`/`contextKnownKinds`는 이제 이 **explicit-known Set의 모든 page 관측 누적 요약**이다. none=명시적 근거 없음, bot/participant=해당 단일 근거, mixed=양쪽 근거. primary false나 context false는 projected system이어도 participant다. context-only user의 output participant는 기존 출력 추론일 뿐 명시적 human 증명이 아니다. output projection·identity·authorization 계약은 바꾸지 않으며 kind를 사용자 신원/접근권한 증명에 사용하지 않는다.
+
+source enum의 의미/집계는 유지한다. unknown+explicit 또는 inferred+explicit 관측이 함께 있어 source=mixed라도 knownKinds는 단일 bot/participant일 수 있고 양립하면 허용한다. **source=mixed를 known contradiction으로 역변환하지 않는다.** 개별 false+bot_id는 양쪽 known flag를 누적하므로 상대가 known이면 fail-closed다. 서로 다른 관측의 true/false도 양쪽 Set에 남으며 나중 생략/undefined가 앞선 근거를 지우지 않는다. 한 역할 전체가 unknown이면 기존 wildcard를 유지한다. same-role 실패의 미평가 none/unknown 및 cursor-only 역할 부재 sentinel도 그대로다. `cross_role_kind`는 이제 이 explicit-known compatibility의 첫 실패이며, 오래된 PR104 projected-policy 실패와 구분해야 한다.
+
+users → explicit-known kinds → threads → 정확 prefix 순서는 유지한다. 모든 page 관측을 검증하며 same-role sha256 충돌은 항상 fail-closed다. 비prefix/primary-longer/다른 user/thread, authority/channel/team/scope 가드는 그대로다. exact-equal cross-role의 legacy metadata 처리도 그대로다. output author/thread/source를 context로 승격하지 않으며 짧은 primary 원본과 textTruncated=true/partial을 유지한다. metadata는 페이지 로컬 parsed primitive 캐시에만 있고 cursor에는 전달된 최대160 ts×2 role hash만 보관한다. raw own-property 검사/getter 접근, 로그 필드/레코드 수/allowlist, DB/커서 보관, API/config/model/env/dependency/SDK14/public15는 변경하지 않는다.
+
+회귀는 실제 등록 handler→slack_search→API mock에서 명시 bot primary/같은 user·flag 없는 context/정확 prefix 및 알려진 permalink query를 합성 재현한다. status=ok/실제 match 객체/source/partial/queryless/primary bot 유지 및 thread 미승격과 logger/DB redaction을 검증한다. 기존 user 존재만으로 kind negative로 삼은 사례는 inferred가 known이 아니므로 **명시적 false로 보강**했다. false(유무 user)/false+bot_id/primary false+system/모든 관측 true-false·최신 생략·순서 permutation, source 혼합이지만 known 일치 positive, context-only 출력 계약 및 기존 author/thread/hash/cursor/cancellation/privacy 회귀를 유지한다. 합성 PASS는 live 검색 PASS가 아니다.
+
+main이 최종 tested SHA 실제 diff/fresh 독립 리뷰 후 pinned squash/deploy SUCCESS/live SHA/restarts를 확인하고 새 actual search의 status=ok와 matches/source/partial을 원래 출처에 대조해야 한다. unavailable/history fallback 또는 원래 thread-read PASS는 검색 PASS의 대체가 아니다. 다음 guard 실패가 나오면 안전 고정 진단의 실제 원인만 별도 후속으로 수정한다. worker는 서버/E2E/배포/merge를 실행하지 않는다. 실제 성공 이후 임시 진단 제거는 별도 PR/review/deploy/회귀 E2E다.
 
 ### 승인된 검색 permalink 정규화
 
@@ -170,5 +197,5 @@ main 책임:
 1. 최종 head 독립 리뷰·실제 diff·검증 SHA 수용 후 pinned squash merge. 배포 SHA와 bot 준비 확인.
 2. 기존 접근 가능한 공개채널에서 **새 이벤트 1회**의 실제 slack_search 요청. worker는 운영 E2E/서버/배포/merge를 하지 않는다.
 3. 그 trusted requestId의 기존 token 단계와 response/check/failure reason/schemaField 또는 permalink predicate flags/고정 보조 enum, 충돌 역할/원천/available 비교 vector 및 thread/channel read reason을 bot 응답과 대조한다. 필요하면 같은 이벤트 안에서 원래 대상에 대한 명시적 thread read를 사용한다. raw response/debug/credential 공유 금지. 배포 SUCCESS/live SHA/restarts 확인 뒤 새 Slack thread 실제 검색 결과를 원래 SHKO 표식 thread 원문·수정 댓글 출처와 대조해야 한다.
-4. 조회 API 응답/합성 테스트/로그만으로 실제 검색 PASS를 주장하지 않는다. 검색 없는 unavailable/채널 부모 발견을 PASS로 대체하지 않는다. 근거 확인 후 최소 fix를 별도 task/PR로 설계하며, 실제 검색/source 및 thread read 통과까지 후속 진행은 owner main 책임이다. 이 진단 PR 자체에는 acceptance 변경이 없다.
+4. 조회 API 응답/합성 테스트/로그만으로 실제 검색 PASS를 주장하지 않는다. 검색 없는 unavailable/채널 부모 발견을 PASS로 대체하지 않는다. 근거 확인 후 최소 fix를 별도 task/PR로 설계하며, 실제 검색/source 및 thread read 통과까지 후속 진행은 owner main 책임이다. PR104까지의 진단 PR 자체에는 acceptance 변경이 없었다. 현재 기능 수정의 kind acceptance/진단 의미 변경은 위 PR104 후속 항목 참조.
 5. 근거 확보 후 **임시 response 및 action-token 진단 제거 후속 PR** 필요. worker 제출 후 수정 대기; 최종 stop/워크트리·브랜치 정리 및 `cleanup_completed` 종료 증명은 owner main 담당이다.

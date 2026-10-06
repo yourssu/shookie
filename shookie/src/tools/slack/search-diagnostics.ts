@@ -54,6 +54,8 @@ type ConflictOrigin = typeof conflictOrigins[number];
 type PrefixRelation = typeof prefixRelations[number];
 const conflictFailures = ["same_role_text", "cross_role_user", "cross_role_kind", "cross_role_thread",
   "cross_role_text_relation", "cross_role_seed_unverified", "unknown"] as const;
+// Explicit schema-validated knowledge only (PR104's older logs summarized projected kind).
+// A mixed source summary need not be mixed knowledge; the caller aggregates flags per object.
 const knownKinds = ["none", "bot", "participant", "mixed"] as const;
 const kindSources = ["explicit_bot", "explicit_participant", "inferred_participant", "unknown", "mixed"] as const;
 export type SearchConflictFailure = typeof conflictFailures[number];

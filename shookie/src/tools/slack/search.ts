@@ -27,10 +27,11 @@ const responseSchema = z.object({ results: z.object({ messages: z.array(searchMe
 type DeliveryRole = "primary" | "context";
 type RoleHashes = Partial<Record<DeliveryRole, string>>;
 type SearchMessage = ReadResult["messages"][number];
-type PageMetadata = { users: Set<string>; kinds: Set<string>; threads: Set<string>; kindSources: Set<SearchKindSource> };
-// Diagnostic summaries only. Projected kind remains the existing policy, not explicit knowledge.
-const summarizeKinds = (metadata?: PageMetadata): SearchKnownKinds => !metadata?.kinds.size ? "none" :
-  metadata.kinds.size > 1 ? "mixed" : metadata.kinds.has("bot") ? "bot" : "participant";
+type KindEvidence = { bot: boolean; participant: boolean; source: SearchKindSource };
+type PageMetadata = { users: Set<string>; knownKinds: Set<string>; threads: Set<string>; kindSources: Set<SearchKindSource> };
+// Guard knowledge is explicit parsed evidence, independent of the output author.kind projection.
+const summarizeKinds = (metadata?: PageMetadata): SearchKnownKinds => !metadata?.knownKinds.size ? "none" :
+  metadata.knownKinds.size > 1 ? "mixed" : metadata.knownKinds.has("bot") ? "bot" : "participant";
 const summarizeKindSources = (metadata?: PageMetadata): SearchKindSource => !metadata?.kindSources.size ? "unknown" :
   metadata.kindSources.size > 1 ? "mixed" : metadata.kindSources.values().next().value!;
 type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, RoleHashes>;
@@ -126,7 +127,7 @@ export class SlackSearcher {
       if (data.warning || data.results.messages.length > limit) reject(data.warning ? "warning_present" : "result_limit_exceeded");
       const candidates: ReadResult["messages"] = [], contexts: ReadResult["messages"] = [];
       // Bounded page-local side metadata from parsed values only; never output or cursor state.
-      const kindSources = new WeakMap<SearchMessage, SearchKindSource>();
+      const kindEvidence = new WeakMap<SearchMessage, KindEvidence>();
       const validateScope = (m: { channel_id?: string; channel?: string; team_id?: string; team?: string }) => {
         if ((m.channel_id !== undefined && m.channel_id !== identity.channel) || (m.channel !== undefined && m.channel !== identity.channel) ||
             (m.team_id !== undefined && m.team_id !== identity.teamId) || (m.team !== undefined && m.team !== identity.teamId)) reject("scope_mismatch");
@@ -187,7 +188,8 @@ export class SlackSearcher {
           author: { userId: primaryUser ?? null, botId: null, kind: primaryBot ? "bot" : primaryUser ? "participant" : "system" },
           ...(m.thread_ts ? { threadTs: m.thread_ts } : {}), ...(normalizedPermalink ? { permalink: normalizedPermalink } : {}), searchMatch: true };
         candidates.push(candidate);
-        kindSources.set(candidate, primaryBot ? "explicit_bot" : "explicit_participant");
+        kindEvidence.set(candidate, { bot: primaryBot, participant: !primaryBot,
+          source: primaryBot ? "explicit_bot" : "explicit_participant" });
         for (const position of ["before", "after"] as const) for (const c of m.context_messages?.[position] ?? []) {
           // Official contextual objects omit scope: they inherit the verified parent result's channel/team.
           // Any explicit scope, including alternate field names, must agree; never silently discard leaks.
@@ -202,9 +204,10 @@ export class SlackSearcher {
           contexts.push(contextual);
           // Explicit false is known participant even without a user; bot_id is only a presence signal.
           // Retain contradictory explicit signals as mixed, without changing the projected kind.
-          kindSources.set(contextual, contextBot === false && contextBotId ? "mixed" :
-            contextBot === true || contextBotId ? "explicit_bot" : contextBot === false ? "explicit_participant" :
-              contextUser || alternateUser ? "inferred_participant" : "unknown");
+          kindEvidence.set(contextual, { bot: contextBot === true || contextBotId !== undefined, participant: contextBot === false,
+            source: contextBot === false && contextBotId ? "mixed" :
+              contextBot === true || contextBotId ? "explicit_bot" : contextBot === false ? "explicit_participant" :
+                contextUser || alternateUser ? "inferred_participant" : "unknown" });
         }
       }
       const fingerprints: Record<string, RoleHashes> = {};
@@ -235,14 +238,18 @@ export class SlackSearcher {
         hashes[role] = fingerprint; observed.set(message.ts, hashes);
         pageRoles[role] = message; pageObserved.set(message.ts, pageRoles);
         const metadata = pageMetadata.get(message.ts) ?? {};
-        const roleMetadata = metadata[role] ?? { users: new Set<string>(), kinds: new Set<string>(), threads: new Set<string>(), kindSources: new Set<SearchKindSource>() };
+        const roleMetadata = metadata[role] ?? { users: new Set<string>(), knownKinds: new Set<string>(), threads: new Set<string>(), kindSources: new Set<SearchKindSource>() };
         if (message.author.userId) roleMetadata.users.add(message.author.userId);
-        if (message.author.kind !== "system") roleMetadata.kinds.add(message.author.kind);
+        const evidence = kindEvidence.get(message);
+        // Source "mixed" can mean unknown + explicit observations, not a contradiction.
+        // Accumulate each object's validated flags instead; omission never erases knowledge.
+        if (evidence?.bot) roleMetadata.knownKinds.add("bot");
+        if (evidence?.participant) roleMetadata.knownKinds.add("participant");
         if (message.threadTs) roleMetadata.threads.add(message.threadTs);
-        roleMetadata.kindSources.add(kindSources.get(message) ?? "unknown");
+        roleMetadata.kindSources.add(evidence?.source ?? "unknown");
         metadata[role] = roleMetadata; pageMetadata.set(message.ts, metadata);
       }
-      // Equivalent to comparing every primary with every context's projected metadata,
+      // Equivalent to comparing every primary with every context's explicit known metadata,
       // without an unbounded Cartesian scan. Unknown on either role remains a wildcard.
       const compatibleKnownValues = (primary: Set<string>, contextual: Set<string>) =>
         !primary.size || !contextual.size || (primary.size === 1 && contextual.size === 1 &&
@@ -250,7 +257,7 @@ export class SlackSearcher {
       // Same short-circuit order and compatibility policy; classify only the first failure.
       const prefixMetadataFailure = (primary: PageMetadata, contextual: PageMetadata): SearchConflictFailure | undefined =>
         !compatibleKnownValues(primary.users, contextual.users) ? "cross_role_user" :
-          !compatibleKnownValues(primary.kinds, contextual.kinds) ? "cross_role_kind" :
+          !compatibleKnownValues(primary.knownKinds, contextual.knownKinds) ? "cross_role_kind" :
             !compatibleKnownValues(primary.threads, contextual.threads) ? "cross_role_thread" : undefined;
       const shortPrimary = new Set<string>();
       for (const [ts, pageRoles] of pageObserved) {
