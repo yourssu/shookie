@@ -27,6 +27,7 @@ const responseSchema = z.object({ results: z.object({ messages: z.array(searchMe
 type DeliveryRole = "primary" | "context";
 type RoleHashes = Partial<Record<DeliveryRole, string>>;
 type SearchMessage = ReadResult["messages"][number];
+type PageMetadata = { users: Set<string>; kinds: Set<string>; threads: Set<string> };
 type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, RoleHashes>;
   deliveredRoles: Record<string, DeliveryRole>; used: string[]; expires: number };
 const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 24_000 };
@@ -195,6 +196,8 @@ export class SlackSearcher {
       // failed continuation attempts must not mutate the seed. No page text enters cursor state.
       const observed = new Map<string, RoleHashes>(Object.entries(previous?.fingerprints ?? {}).map(([ts, hashes]) => [ts, { ...hashes }]));
       const pageObserved = new Map<string, Partial<Record<DeliveryRole, SearchMessage>>>();
+      // Page-local primitives only. Missing metadata never removes an earlier explicit value.
+      const pageMetadata = new Map<string, Partial<Record<DeliveryRole, PageMetadata>>>();
       const conflict = (message: SearchMessage, priorRole: DeliveryRole, prior?: SearchMessage): never => {
         const comparison = compareSlackSearchConflict(prior?.text, message.text);
         logSlackSearchConflictDiagnostic(context, priorRole, message.searchMatch ? "primary" : "context", prior ? "page" : "cursor",
@@ -211,11 +214,21 @@ export class SlackSearcher {
         if (hashes[role] && hashes[role] !== fingerprint) conflict(message, role, pageRoles[role]);
         hashes[role] = fingerprint; observed.set(message.ts, hashes);
         pageRoles[role] = message; pageObserved.set(message.ts, pageRoles);
+        const metadata = pageMetadata.get(message.ts) ?? {};
+        const roleMetadata = metadata[role] ?? { users: new Set<string>(), kinds: new Set<string>(), threads: new Set<string>() };
+        if (message.author.userId) roleMetadata.users.add(message.author.userId);
+        if (message.author.kind !== "system") roleMetadata.kinds.add(message.author.kind);
+        if (message.threadTs) roleMetadata.threads.add(message.threadTs);
+        metadata[role] = roleMetadata; pageMetadata.set(message.ts, metadata);
       }
-      const compatiblePrefixMetadata = (primary: SearchMessage, contextual: SearchMessage) =>
-        (!primary.author.userId || !contextual.author.userId || primary.author.userId === contextual.author.userId) &&
-        (primary.author.kind === "system" || contextual.author.kind === "system" || primary.author.kind === contextual.author.kind) &&
-        (!primary.threadTs || !contextual.threadTs || primary.threadTs === contextual.threadTs);
+      // Equivalent to comparing every primary with every context's explicit metadata,
+      // without an unbounded Cartesian scan. Unknown on either role remains a wildcard.
+      const compatibleKnownValues = (primary: Set<string>, contextual: Set<string>) =>
+        !primary.size || !contextual.size || (primary.size === 1 && contextual.size === 1 &&
+          primary.values().next().value === contextual.values().next().value);
+      const compatiblePrefixMetadata = (primary: PageMetadata, contextual: PageMetadata) =>
+        compatibleKnownValues(primary.users, contextual.users) && compatibleKnownValues(primary.kinds, contextual.kinds) &&
+        compatibleKnownValues(primary.threads, contextual.threads);
       const shortPrimary = new Set<string>();
       for (const [ts, pageRoles] of pageObserved) {
         const hashes = observed.get(ts)!;
@@ -226,19 +239,12 @@ export class SlackSearcher {
         if ((!primary || !contextual) && previous?.fingerprints[ts]?.[primary ? "primary" : "context"]) continue;
         // Unequal cross-role seeds cannot prove a prefix without BOTH validated page-local
         // representations. Their same-role seed comparisons above must also have passed.
-        if (!primary || !contextual || !compatiblePrefixMetadata(primary, contextual) || !contextual.text.startsWith(primary.text)) {
+        const metadata = pageMetadata.get(ts)!;
+        if (!primary || !contextual || !compatiblePrefixMetadata(metadata.primary!, metadata.context!) || !contextual.text.startsWith(primary.text)) {
           if (contextual) conflict(contextual, "primary", primary);
           else conflict(primary!, "context");
         }
         shortPrimary.add(ts);
-      }
-      // Equal same-role text does not let a later object's metadata hide an earlier
-      // explicit conflict in a prefix pair. Exact-equal cross-role behavior stays unchanged.
-      for (const message of [...candidates, ...contexts]) {
-        if (!shortPrimary.has(message.ts)) continue;
-        const pair = pageObserved.get(message.ts)!;
-        if (!compatiblePrefixMetadata(message.searchMatch ? message : pair.primary!, message.searchMatch ? pair.context! : message))
-          conflict(message, message.searchMatch ? "context" : "primary", message.searchMatch ? pair.context : pair.primary);
       }
       const projected = new Map<string, SearchMessage>();
       let lossy = previous?.lossy ?? false;

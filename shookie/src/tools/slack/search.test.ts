@@ -540,6 +540,53 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     ] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
   });
+  it.each([
+    ["thread", false, false], ["thread", false, true], ["thread", true, false], ["thread", true, true],
+    ["author", false, false], ["author", false, true], ["author", true, false], ["author", true, true],
+    ["kind", false, false], ["kind", false, true], ["kind", true, false], ["kind", true, true],
+  ])("rejects all-observation prefix metadata contradiction despite omitted latest %s (%s/%s)", async (field, primaryExplicitLast, contextExplicitLast) => {
+    const f = fixture();
+    const primary = { ...message(2), content: short, author_user_id: undefined };
+    const primaryMeta = field === "thread" ? { thread_ts: ts(1) } : field === "kind" ? { is_author_bot: true } : { author_user_id: "U2" };
+    const contextual = { ts: ts(2), text: long };
+    const contextMeta = field === "thread" ? { thread_ts: ts(3) } : { user_id: "U3" };
+    const primaries = [primary, { ...primary, ...primaryMeta }];
+    const contextObjects = [contextual, { ...contextual, ...contextMeta }];
+    if (!primaryExplicitLast) primaries.reverse();
+    if (!contextExplicitLast) contextObjects.reverse();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      ...primaries,
+      { ...message(4), context_messages: { before: [contextObjects[0]] } },
+      { ...message(5), context_messages: { before: [contextObjects[1]] } },
+    ] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
+  });
+  it.each([[false, false], [false, true], [true, false], [true, true]])("keeps unknown metadata a wildcard without synthesizing primary provenance (%s/%s)", async (primaryKnown, contextKnown) => {
+    const f = fixture();
+    const primary = { ...message(2), content: short, author_user_id: undefined };
+    const contextual = { ts: ts(2), text: long };
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...primary, ...(primaryKnown ? { thread_ts: ts(1), author_user_id: "U2" } : {}) }, primary,
+      { ...message(4), context_messages: { before: [{ ...contextual, ...(contextKnown ? { thread_ts: ts(1), user_id: "U2" } : {}) }] } },
+      { ...message(5), context_messages: { before: [contextual] } },
+    ] } });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(result.messages[0]).toMatchObject({ ts: ts(2), text: short, textTruncated: true, searchMatch: true,
+      author: { userId: primaryKnown ? "U2" : null, kind: primaryKnown ? "participant" : "system" } });
+    if (primaryKnown) expect(result.messages[0].threadTs).toBe(ts(1)); else expect(result.messages[0]).not.toHaveProperty("threadTs");
+  });
+  it("preserves exact-equal cross-role metadata behavior despite contradictory explicit observations", async () => {
+    const f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...message(2), content: short, thread_ts: ts(1) },
+      { ...message(2), content: short, author_user_id: undefined },
+      { ...message(4), context_messages: { before: [{ ts: ts(2), text: short, thread_ts: ts(3), user_id: "U3" }] } },
+      { ...message(5), context_messages: { before: [{ ts: ts(2), text: short }] } },
+    ] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok", complete: true, truncated: false,
+      messages: [{ ts: ts(2), text: short, textTruncated: false, threadTs: ts(1), author: { userId: "U2" } }, {}, {}] });
+  });
   it("rejects primary-only cursor seed versus a longer context without current-page primary evidence", async () => {
     const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(0, 1) }, next_cursor: "next" });
     const first = await f.reader.search({ query: "launch" }, f.context);
