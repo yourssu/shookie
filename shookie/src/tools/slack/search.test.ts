@@ -34,7 +34,7 @@ function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
 }
 
-describe("permalink rejection predicate vector (observation only)", () => {
+describe("permalink rejection predicate vector", () => {
   const canonical = message().permalink;
   const validFlags = {
     permalinkParsed: true, permalinkCanonicalHref: true, permalinkHttps: true, permalinkHost: true,
@@ -62,11 +62,7 @@ describe("permalink rejection predicate vector (observation only)", () => {
     [canonical.replace(/000002$/, "000003"), { permalinkPath: false, pathMessageTsMatch: false }],
     [canonical.replace(/p[0-9]+$/, "p17000000002"), { permalinkPath: false, pathMessageTsMatch: false }],
     [canonical.replace("/archives/", "/else/"), { permalinkPath: false, pathShape: "other", pathChannelMatch: false, pathMessageTsMatch: false }],
-    [`${canonical}?thread_ts=${ts(1)}&cid=C1`, { permalinkNoQuery: false, queryClass: "known",
-      queryThreadTsPresent: true, queryCidPresent: true, queryThreadTsMatch: true, queryCidMatch: true }],
     [`${canonical}?thread_ts=1700000000.1&cid=COTHER`, { permalinkNoQuery: false, queryClass: "known", queryThreadTsPresent: true, queryCidPresent: true }],
-    [`${canonical}?%74hread_ts=${ts(1)}&%63id=C1`, { permalinkNoQuery: false, queryClass: "known",
-      queryThreadTsPresent: true, queryCidPresent: true, queryThreadTsMatch: true, queryCidMatch: true }],
     [`${canonical}?thread_ts=${ts(1)}&thread_ts=${token}&cid=C1&cid=C1`, { permalinkNoQuery: false, queryClass: "known",
       queryThreadTsPresent: true, queryCidPresent: true, queryCidMatch: true, queryDuplicate: true }],
     [`${canonical}?${token}=${token}&thread_ts=${ts(1)}`, { permalinkNoQuery: false, queryClass: "unknown", queryThreadTsPresent: true, queryThreadTsMatch: true }],
@@ -76,7 +72,7 @@ describe("permalink rejection predicate vector (observation only)", () => {
       pathChannelMatch: false, pathMessageTsMatch: false, queryClass: "unknown" }],
     [`${canonical}?${"a&".repeat(200)}`, { permalinkNoQuery: false, queryClass: "unknown" }],
     [`${canonical}?&&`, { permalinkNoQuery: false, queryClass: "unknown" }],
-  ])("reports all fixed flags for a rejected synthetic URL without relaxing guards", async (permalink, changes) => {
+  ])("reports all fixed flags for a rejected synthetic URL", async (permalink, changes) => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), thread_ts: ts(1), permalink }] } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
@@ -111,11 +107,13 @@ describe("permalink rejection predicate vector (observation only)", () => {
     // Bare delimiters have empty URL.search/hash under the original predicate; keep that behavior too.
     for (const permalink of [canonical, `${canonical}?`, `${canonical}#`, undefined, ""]) {
       d.spy.mockClear(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink }] } });
-      expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("ok");
+      const result = await f.reader.search({ query: "launch" }, f.context);
+      expect(result.status).toBe("ok");
+      expect(result.messages[0].permalink).toBe(permalink || undefined);
       expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
     }
   });
-  it("query matches require present parameters and a validated parent thread timestamp", async () => {
+  it("query diagnostic metadata match remains false when parent thread timestamp is absent", async () => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${canonical}?thread_ts=${ts(1)}&cid=` }] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
@@ -142,6 +140,105 @@ describe("permalink rejection predicate vector (observation only)", () => {
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(3)] } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
     expect(f.apiCall).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("validated navigation query normalization (synthetic Slack API)", () => {
+  it.each([
+    `thread_ts=${ts(1)}&cid=C1`, `cid=C1&thread_ts=${ts(1)}`, "cid=C1", `thread_ts=${ts(1)}`,
+    `%74hread_ts=${ts(1)}&%63id=C1`, `thread_ts=${ts(2)}`, "thread_ts=1700000000.0",
+    "thread_ts=0000001700000000.0", "thread_ts=1.1", "thread_ts=1700000000%2E000001",
+  ])("strips safe query %s without promoting a query root to metadata or context provenance", async query => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(),
+      permalink: `${message().permalink}?${query}`,
+      context_messages: { before: [{ ts: ts(1), text: "context", user_id: "U3" }] },
+    }] } });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: true, nextCursor: null });
+    expect(readOutput.safeParse(result).success).toBe(true);
+    expect(result.messages[1]).toMatchObject({ ts: ts(2), permalink: message().permalink, searchMatch: true });
+    expect(result.messages.every(m => m.threadTs === undefined)).toBe(true);
+    expect(result.messages[0]).toMatchObject({ searchMatch: false, contextForTs: ts(2), contextPosition: "before" });
+    expect(d.records().map(r => r.reason)).toEqual(["response_received", "check_passed"]);
+    expect(f.apiCall).toHaveBeenCalledTimes(1); expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
+    for (const secret of [query, message().permalink, ts(1), ts(2), token, "context", "C1", "U3"]) {
+      expect(JSON.stringify(d.spy.mock.calls)).not.toContain(secret);
+    }
+  });
+  it.each(["1700000000.1", "1700000000.10", "1700000000.100", "1700000000.1000", "1700000000.10000", "1700000000.100000"])("normalizes query/root metadata fractions together: %s", async root => {
+    const f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(200000), message_ts: "1700000000.2", thread_ts: "1700000000.1",
+      permalink: `${message(200000).permalink}?cid=C1&thread_ts=${root}` }] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok",
+      messages: [{ ts: ts(200000), threadTs: ts(100000), permalink: message(200000).permalink }] });
+  });
+  it("compares bounded timestamps as integers without floating-point precision loss", async () => {
+    const f = fixture(), whole = "9999999999999999";
+    const permalink = `https://synthetic.slack.com/archives/C1/p${whole}000002`;
+    for (const [root, status] of [[`${whole}.000001`, "ok"], [`${whole}.000002`, "ok"], [`${whole}.000003`, "unavailable"]]) {
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), message_ts: `${whole}.000002`, permalink: `${permalink}?thread_ts=${root}` }] } });
+      expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe(status);
+    }
+  });
+  it.each([
+    "unknown=value", "=value", "cid", "cid=", "thread_ts", "thread_ts=", "cid=COTHER", "cid=c1",
+    "cid=C1&cid=C1", "cid=C1&%63id=C1", "cid=&cid=C1", "thread_ts=&thread_ts=1700000000.000001",
+    `thread_ts=${ts(1)}&thread_ts=${ts(1)}`, "thread_ts=1700000000.000001&%74hread_ts=1700000000.000002",
+    "thread_ts=1700000000.000003", "thread_ts=1700000001.0", "thread_ts=1700000000", "thread_ts=.1",
+    "thread_ts=1700000000.", "thread_ts=1700000000.0000001", "thread_ts=10000000000000000.1",
+    "thread_ts=-1.1", "thread_ts=1e3.1", "thread_ts=1700000000%2E%FF", "thread_ts=%C0%AF",
+    "thread_ts=1700000000.000001%", "thread_ts=1700000000.000001+", "threa%FFd_ts=1700000000.1",
+    "cid=C1&unknown=value", "cid=C1&=value", "&&",
+  ])("fails closed on %s, retains the cursor for retry and never looks up a fallback", async query => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, next_cursor: "page-2" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(1), { ...message(), permalink: `${message().permalink}?${query}` }] }, next_cursor: "page-3" });
+    const result = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
+    expect(result).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null, complete: false });
+    expect(d.records().at(-1)).toMatchObject({ reason: "permalink_invalid" });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(4)] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2, complete: true });
+    expect(f.apiCall).toHaveBeenCalledTimes(3);
+    expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
+    expect(JSON.stringify(d.spy.mock.calls)).not.toContain(query);
+  });
+  it("does not give a query root any authority over context thread provenance or trusted identity", async () => {
+    const f = fixture(), identity = getSlackReadIdentity(f.context);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(),
+      permalink: `${message().permalink}?thread_ts=${ts(1)}&cid=C1`,
+      context_messages: { before: [{ ts: ts(1), thread_ts: ts(0), text: "independent context" }] },
+    }] } });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result.status).toBe("ok");
+    expect(result.messages[0]).toMatchObject({ threadTs: ts(0), searchMatch: false, contextForTs: ts(2) });
+    expect(result.messages[1]).not.toHaveProperty("threadTs");
+    expect(result.source).toEqual({ channel: "C1" });
+    expect(getSlackReadIdentity(f.context)).toBe(identity);
+  });
+  it("rejects a safe-looking query root that conflicts with authoritative thread metadata", async () => {
+    const f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), thread_ts: ts(1), permalink: `${message().permalink}?thread_ts=${ts(2)}&cid=C1` }] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
+  });
+  it.each([
+    (url: string) => url.replace("synthetic", "external"), (url: string) => url.replace("C1", "COTHER"),
+    (url: string) => url.replace(/000002$/, "000003"), (url: string) => url.replace("synthetic", "SYNTHETIC"),
+    (url: string) => url.replace(".com/", ".com:443/"), (url: string) => url.replace(".com/", ".com:444/"),
+    (url: string) => url.replace("https://", "https://user@"), (url: string) => url.replace("https:", "http:"),
+  ])("known query cannot relax the original authority/path guards", async mutate => {
+    const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${mutate(message().permalink)}?cid=C1&thread_ts=${ts(1)}` }] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+  });
+  it("known query cannot relax fragment guards, but bare hash stays accepted and is stripped", async () => {
+    const f = fixture();
+    for (const [hash, status] of [["#fragment", "unavailable"], ["#", "ok"]]) {
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), permalink: `${message().permalink}?cid=C1${hash}` }] } });
+      const result = await f.reader.search({ query: "launch" }, f.context);
+      expect(result.status).toBe(status);
+      if (status === "ok") expect(result.messages[0].permalink).toBe(message().permalink);
+    }
   });
 });
 

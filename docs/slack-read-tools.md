@@ -48,7 +48,7 @@ SDK timeout 10초, `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`
 
 읽기 ts는 소수점 정확히 6자리 (`1700000000.000001`). permalink는 HTTPS workspace host/archive/current channel/ts 일치, credentials/port/hash/알 수 없는 query/중복 query/모순 ts·channel을 엄격히 검증하며 **HTTP fetch하지 않는다**. 정상 댓글 링크의 `thread_ts=<parent>&cid=<currentChannel>`도 지원한다.
 
-검색 입력 예: `{"query":"출시 plan","limit":20}`. 도구 인자는 strict schema이며 actor/team/action_token/filters를 추가할 수 없다. API response의 공식 예시처럼 1~6자리 fractional ts는 검증 후 6자리로 normalize한다. primary permalink는 인증된 workspace/current channel/message ts에 대응하는 canonical URL만 반환한다.
+검색 입력 예: `{"query":"출시 plan","limit":20}`. 도구 인자는 strict schema이며 actor/team/action_token/filters를 추가할 수 없다. API response의 공식 예시처럼 1~6자리 fractional ts는 검증 후 6자리로 normalize한다. primary permalink는 인증된 workspace/current channel/message ts에 대응하는 canonical URL만 반환한다. 검색 permalink의 decoded query는 thread_ts/cid만 각각 옵션으로 허용하며 unknown/empty/duplicate는 거부한다. cid는 현재 채널 exact 일치, thread_ts는 기존 API timestamp bounds/6자리 소수 정규화 후 root<=message(BigInt)와 존재하는 metadata.thread_ts 일치를 검증한다. query는 검증 후 제거하고 metadata.thread_ts가 없으면 반환 threadTs/권한/출처로 승격하지 않는다. query 없는 링크와 bare ?/# 경계는 기존대로 유지한다. [관측 근거·공식 문서와 규범 구분·정규화 계약](slack-search-response-diagnostics.md)을 참조한다.
 
 공통 출력: `status`, `message`, source channel/threadTs, message channel/ts/threadTs, author(userId/botId/kind), text, textTruncated, page, nextCursor, complete/truncated, limits. 검색은 `api: assistant.search.context`, primary의 `searchMatch: true` 및 permalink, context의 `searchMatch: false`/contextForTs/contextPosition을 추가한다. 주변 context를 검색 match로 주장하지 않는다. blocks/files/user/channel results는 읽지 않는다.
 
@@ -87,6 +87,6 @@ readAuthorizedSlackMessage(client, requestContext, { messageTs, threadTs?, chann
 
 관련 자동 테스트는 mock Slack API + 실제 Mastra main factory/tool execute/실제 handler 배선 및 실제 SDK synthetic adapter로 token 로그 차단을 검증한다. 검색 성공/공식 shape/context/bots/provenance, scope/query 주입, trusted action_token 전달과 위조 차단, 20 matches·budget·bounded cursor·partial, 설정/권한/429/빈결과 구분, bridge live 권한/exact message/file IDs, 기존 thread/DM 회귀가 포함된다.
 
-**실제 Slack/실제 LLM E2E는 미실행**이다. 공식 API 지원은 운영 워크스페이스 성공을 보증하지 않는다. 운영자는 허용된 테스트 public 채널에서 기존 bot의 scope/feature/action_token event 수신을 확인하고 검색 성공/페이지·context·partial/source를 검증해야 한다. 현재 private/DM에서 읽기와 검색 unsupported의 구분, 다른 private 채널 링크/임의 in: 검색 차단, 429/토큰 만료 안내 및 server 로그 비밀 미기록도 확인한다. 설치 실패를 user token 추가/광역 스캔으로 해결하지 않는다.
+**이번 정규화 수정의 실제 Slack/실제 LLM E2E는 worker가 미실행**했다. main의 이전 PR100 E2E에서는 알려진 query가 있는 permalink 때문에 로컬 unavailable였음을 확인했으며 검색 PASS가 아니다. 이번 합성 회귀는 그 query 형태만 재현해 등록 도구의 queryless 반환·metadata.threadTs 미승격을 확인한다. 배포 후 새 Slack thread에서 실제 검색 결과와 원래 SHKO 표식 원문·수정 댓글 출처를 대조하는 검증은 main 책임이다. 공식 API 지원·조회 API 성공·합성 PASS는 운영 워크스페이스 실제 검색 성공을 보증하지 않는다. 운영자는 허용된 테스트 public 채널에서 기존 bot의 scope/feature/action_token event 수신을 확인하고 검색 성공/페이지·context·partial/source를 검증해야 한다. 현재 private/DM에서 읽기와 검색 unsupported의 구분, 다른 private 채널 링크/임의 in: 검색 차단, 429/토큰 만료 안내 및 server 로그 비밀 미기록도 확인한다. 설치 실패를 user token 추가/광역 스캔으로 해결하지 않는다.
 
 전체 기본 timeout suite의 기존 Code Explorer snapshot 실패는 이번 Slack 변경으로 해결했다고 주장하지 않는다. timeout을 늘린 이전 실행은 기본 timeout 문제 해결의 증거가 아니며 해당 원인 진단은 별도 담당 작업이다.

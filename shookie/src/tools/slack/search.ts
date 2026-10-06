@@ -29,6 +29,35 @@ type State = { binding: string; cursor: string; page: number; lossy: boolean; fi
   deliveredRoles: Record<string, DeliveryRole>; used: string[]; expires: number };
 const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 24_000 };
 
+/** Validate the message address before accepting navigation-only query hints. Never infer thread provenance. */
+function normalizeSearchPermalink(url: URL, permalink: string, workspaceHost: string, channel: string,
+  messageTs: string, threadTs?: string): string | undefined {
+  const path = `/archives/${channel}/p${messageTs.replace(".", "")}`;
+  if (url.href !== permalink || url.protocol !== "https:" || url.hostname !== workspaceHost ||
+      url.username || url.password || url.port || url.hash || url.pathname !== path) return undefined;
+  // Preserve legacy queryless URLs, including bare ?/# delimiters and missing-link handling at the caller.
+  if (!url.search) return permalink;
+  try {
+    const seen = new Set<string>();
+    let steps = 0;
+    for (const [key, value] of url.searchParams) {
+      // The response schema still bounds the entire URL to 512 chars.
+      if (++steps > 512 || (key !== "thread_ts" && key !== "cid") || seen.has(key) || !value) return undefined;
+      seen.add(key);
+      if (key === "cid") {
+        if (value !== channel) return undefined;
+      } else {
+        const root = apiTs.safeParse(value);
+        if (!root.success || BigInt(root.data.replace(".", "")) > BigInt(messageTs.replace(".", "")) ||
+            (threadTs !== undefined && root.data !== threadTs)) return undefined;
+      }
+    }
+    if (!steps) return undefined;
+    // Query hints are validated then discarded; only the verified message address reaches the model.
+    return `https://${workspaceHost}${path}`;
+  } catch { return undefined; }
+}
+
 /** Bot + authenticated event action_token only. Fixed current public channel, keyword messages, no fallback. */
 export class SlackSearcher {
   private readonly cursors = new Map<string, State>();
@@ -94,6 +123,7 @@ export class SlackSearcher {
       };
       for (const m of data.results.messages) {
         validateScope(m);
+        let normalizedPermalink = m.permalink;
         if (m.permalink) {
           // Only schema-parsed values and the existing URL parse. Never inspect raw response metadata.
           const permalink = m.permalink;
@@ -116,7 +146,9 @@ export class SlackSearcher {
                   for (const [key, value] of url.searchParams) {
                     if (++steps > 512) { queryClass = "unknown"; break; }
                     if (key === "thread_ts") {
-                      duplicate ||= threadPresent; threadPresent = true; threadMatch &&= value === m.thread_ts;
+                      duplicate ||= threadPresent; threadPresent = true;
+                      const root = apiTs.safeParse(value);
+                      threadMatch &&= root.success && root.data === m.thread_ts;
                     } else if (key === "cid") {
                       duplicate ||= cidPresent; cidPresent = true; cidMatch &&= value === identity.channel;
                     } else queryClass = "unknown";
@@ -137,13 +169,12 @@ export class SlackSearcher {
             diagnosed = true; return unavailable();
           };
           let url: URL; try { url = new URL(permalink); } catch { return rejectPermalink(); }
-          // Acceptance predicates are unchanged; diagnostics run only after the same rejection.
-          if (url.href !== permalink || url.protocol !== "https:" || url.hostname !== access.workspaceHost || url.username || url.password || url.port || url.hash || url.search ||
-              url.pathname !== `/archives/${identity.channel}/p${m.message_ts.replace(".", "")}`) rejectPermalink(url);
+          normalizedPermalink = normalizeSearchPermalink(url, permalink, access.workspaceHost!, identity.channel, m.message_ts, m.thread_ts);
+          if (normalizedPermalink === undefined) rejectPermalink(url);
         }
         candidates.push({ channel: identity.channel, ts: m.message_ts, text: m.content, textTruncated: false,
           author: { userId: m.author_user_id ?? null, botId: null, kind: m.is_author_bot ? "bot" : m.author_user_id ? "participant" : "system" },
-          ...(m.thread_ts ? { threadTs: m.thread_ts } : {}), ...(m.permalink ? { permalink: m.permalink } : {}), searchMatch: true });
+          ...(m.thread_ts ? { threadTs: m.thread_ts } : {}), ...(normalizedPermalink ? { permalink: normalizedPermalink } : {}), searchMatch: true });
         for (const position of ["before", "after"] as const) for (const c of m.context_messages?.[position] ?? []) {
           // Official contextual objects omit scope: they inherit the verified parent result's channel/team.
           // Any explicit scope, including alternate field names, must agree; never silently discard leaks.
