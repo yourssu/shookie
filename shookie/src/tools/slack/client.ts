@@ -69,7 +69,9 @@ export class SlackReader {
       pendingFailure = "authorization_failed";
       await authorizeCurrentSlackChannel(this.client, context, { channelId: target.channel, workspaceHost: target.host });
       const cursor = previous?.slackCursor;
-      const args = { channel: target.channel, limit: limits.pageSize, ...(cursor ? { cursor } : {}) };
+      // Observed replies pages include the parent in addition to requested replies.
+      // Reserve its slot on every page; the published response bound stays unchanged.
+      const args = { channel: target.channel, limit: kind === "thread" ? limits.pageSize - 1 : limits.pageSize, ...(cursor ? { cursor } : {}) };
       pendingFailure = "api_call_failed";
       const response = kind === "thread"
         ? await this.client.conversations.replies({ ...args, ts: target.threadTs! })

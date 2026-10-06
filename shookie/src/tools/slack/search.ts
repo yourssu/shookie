@@ -25,7 +25,10 @@ const responseSchema = z.object({ results: z.object({ messages: z.array(searchMe
   next_cursor: z.string().max(4096).optional(), has_more: z.boolean().optional(), warning: z.string().optional(),
 }).passthrough();
 type DeliveryRole = "primary" | "context";
-type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, string>;
+type RoleHashes = Partial<Record<DeliveryRole, string>>;
+type SearchMessage = ReadResult["messages"][number];
+type PageMetadata = { users: Set<string>; kinds: Set<string>; threads: Set<string> };
+type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, RoleHashes>;
   deliveredRoles: Record<string, DeliveryRole>; used: string[]; expires: number };
 const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 24_000 };
 
@@ -187,32 +190,67 @@ export class SlackSearcher {
             ...(c.thread_ts ? { threadTs: c.thread_ts } : {}), searchMatch: false, contextForTs: m.message_ts, contextPosition: position });
         }
       }
-      const fingerprints = { ...(previous?.fingerprints ?? {}) };
+      const fingerprints: Record<string, RoleHashes> = {};
       const deliveredRoles = { ...(previous?.deliveredRoles ?? {}) };
-      // Validate conflicts across ALL observed objects, even ones omitted by the page budget.
-      // Persist only delivered objects below, keeping continuation memory bounded.
-      const observed = new Map(Object.entries(fingerprints));
-      // Diagnostic references only: at most 20 primary + 20*40 context objects under responseSchema.
-      // Track the most recent observation, not the first projected representative or winning role.
-      // Never add text to continuation state. These objects have already passed schema/scope checks.
-      const pageObserved = new Map<string, ReadResult["messages"][number]>();
-      const projected = new Map<string, ReadResult["messages"][number]>();
+      // Validate ALL observations before selection, including omitted context. Clone role hashes:
+      // failed continuation attempts must not mutate the seed. No page text enters cursor state.
+      const observed = new Map<string, RoleHashes>(Object.entries(previous?.fingerprints ?? {}).map(([ts, hashes]) => [ts, { ...hashes }]));
+      const pageObserved = new Map<string, Partial<Record<DeliveryRole, SearchMessage>>>();
+      // Page-local primitives only. Missing metadata never removes an earlier explicit value.
+      const pageMetadata = new Map<string, Partial<Record<DeliveryRole, PageMetadata>>>();
+      const conflict = (message: SearchMessage, priorRole: DeliveryRole, prior?: SearchMessage): never => {
+        const comparison = compareSlackSearchConflict(prior?.text, message.text);
+        logSlackSearchConflictDiagnostic(context, priorRole, message.searchMatch ? "primary" : "context", prior ? "page" : "cursor",
+          !previous, !!cursor, comparison.comparisonAvailable, comparison.trimEqual, comparison.lineEndingEqual, comparison.prefixRelation);
+        diagnosed = true; return unavailable();
+      };
+      // Same-role conflicts always fail, even exact prefixes or normalized-equivalent strings.
+      // Diagnostic prior is the latest observation of the compared role, not the delivery winner.
+      for (const message of [...candidates, ...contexts]) {
+        const role: DeliveryRole = message.searchMatch ? "primary" : "context";
+        const fingerprint = createHash("sha256").update(message.text).digest("hex");
+        const hashes = observed.get(message.ts) ?? {};
+        const pageRoles = pageObserved.get(message.ts) ?? {};
+        if (hashes[role] && hashes[role] !== fingerprint) conflict(message, role, pageRoles[role]);
+        hashes[role] = fingerprint; observed.set(message.ts, hashes);
+        pageRoles[role] = message; pageObserved.set(message.ts, pageRoles);
+        const metadata = pageMetadata.get(message.ts) ?? {};
+        const roleMetadata = metadata[role] ?? { users: new Set<string>(), kinds: new Set<string>(), threads: new Set<string>() };
+        if (message.author.userId) roleMetadata.users.add(message.author.userId);
+        if (message.author.kind !== "system") roleMetadata.kinds.add(message.author.kind);
+        if (message.threadTs) roleMetadata.threads.add(message.threadTs);
+        metadata[role] = roleMetadata; pageMetadata.set(message.ts, metadata);
+      }
+      // Equivalent to comparing every primary with every context's explicit metadata,
+      // without an unbounded Cartesian scan. Unknown on either role remains a wildcard.
+      const compatibleKnownValues = (primary: Set<string>, contextual: Set<string>) =>
+        !primary.size || !contextual.size || (primary.size === 1 && contextual.size === 1 &&
+          primary.values().next().value === contextual.values().next().value);
+      const compatiblePrefixMetadata = (primary: PageMetadata, contextual: PageMetadata) =>
+        compatibleKnownValues(primary.users, contextual.users) && compatibleKnownValues(primary.kinds, contextual.kinds) &&
+        compatibleKnownValues(primary.threads, contextual.threads);
+      const shortPrimary = new Set<string>();
+      for (const [ts, pageRoles] of pageObserved) {
+        const hashes = observed.get(ts)!;
+        if (!hashes.primary || !hashes.context || hashes.primary === hashes.context) continue;
+        const primary = pageRoles.primary, contextual = pageRoles.context;
+        // A known same-role hash is sufficient for an exact repeat. Cross-role-only
+        // promotion/first observation still needs equal hashes or current-page evidence.
+        if ((!primary || !contextual) && previous?.fingerprints[ts]?.[primary ? "primary" : "context"]) continue;
+        // Unequal cross-role seeds cannot prove a prefix without BOTH validated page-local
+        // representations. Their same-role seed comparisons above must also have passed.
+        const metadata = pageMetadata.get(ts)!;
+        if (!primary || !contextual || !compatiblePrefixMetadata(metadata.primary!, metadata.context!) || !contextual.text.startsWith(primary.text)) {
+          if (contextual) conflict(contextual, "primary", primary);
+          else conflict(primary!, "context");
+        }
+        shortPrimary.add(ts);
+      }
+      const projected = new Map<string, SearchMessage>();
       let lossy = previous?.lossy ?? false;
       for (const message of [...candidates, ...contexts]) {
-        const fingerprint = createHash("sha256").update(message.text).digest("hex");
-        const previousText = observed.get(message.ts);
-        if (previousText && previousText !== fingerprint) {
-          const prior = pageObserved.get(message.ts);
-          const comparison = compareSlackSearchConflict(prior?.text, message.text);
-          logSlackSearchConflictDiagnostic(context,
-            prior ? (prior.searchMatch ? "primary" : "context") : previous?.deliveredRoles[message.ts] ?? "unknown",
-            message.searchMatch ? "primary" : "context", prior ? "page" : previousText ? "cursor" : "unknown",
-            !previous, !!cursor, comparison.comparisonAvailable, comparison.trimEqual, comparison.lineEndingEqual, comparison.prefixRelation);
-          diagnosed = true; unavailable();
-        }
-        observed.set(message.ts, fingerprint);
-        if (pageObserved.has(message.ts) || pageObserved.size < 820) pageObserved.set(message.ts, message);
         const role: DeliveryRole = message.searchMatch ? "primary" : "context";
+        if (role === "primary" && shortPrimary.has(message.ts)) { message.textTruncated = true; lossy = true; }
         // Context delivery is not proof of match delivery. Return the full primary object on promotion.
         if (deliveredRoles[message.ts] === "primary" || (role === "context" && deliveredRoles[message.ts] === "context")) continue;
         const selected = projected.get(message.ts);
@@ -230,14 +268,14 @@ export class SlackSearcher {
         const original = message.text;
         const safeText = original.split(actionToken).join("[SLACK_ACTION_TOKEN_REDACTED]");
         message.text = jsonTextPrefix(safeText, Math.min(8_000, budget));
-        message.textTruncated = message.text !== original;
+        message.textTruncated ||= message.text !== original;
         lossy ||= message.textTruncated;
         budget -= Buffer.byteLength(JSON.stringify(message.text)) - 2;
       }
-      for (const message of messages) {
-        fingerprints[message.ts] = observed.get(message.ts)!;
-        deliveredRoles[message.ts] = message.searchMatch ? "primary" : "context";
-      }
+      for (const message of messages) deliveredRoles[message.ts] = message.searchMatch ? "primary" : "context";
+      // Only actually delivered timestamps, at most 40/page * 4 pages, with two hashes/ts.
+      // Store each role's original API hash, never the context hash as a primary delivery hash.
+      for (const ts of Object.keys(deliveredRoles)) fingerprints[ts] = { ...observed.get(ts)! };
       messages.sort((a, b) => BigInt(a.ts.replace(".", "")) < BigInt(b.ts.replace(".", "")) ? -1 : 1);
       const next = data.response_metadata?.next_cursor?.trim() || data.next_cursor?.trim();
       if (data.response_metadata?.next_cursor && data.next_cursor && data.response_metadata.next_cursor !== data.next_cursor) reject("cursor_conflict");

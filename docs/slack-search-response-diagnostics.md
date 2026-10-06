@@ -98,14 +98,14 @@ query 보조 관찰 예외에는 class=unknown/parameter booleans=false를 사�
 
 기존 마지막 `fingerprint_conflict` 레코드 하나만 확장한다. 실패 반환 및 최대 3개 search record는 그대로다.
 
-- `priorRole`, `currentRole`: `primary` / `context` / `unknown`. primary 후보들 다음 context 후보들을 검사하는 **기존 관측 순서** 기준이다. 같은 페이지에서는 동일 ts의 가장 최근 검증된 관측 객체 역할이며, 최초 객체·primary 우선 projected 대표·cursor에 과거 전달한 winning role과 혼동하지 않는다. 페이지 최초 관측이 cursor seed와 충돌하면 기존 `deliveredRoles`를 사용한다.
+- `priorRole`, `currentRole`: `primary` / `context` / `unknown`. role-aware 수정 후 먼저 primary 후보들 다음 context 후보들의 **동일 역할 hash**를 전부 검사하고, 그 다음 다른 역할 표현 관계를 검증한다. 동일 역할 충돌의 prior는 해당 역할의 가장 최근 page 관측이며 없으면 그 역할 cursor hash seed다. cross-role 충돌의 prior는 비교하는 반대 역할 page 객체이며 없으면 반대 역할 seed다. 최초 객체·primary 우선 projected 대표·과거 전달 winning role을 prior로 오인하지 않는다. 따라서 여러 충돌이 있으면 동일 역할 충돌이 cross-role 충돌보다 먼저 관측될 수 있다.
 - `priorOrigin`: `page` / `cursor` / `unknown`. page는 직전 비교 본문이 이번 페이지의 검증된 후보인 경우, cursor는 과거 전달 fingerprint seed뿐인 경우다. origin은 Slack 원문 생성 원인/시간을 뜻하지 않는다.
 - `firstPage`, `cursorPresent`: 이전 continuation 부재/호출의 opaque cursor 존재 boolean만 기록한다. cursor 값·페이지 번호·메시지 ts/ID·hash·길이는 출력하지 않는다.
 - `comparisonAvailable`: 양쪽 **page-local primitive 본문**이 존재하고 각각 기존 24KB 이하일 때만 true다. 큰 문자열을 진단 때문에 스캔하지 않도록 code-unit 선행 한도도 사용한다. cursor에는 기존 fingerprint/role만 있으며 **이전 원문을 추가 저장하거나 복구하지 않는다**. cursor-only 충돌/크기 초과/보조 비교 예외에는 false다.
 - `trimEqual`: available일 때 양쪽 JS `trim()` 결과가 동일한지. `lineEndingEqual`: CRLF 및 단독 CR을 LF로 바꾼 결과가 동일한지. unavailable일 때 두 false는 **미평가 sentinel**이지 차이 확정이 아니다.
 - `prefixRelation`: available일 때 변형하지 않은 문자열의 prefix 관계 `previous_prefix` / `current_prefix` / `neither`, 그 외 `unknown`. 이는 snippet/잘림/원문 형식의 원인 증명이 아니다. prefix/equality flag만으로 guard 완화 근거를 만들지 않는다.
 
-기존 schema/scope/time 검증을 통과한 projected 후보 참조만 페이지 로컬 Map(최대 820개: 20 primary + 20×40 context)으로 추적한다. 가드와 같은 최신 관측을 갱신하며 budget으로 반환하지 않는 후보도 포함한다. 추가 원문 복사·hash 생성·cursor/DB/파일 지속보관은 없고, 반환 전에 기존 projection이 본문을 수정하기 전의 비교만 한다. raw response/context getter/Proxy/toJSON 접근을 추가하지 않는다. logger에는 primitive 인수만 전달하고 enum runtime allowlist/boolean strict equality로 재투영한다. 로거 throw는 같은 unavailable 및 finally unlock을 유지한다.
+기존 schema/scope/time 검증을 통과한 후보 참조만 페이지 로컬 role별 Map으로 추적한다(전체 관측 상한 820개: 20 primary + 20×40 context). 각 역할의 최신 관측을 갱신하며 budget으로 반환하지 않는 후보도 포함한다. role별 기존 SHA-256 hash를 분리하고 실제 전달 ts에만 최대160 ts×2 hash를 cursor에 보관한다. 원문 복사·cursor/DB/파일 원문 지속보관은 없고, 반환 전에 기존 projection이 본문을 수정하기 전의 비교만 한다. raw response/context getter/Proxy/toJSON 접근을 추가하지 않는다. logger에는 primitive 인수만 전달하고 enum runtime allowlist/boolean strict equality로 재투영한다. 로거 throw는 같은 unavailable 및 finally unlock을 유지한다.
 
 ### 공식 문서의 예시와 보장 구분
 
@@ -114,6 +114,16 @@ query 보조 관찰 예외에는 class=unknown/parameter booleans=false를 사�
 이번 worker는 [chat.getPermalink 공식 문서](https://docs.slack.dev/reference/methods/chat.getPermalink/)도 독립 확인했다. 문서는 channel + message_ts로 메시지 URL을 얻으며 threads/all conversation types를 처리한다고 설명한다. threaded response 설명은 path의 p 값이 댓글이고 query는 top-level 메시지를 참조한다고 명시하며 thread_ts/cid 예시를 제공한다. 이는 query가 붙은 댓글 URL을 이해하는 근거이나 **assistant.search.context가 항상 같은 host/path/query 형식이나 두 parameter를 보장한다는 규범은 확인하지 못했다**. 문서 예시의 URL과 response channel 문자열도 다르므로 sample을 정합성 보장으로 취급하지 않는다. chat.getPermalink를 새로 호출하지 않는다.
 
 2026-10-06 이번 worker가 다시 확인한 같은 `assistant.search.context` 문서의 Contextual messages는 관련 메시지의 before/after 목록과 원래 메시지가 스레드 안이면 그 스레드로 context를 제한한다고 설명한다. 예시는 primary `content`와 context `text`를 사용하며 `highlight` 기본값은 false다. 확인한 본문에서 **동일 ts의 content/text가 정확히 동일하다는 보장, snippet/잘림/formatting 보장**은 찾지 못했다. 예시/보장 부재는 판단 보조이지 위 실제 충돌의 원인 증거가 아니다. 가드를 바꾸지 않는다.
+
+### PR102 후속 안전 근거와 최소 기능 수정
+
+main의 `/tmp/shookie-e2e/pr102-results.md` / `pr102-new-thread-diagnostics.log`를 확인했다. `slack-event:Ev0C8118NH9N`에서 thread read는 18:00:21.872Z `response/result_limit_exceeded`, search는 response/check 통과 후 18:00:22.076Z `primary→context`, `priorOrigin=page`, `firstPage=true`, `comparisonAvailable=true`, `trimEqual=false`, `lineEndingEqual=false`, `prefixRelation=previous_prefix`였다. 이는 동일 ts의 짧은 primary가 긴 context의 정확 prefix인 **해당 관측** 근거다. 봇 최종 응답은 generic processing failure였으며, 개별 로컬 가드 근거가 그 최종 실패의 모든 원인을 설명하거나 전체 E2E PASS를 뜻하지 않는다.
+
+허용은 same-page 검증 primary-prefix-context에 한정한다. 같은 역할 hash 충돌/비prefix/primary-longer는 unavailable이며 normalization으로 허용하지 않는다. prefix 관계에서 명시적 author/thread 충돌도 실패한다. 모든 page-local 관측의 role별 user/kind/thread primitive Set을 집계해 **모든 primary-context 쌍**의 명시적 값이 양립하는지 검증한다(역할 중 한쪽에 알려진 값이 전혀 없으면 기존 unknown wildcard). 최신 객체가 metadata를 생략해도 앞선 명시적 값은 사라지지 않는다. 이 집계는 schema 관측 상한 안에서만 존재하며 cursor에 metadata를 추가 저장하지 않는다. exact-equal cross-role의 기존 metadata 계약과 동일 역할 본문 hash 가드는 바꾸지 않는다. primary 원본 본문/metadata를 유지하고 확인된 짧은 표현은 textTruncated=true, complete=false/partial로 표시한다. cursor에는 역할 hash와 deliveredRoles만 bounded 유지하고 긴 context hash로 primary hash를 덮어쓰지 않는다. 다른 역할 seed만으로 nonidentical continuation promotion을 추측 허용하지 않으며, 같은-page 양쪽 증거가 필요하다. 모든 scope/time/thread 검증은 projection/생략보다 먼저 수행한다.
+
+별도 direct API 구조 관측에서는 limit15 응답에 root+요청 reply, limit14의 첫/continuation 응답에 root+reply가 public15 이내임을 안전 boolean으로 확인했다. 공식 Slack limit 설명에는 부모가 별도 추가된다는 명시가 없어 관측 근거와 구분한다. 명시적 thread reader만 API14로 부모 자리를 예약하고 history API15/public pageSize15/응답15 상한/root dedup/count/budget/maxPages4를 유지한다. direct API 성공은 Shookie PASS가 아니다. 이번 합성 테스트도 live 검색/명시적 thread read 성공을 보증하지 않는다. worker는 서버/E2E/배포/merge를 실행하지 않는다. main이 fresh review/pinned squash/deploy SUCCESS/live SHA/restarts=0 확인 후 새 이벤트 actual search(status/matches/partial/source) 및 independent thread read를 원문·수정 댓글과 대조한다. history fallback은 검색 PASS 대체가 아니며, 실제 성공 후 임시 진단 제거를 별도 관리한다.
+
+독립 리뷰가 발견한 양 역할의 최신 객체에서 metadata가 생략되어 앞선 명시적 충돌이 지워지는 경우를 수정했다. 미수정 SHA `33d58e556d8ab472fc94b7963cc22d13797c8eaf`에서 새 합성 회귀 8개 중 thread/author 각각 1개(총2개)가 status=ok로 실패하는 것을 먼저 실행 확인했다. 수정 후 상호 최신 생략/순서 permutation, unknown metadata positive 및 exact-equal 기존 계약 회귀가 통과했다. fixtures는 합성값이며 원문 운영 본문/URL/수정값을 복사하지 않았다.
 
 ### 승인된 검색 permalink 정규화
 

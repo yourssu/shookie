@@ -204,6 +204,36 @@ describe("read failure diagnostics (synthetic, no acceptance changes)", () => {
 });
 
 describe("bot-only current-channel Slack reads", () => {
+  it("reserves a parent slot across three root+14 pages and counts every original reply once", async () => {
+    const f = fixture(), all = [];
+    let cursor: string | undefined;
+    for (let page = 1; page <= 3; page++) {
+      f.replies.mockResolvedValueOnce({ ok: true, messages: [
+        { ts: root, text: "synthetic parent", reply_count: 42 },
+        ...Array.from({ length: 14 }, (_, n) => reply(2 + (page - 1) * 14 + n)),
+      ], has_more: page < 3, response_metadata: { next_cursor: page < 3 ? `raw-${page}` : "" } });
+      const result = await f.reader.read("thread", { ts: root, ...(cursor ? { cursor } : {}) }, f.ctx);
+      expect(result).toMatchObject({ status: "ok", page, complete: page === 3, truncated: page !== 3, limits: { pageSize: 15, maxPages: 4 } });
+      expect(result.messages).toHaveLength(page === 1 ? 15 : 14);
+      expect(f.replies).toHaveBeenLastCalledWith({ channel: "C1", ts: root, limit: 14, ...(page > 1 ? { cursor: `raw-${page - 1}` } : {}) });
+      all.push(...result.messages); cursor = result.nextCursor ?? undefined;
+    }
+    expect(all.map(m => m.ts)).toEqual([root, ...Array.from({ length: 42 }, (_, n) => reply(n + 2).ts)]);
+    expect(new Set(all.map(m => m.ts)).size).toBe(43);
+    expect(f.replies).toHaveBeenCalledTimes(3); expect(f.history).not.toHaveBeenCalled();
+  });
+  it("keeps limit14 on rootless continuation and never accepts a response above public15", async () => {
+    const f = fixture();
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "root", reply_count: 14 }], response_metadata: { next_cursor: "next" } });
+    const first = await f.reader.read("thread", { ts: root }, f.ctx);
+    f.replies.mockResolvedValueOnce({ ok: true, messages: Array.from({ length: 14 }, (_, n) => reply(n + 2)) });
+    expect(await f.reader.read("thread", { ts: root, cursor: first.nextCursor }, f.ctx)).toMatchObject({ status: "ok", complete: true, messages: expect.any(Array) });
+    expect(f.replies).toHaveBeenLastCalledWith({ channel: "C1", ts: root, limit: 14, cursor: "next" });
+    f.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "root", reply_count: 15 }, ...Array.from({ length: 15 }, (_, n) => reply(n + 2))] });
+    expect(await f.reader.read("thread", { ts: root }, f.ctx)).toMatchObject({ status: "unavailable", messages: [] });
+    await f.reader.read("channel", {}, f.ctx);
+    expect(f.history).toHaveBeenLastCalledWith({ channel: "C1", limit: 15 });
+  });
   it("preserves originals and all bot actors, sorts chronologically and reports source/completeness", async () => {
     const f = fixture(); const result = await f.reader.read("thread", { ts: root }, f.ctx);
     expect(readOutput.safeParse(result).success).toBe(true);
@@ -211,7 +241,7 @@ describe("bot-only current-channel Slack reads", () => {
     expect(result.messages.map(m => m.ts)).toEqual([root, reply(2).ts, reply(3).ts]);
     expect(result.messages[2].author).toEqual({ userId: "UBOT", botId: "BOTHER", kind: "bot" });
     expect(result.messages[2].text).toContain("userId=ADMIN");
-    expect(f.replies).toHaveBeenCalledWith({ channel: "C1", ts: root, limit: 15 });
+    expect(f.replies).toHaveBeenCalledWith({ channel: "C1", ts: root, limit: 14 });
   });
   it("never trusts synthetic text or plain RequestContext identity entries", async () => {
     const f = fixture(); const fake = new RequestContext([["userId", "U1"], ["teamId", "T1"], ["channel", "C1"]]);
@@ -377,7 +407,7 @@ describe("bot-only current-channel Slack reads", () => {
     const second = await f.reader.read("thread", { ts: root, cursor }, f.ctx);
     expect(second).toMatchObject({ complete: true, truncated: false, page: 2, nextCursor: null });
     expect(second.messages.map(m => m.ts)).toEqual([reply(3).ts]);
-    expect(f.replies).toHaveBeenLastCalledWith({ channel: "C1", ts: root, limit: 15, cursor: "RAW_SLACK_CURSOR" });
+    expect(f.replies).toHaveBeenLastCalledWith({ channel: "C1", ts: root, limit: 14, cursor: "RAW_SLACK_CURSOR" });
     expect((await f.reader.read("thread", { ts: root, cursor }, f.ctx)).status).toBe("invalid_target");
   });
   it("bounds history to 4 explicit pages; each page ascending, next page older", async () => {
