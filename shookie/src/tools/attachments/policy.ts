@@ -9,14 +9,25 @@ export class AttachmentError extends Error {
   constructor(public readonly code: AttachmentCode, public readonly retryAfterSeconds?: number) { super(code); }
 }
 export type AttachmentKind = 'text' | 'csv' | 'pdf';
-export function attachmentKind(mime: string): AttachmentKind {
+function validateUtf8Charset(mime: string): void {
   const charset = /;\s*charset\s*=\s*"?([^;"\s]+)/iu.exec(mime)?.[1];
   if (charset && !/^utf-?8$/iu.test(charset)) throw new AttachmentError('INVALID_UTF8');
+}
+export function attachmentKind(mime: string): AttachmentKind {
+  validateUtf8Charset(mime);
   const type = mime.split(';')[0].trim().toLowerCase();
   if (['text/plain', 'text/markdown', 'text/x-markdown'].includes(type)) return 'text';
   if (['text/csv', 'application/csv'].includes(type)) return 'csv';
   if (type === 'application/pdf') return 'pdf';
   throw new AttachmentError('UNSUPPORTED_TYPE');
+}
+/** Transport MIME never grants a format: kind must come from authorized files.info metadata. */
+export function validateAttachmentDownloadMime(mime: string, kind: AttachmentKind): void {
+  if ((kind === 'text' || kind === 'csv') && mime.split(';')[0].trim().toLowerCase() === 'application/force-download') {
+    validateUtf8Charset(mime);
+    return;
+  }
+  if (attachmentKind(mime) !== kind) throw new AttachmentError('UNSUPPORTED_TYPE');
 }
 export type ParsedUnit = { start: number; end: number; text?: string; cells?: string[]; page?: number };
 export type ParsedAttachment = { kind: AttachmentKind; units: ParsedUnit[]; totalUnits: number; emptyPages?: number[] };

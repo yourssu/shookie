@@ -2,7 +2,7 @@ import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { downloadAttachment, type DownloadDependencies } from './download.js';
 import { parseAttachment } from './parser.js';
-import { ATTACHMENT_LIMITS as L, AttachmentError, attachmentKind, failure,
+import { ATTACHMENT_LIMITS as L, AttachmentError, attachmentKind, validateAttachmentDownloadMime, failure,
   type AuthorizeAttachment, type ParsedUnit } from './policy.js';
 export const attachmentInput = z.object({ fileId: z.string().regex(/^F[A-Z0-9]{2,}$/u).max(64),
   messageTs: z.string().regex(/^\d+\.\d{1,6}$/u).max(32),
@@ -29,7 +29,7 @@ export async function readAttachment(input: z.input<typeof attachmentInput>, opt
     if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > L.fileBytes) throw new AttachmentError('FILE_LIMIT');
     const kind = attachmentKind(file.mimetype);
     const download = await downloadAttachment(file.url_private_download, options.botToken, options.downloadDependencies);
-    if (attachmentKind(download.contentType) !== kind) throw new AttachmentError('UNSUPPORTED_TYPE');
+    validateAttachmentDownloadMime(download.contentType, kind);
     if (download.body.length !== file.size) throw new AttachmentError('DOWNLOAD_FAILED');
     const parsed = await parseAttachment(download.body, kind);
     const source = { fileId: file.id, name: prefix(file.name, 512), nameTruncated: Buffer.byteLength(file.name) > 512, channelId, messageTs };
