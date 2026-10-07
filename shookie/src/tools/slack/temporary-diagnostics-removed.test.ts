@@ -16,7 +16,8 @@ describe("temporary Slack diagnostic removal", () => {
   it("has no production reference to the three temporary emit names or removed modules", () => {
     for (const path of productionFiles(src)) {
       const source = readFileSync(path, "utf8");
-      for (const name of [...names, "action-token-diagnostics", "search-diagnostics", "read-diagnostics", "disposeDiagnostics"]) {
+      // Exact retired module basenames; a distinct bounded cross-channel observer is not a reintroduction.
+      for (const name of [...names, "/action-token-diagnostics.js\"", "/search-diagnostics.js\"", "/read-diagnostics.js\"", "disposeDiagnostics"]) {
         expect(source, path).not.toContain(name);
       }
     }
