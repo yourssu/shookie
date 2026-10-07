@@ -7,7 +7,7 @@ export function createSlackReadTools(client: SlackReadClient) {
   return {
     slack_search: createTool({
       id: "slack-search",
-      description: "assistant.search.context로 같은 workspace의 비공유 공개 채널을 키워드 검색합니다. channel 생략은 workspace_public, 지정하면 해당 공개 채널만 검색. 공개 채널에서 요청해야 하며 인증된 event action_token과 bot search:read.public 필요. target requester/bot 채널 가입은 검색 조건 아님; native RTS가 사용자 접근을 필터링합니다. private/DM·공유/외부 workspace·in:/OR 등 연산자는 불가. 일반 단어만 입력. 최대 20 match/페이지, 4페이지. 각 message.channel/permalink가 실제 출처이며 context는 match/full thread와 다릅니다. complete/truncated 확인, nextCursor 그대로 복사(placeholder/재구성 금지). 우회 스캔 없음.",
+      description: "assistant.search.context로 같은 workspace의 비공유 공개 채널을 키워드 검색합니다. channel 생략은 workspace_public, 지정하면 해당 공개 채널만 검색. 공개 채널에서 요청해야 하며 인증된 event action_token과 bot search:read.public 필요. target requester/bot 채널 가입은 검색 조건 아님; native RTS가 사용자 접근을 필터링합니다. private/DM·공유/외부 workspace·in:/OR 등 연산자는 불가. 일반 단어만 입력. 최대 20 match/페이지, 4페이지, context 포함 전달 최대 40개. 검색 출력 전체 JSON 96KB/본문 24KB 예산이며 context 생략·textTruncated는 partial입니다. 각 message.channel/permalink가 실제 출처이며 context는 match/full thread와 다릅니다. complete/truncated 확인, nextCursor 그대로 복사(placeholder/재구성 금지). 우회 스캔 없음.",
       inputSchema: searchInput, outputSchema: readOutput,
       execute: async (input, context) => reader.search(input, context?.requestContext),
     }),

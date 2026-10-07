@@ -1,5 +1,29 @@
 # 공개 채널 검색 로컬 거절: 한시적 안전 진단
 
+## PR110 후속: context 배열 20 가정 제거
+
+배포 sha9598e81의 trusted `slack-event:Ev0C7APLRK8A`에서 두 번
+`response_received → check_passed → schema_failed`, `schemaField=context_after`,
+`schemaCode=too_big`, `schemaMissing=false`가 관측됐다. 첫 거절은 로컬
+`context_messages.before/after.max(20)`이며 API/권한 실패 증거가 아니다.
+원본 API body/count/content는 수집하지 않았고 downstream 통과도 미확인이다.
+[공식 assistant.search.context 문서](https://docs.slack.dev/reference/methods/assistant.search.context/)의
+limit20은 primary 검색 결과/페이지 한도이며 contextual 배열 20 상한은 명시하지 않는다.
+
+이번 후속은 API primary20/page4·커서160 전달키/두 역할 hash·보안 가드를 유지하고,
+context API shape 가정 대신 **내부 처리 예산**(페이지 전체 2,048 관측/recognized
+text 1,048,576 UTF-8 bytes)을 도입한다. 검색 전용 **공개 출력 limits**는 전체
+JSON 96,000 bytes/본문 projection 24,000 bytes이며 공유 thread/history 한도는
+불변이다. 구현·malformed 입력 경계·partial 계약은 [운영 도구 문서](slack-read-tools.md)를 참고한다.
+예산 초과는 기존 고정 `budget_exceeded`로 전체 실패하며 새 raw/count 로그는 없다.
+아래 PR110 한시진단·24,000 비교 cap은 그대로 유지한다(authorization과 무관).
+
+> 합성 >20 context/processing overflow/late invalid/실제 escaped JSON bytes/등록 및
+> DB redaction 검증은 실제 검색 성공 증명이 아니다. **actual E2E: NOT RUN**.
+> worker는 서버 접속·Slack 게시·merge·배포를 하지 않는다. main의 최종 SHA fresh
+> 독립 리뷰와 pinned squash/deploy 후 새 MCP OpenClaw 검색 및 genuine other-channel
+> source comparison이 필요하다. 실제 성공 후 main이 별도 진단 제거 task를 만든다.
+
 ## 목적과 운영 경계
 
 PR108의 공개 채널 검색이 실제 요청에서 로컬 `unavailable`로 거절됐지만 단계가
