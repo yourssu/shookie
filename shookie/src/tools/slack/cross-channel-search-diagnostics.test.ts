@@ -139,8 +139,7 @@ describe("search rejection observations preserve guards and privacy (synthetic, 
     ["cross_role_user_conflict", { user_id: "UOTHER", is_author_bot: true, thread_ts: ts(0) }, { thread_ts: ts(1) }],
     ["cross_role_kind_conflict", { user_id: "UACTOR", is_author_bot: true, thread_ts: ts(0) }, { thread_ts: ts(1) }],
     ["cross_role_thread_conflict", { user_id: "UACTOR", is_author_bot: false, thread_ts: ts(0) }, { thread_ts: ts(1) }],
-    ["cross_role_text_relation", { user_id: "UACTOR", is_author_bot: false }, {}],
-  ])("identifies first existing guard %s; diagnostic substring is not prefix permission", async (reason, contextMeta, primaryMeta) => {
+  ])("identifies first existing metadata guard %s before omitting alternate context", async (reason, contextMeta, primaryMeta) => {
     const f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), ...primaryMeta }, { ...message(4), context_messages: { before: [{ ts: ts(2), text: "PRIVATE_CONTEXT PRIVATE_PRIMARY suffix", ...contextMeta }] } }] } });
     const result = await f.searcher.search({ query: "keyword" }, f.context);
@@ -149,6 +148,22 @@ describe("search rejection observations preserve guards and privacy (synthetic, 
     expect(f.records().map(r => r.reason)).toEqual(["response_received", "check_passed", "schema_passed", reason]);
     expect(f.records().at(-1)).toMatchObject({ comparisonAvailable: true, primarySubstring: true, primaryPrefix: false, pagePrimaryPresent: true, pageContextPresent: true });
     assertSafe(f.records()); expect(f.apiCall).toHaveBeenCalledTimes(1); expect(f.members).toHaveBeenCalledTimes(1); expect(f.info).toHaveBeenCalledTimes(2); expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
+  });
+  it("preserves primary and partial for compatible nonprefix context without adding diagnostics", async () => {
+    const f = fixture(), primary = message();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [primary,
+      { ...message(4), context_messages: { before: [{ ts: ts(2), text: "PRIVATE_CONTEXT PRIVATE_PRIMARY suffix", user_id: "UACTOR", is_author_bot: false }] } },
+    ] } });
+    const result = await f.searcher.search({ query: "keyword" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]).toMatchObject({ text: primary.content, textTruncated: false, searchMatch: true,
+      permalink: primary.permalink, author: { userId: primary.author_user_id, kind: "participant", botId: null } });
+    expect(result.messages[0]).not.toHaveProperty("contextForTs");
+    expect(readOutput.safeParse(result).success).toBe(true);
+    expect(f.records().map(r => r.reason)).toEqual(["response_received", "check_passed", "schema_passed", "success"]);
+    expect(f.records().at(-1)).toMatchObject({ stage: "final", finalSuccess: true });
+    assertSafe(f.records());
   });
   it.each([
     ["primary_scope_mismatch", { team: "TOTHER" }], ["permalink_parse_failed", { permalink: "not a URL" }],

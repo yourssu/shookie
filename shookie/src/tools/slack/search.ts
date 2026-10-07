@@ -299,6 +299,7 @@ export class SlackSearcher {
           ...compareCrossSearchText(primary?.text, contextual?.text) }); unavailable();
       };
       const shortPrimary = new Set<string>();
+      let lossy = previous?.lossy ?? false;
       for (const [key, pageRoles] of pageObserved) {
         const hashes = observed.get(key)!;
         if (!hashes.primary || !hashes.context || hashes.primary === hashes.context) continue;
@@ -306,20 +307,22 @@ export class SlackSearcher {
         // A known same-role hash is sufficient for an exact repeat. Cross-role-only
         // promotion/first observation still needs equal hashes or current-page evidence.
         if ((!primary || !contextual) && previous?.fingerprints[key]?.[primary ? "primary" : "context"]) continue;
-        // Unequal cross-role seeds cannot prove a prefix without BOTH validated page-local
-        // representations. Their same-role seed comparisons above must also have passed.
+        // Unequal cross-role seeds cannot justify discarding an alternate context without BOTH
+        // validated page-local representations. Same-role seed comparisons above must also pass.
         const metadata = pageMetadata.get(key)!;
-        // Identical short-circuit rejection order: presence → users → explicit kind → threads → PREFIX.
+        // Preserve rejection order: presence → users → explicit kind → threads.
         // Diagnostic substring/normalization comparisons NEVER participate in permission or selection.
         if (!primary || !contextual) conflict("cross_role_seed_unverified", key, primary, contextual);
         if (!compatibleKnownValues(metadata.primary!.users, metadata.context!.users)) conflict("cross_role_user_conflict", key, primary, contextual);
         if (!compatibleKnownValues(metadata.primary!.knownKinds, metadata.context!.knownKinds)) conflict("cross_role_kind_conflict", key, primary, contextual);
         if (!compatibleKnownValues(metadata.primary!.threads, metadata.context!.threads)) conflict("cross_role_thread_conflict", key, primary, contextual);
-        if (!contextual!.text.startsWith(primary!.text)) conflict("cross_role_text_relation", key, primary, contextual);
-        shortPrimary.add(key);
+        // Keep the validated primary unchanged and omit the alternate context, not an
+        // equivalence/authority claim. Unequal observed role hashes remain independent.
+        lossy = true;
+        // Only an exact prefix is evidence for the existing short-primary truncation marker.
+        if (contextual!.text.startsWith(primary!.text)) shortPrimary.add(key);
       }
       const projected = new Map<string, SearchMessage>();
-      let lossy = previous?.lossy ?? false;
       for (const message of [...candidates, ...contexts]) {
         const role: DeliveryRole = message.searchMatch ? "primary" : "context";
         const key = messageKey(message);
@@ -339,7 +342,7 @@ export class SlackSearcher {
       const nextCursor = next && page < limits.maxPages ? randomUUID() : null;
       const result = (items: SearchMessage[], complete: boolean): ReadResult => ({
         status: "ok", api: "assistant.search.context", searchScope, ...(channel ? { source: { channel } } : {}),
-        message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문/context 잘림을 확인해주세요.",
+        message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문 잘림/context 생략(대체 표현 포함)을 확인해주세요.",
         messages: items, page, nextCursor, complete, truncated: !complete, limits: { ...limits, pageSize: limit },
       });
       const primaryCount = messages.filter(m => m.searchMatch).length;
