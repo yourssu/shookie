@@ -13,12 +13,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 vi.mock("../../logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 import {
-  claimSlackMessageRelayBatch, closePool, deferSlackMessageRelay, enqueueSlackMessageRelay, getPool,
-  getSlackMessageRelayStats, markSlackMessageRelayDelivered, pruneSlackMessageRelays, runMigrations,
+  claimSlackMessageRelayBatch, closePool, deferSlackMessageRelay, enqueueSlackMessageRelay, finishSlackMessageRelayUndelivered, getPool,
+  getSlackMessageRelayStats, markSlackMessageRelayDelivered, pruneSlackMessageRelays, requeueParkedSlackMessageRelays, runMigrations,
   type SlackMessageRelayMetadata,
 } from "database";
 import { databaseRelayStore, RelayDrainer, type RelayStore } from "./drain.js";
 
+const TINY = { acquireMs: 300, lockMs: 120, statementMs: 200, totalMs: 500 };
 const adminUrl = process.env.SHOOKIE_TEST_PG_ADMIN_URL;
 const dbName = `shookie_relay_it_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 
@@ -32,7 +33,7 @@ const rows = async () => (await getPool().query("SELECT * FROM slack_message_rel
 function radarStub() {
   const committed = new Map<string, unknown>();
   const requests: { key: string | undefined; body: Record<string, unknown> }[] = [];
-  const script: Array<"ok" | "503" | "429-long" | "401" | "commit-then-drop" | "drop-before-commit"> = [];
+  const script: Array<"ok" | "503" | "429-long" | "429-172800" | "429-absurd" | "401" | "commit-then-drop" | "drop-before-commit"> = [];
   const server: Server = createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
@@ -43,6 +44,8 @@ function radarStub() {
       if (req.url !== "/internal/v1/slack/message-events" || req.method !== "POST") { res.writeHead(404).end(); return; }
       if (step === "503") { res.writeHead(503).end(); return; }
       if (step === "429-long") { res.writeHead(429, { "Retry-After": "7200" }).end(); return; }
+      if (step === "429-172800") { res.writeHead(429, { "Retry-After": "172800" }).end(); return; }
+      if (step === "429-absurd") { res.writeHead(429, { "Retry-After": String(90 * 86_400) }).end(); return; }
       if (step === "401") { res.writeHead(401).end(); return; }
       if (step === "drop-before-commit") { req.socket.destroy(); return; }
       committed.set(String(body.eventId), body);
@@ -78,7 +81,7 @@ describe.skipIf(!adminUrl)("PostgreSQL outbox + HTTP drain (real PostgreSQL)", (
     await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
     await admin.end();
   });
-  beforeEach(async () => { await getPool().query("TRUNCATE slack_message_relay_outbox RESTART IDENTITY"); });
+  beforeEach(async () => { vi.clearAllMocks(); await getPool().query("TRUNCATE slack_message_relay_outbox RESTART IDENTITY"); });
 
   it("migration is immutable/idempotent and the table stores metadata columns only", async () => {
     expect(await runMigrations()).toEqual([]);
@@ -169,13 +172,121 @@ describe.skipIf(!adminUrl)("PostgreSQL outbox + HTTP drain (real PostgreSQL)", (
     await getPool().query(`UPDATE slack_message_relay_outbox SET status='delivered', updated_at = now() - interval '4 days' WHERE event_id = 'Ev0SYNTH0001'`);
     await getPool().query(`UPDATE slack_message_relay_outbox SET status='delivered', updated_at = now() - interval '1 hour' WHERE event_id = 'Ev0SYNTH0002'`);
     await getPool().query(`UPDATE slack_message_relay_outbox SET status='failed', updated_at = now() - interval '4 days' WHERE event_id = 'Ev0SYNTH0003'`);
-    await getPool().query(`UPDATE slack_message_relay_outbox SET created_at = now() - interval '4 days' WHERE event_id = 'Ev0SYNTH0004'`);
+    await getPool().query(`UPDATE slack_message_relay_outbox SET created_at = now() - interval '4 days', next_attempt_at = now() - interval '4 days' WHERE event_id = 'Ev0SYNTH0004'`);
     const result = await pruneSlackMessageRelays({ deliveredMs: 3 * 86_400_000, failedMs: 30 * 86_400_000, maxPendingAgeMs: 3 * 86_400_000, batch: 100 });
     expect(result).toEqual({ expired: 1, deleted: 1 });
     expect((await rows()).map((r) => [r.event_id, r.status, r.last_error])).toEqual([
       ["Ev0SYNTH0002", "delivered", null], ["Ev0SYNTH0003", "failed", null], ["Ev0SYNTH0004", "failed", "expired"],
     ]);
     expect(await getSlackMessageRelayStats()).toEqual({ pending: 0, delivering: 0, delivered: 1, failed: 2, parked: 0 });
+  });
+
+  it("retention measures pending age from the scheduled retry, so a long Retry-After is never expired early", async () => {
+    await enqueueSlackMessageRelay(meta(1));
+    await getPool().query(`UPDATE slack_message_relay_outbox SET created_at = now() - interval '4 days', next_attempt_at = now() + interval '2 days'`);
+    expect(await pruneSlackMessageRelays({ deliveredMs: 1, failedMs: 1, maxPendingAgeMs: 3 * 86_400_000, batch: 10 })).toEqual({ expired: 0, deleted: 0 });
+    expect((await rows())[0]).toMatchObject({ status: "pending" });
+  });
+
+  describe("every drainer database call is bounded under a held lock (real PostgreSQL)", () => {
+    const hold = async () => {
+      const holder = await getPool().connect();
+      await holder.query("BEGIN");
+      await holder.query("LOCK TABLE slack_message_relay_outbox IN ACCESS EXCLUSIVE MODE");
+      return { release: async () => { await holder.query("ROLLBACK"); holder.release(); } };
+    };
+
+    it("claim, outcomes, requeue, prune and stats all fail within their total deadline instead of waiting on the lock", async () => {
+      await enqueueSlackMessageRelay(meta(1));
+      const [claimed] = await claimSlackMessageRelayBatch(1, 60_000);
+      const lock = await hold();
+      const retention = { deliveredMs: 1, failedMs: 1, maxPendingAgeMs: 1, batch: 10 };
+      const calls: Array<[string, () => Promise<unknown>]> = [
+        ["claim", () => claimSlackMessageRelayBatch(5, 1_000, undefined, TINY)],
+        ["delivered", () => markSlackMessageRelayDelivered(claimed!, {}, undefined, TINY)],
+        ["defer", () => deferSlackMessageRelay(claimed!, 1, { countAttempt: true }, undefined, TINY)],
+        ["finish", () => finishSlackMessageRelayUndelivered(claimed!, "failed", { error: "x" }, undefined, TINY)],
+        ["requeue", () => requeueParkedSlackMessageRelays(undefined, TINY)],
+        ["prune", () => pruneSlackMessageRelays(retention, undefined, TINY)],
+        ["stats", () => getSlackMessageRelayStats(undefined, TINY)],
+      ];
+      try {
+        for (const [name, call] of calls) {
+          const started = Date.now();
+          await expect(call(), name).rejects.toThrow();
+          expect(Date.now() - started, name).toBeLessThan(TINY.totalMs + 400);
+        }
+      } finally { await lock.release(); }
+      // Nothing was changed and no connection leaked: the same claim can still finish once the lock is gone.
+      expect(await markSlackMessageRelayDelivered(claimed!)).toBe(true);
+      expect(getPool().waitingCount).toBe(0);
+    });
+
+    it("a row whose outcome write timed out stays 'delivering' and is recoverable after its lease", async () => {
+      await enqueueSlackMessageRelay(meta(1));
+      const [claimed] = await claimSlackMessageRelayBatch(1, 250);
+      const lock = await hold();
+      await expect(markSlackMessageRelayDelivered(claimed!, {}, undefined, TINY)).rejects.toThrow();
+      await lock.release();
+      expect((await rows())[0]).toMatchObject({ status: "delivering" });
+      await new Promise((r) => setTimeout(r, 300));
+      const [again] = await claimSlackMessageRelayBatch(1, 1_000);
+      expect(again).toMatchObject({ eventId: "Ev0SYNTH0001", attempts: 2 });
+    });
+
+    it("shutdown during a blocked outcome write and blocked maintenance terminates within bounds, then the pool closes cleanly", async () => {
+      const radar = radarStub(); const url = await radar.listen();
+      await enqueueSlackMessageRelay(meta(1));
+      const bounded: RelayStore = {
+        ...databaseRelayStore,
+        claim: (l, m) => claimSlackMessageRelayBatch(l, m, undefined, TINY),
+        delivered: (r, d) => markSlackMessageRelayDelivered(r, d, undefined, TINY),
+        defer: (r, ms, d) => deferSlackMessageRelay(r, ms, d, undefined, TINY),
+        finish: (r, st, d) => finishSlackMessageRelayUndelivered(r, st, d, undefined, TINY),
+        prune: () => pruneSlackMessageRelays({ deliveredMs: 1, failedMs: 1, maxPendingAgeMs: 1e12, batch: 10 }, undefined, TINY),
+        stats: () => getSlackMessageRelayStats(undefined, TINY),
+      };
+      // Let one claim happen, then lock the table before the outcome write; maintenance is also blocked.
+      const gate: { lock?: { release(): Promise<void> } } = {};
+      const claimed: RelayStore = { ...bounded, claim: async (l, m) => { const r = await bounded.claim(l, m); gate.lock = await hold(); return r; } };
+      const d = drainer(url, { stopTimeoutMs: 2_000 }, claimed);
+      await d.start();
+      await until(async () => radar.committed.size === 1);
+      const started = Date.now();
+      await d.stop();
+      expect(Date.now() - started).toBeLessThan(2_500);
+      await gate.lock!.release();
+      await radar.close();
+      const before = (await rows())[0];
+      await closePool(); // would hang or throw if a writer were still holding a connection
+      expect(before).toMatchObject({ status: "delivering", event_id: "Ev0SYNTH0001" });
+      // The unfinished row recovers after its lease through a fresh pool (duplicate-safe, same eventId).
+      await new Promise((r) => setTimeout(r, 1_200));
+      const [recovered] = await claimSlackMessageRelayBatch(1, 5_000);
+      expect(recovered).toMatchObject({ eventId: "Ev0SYNTH0001" });
+    });
+  });
+
+  it("shutdown while maintenance is blocked on a held lock returns within bounds and logs metadata only", async () => {
+    const holder = await getPool().connect();
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE slack_message_relay_outbox IN ACCESS EXCLUSIVE MODE");
+    const maintenanceBlocked: RelayStore = {
+      ...databaseRelayStore,
+      requeueParked: () => requeueParkedSlackMessageRelays(undefined, TINY),
+      prune: () => pruneSlackMessageRelays({ deliveredMs: 1, failedMs: 1, maxPendingAgeMs: 1e12, batch: 10 }, undefined, TINY),
+      stats: () => getSlackMessageRelayStats(undefined, TINY),
+      claim: (l, m) => claimSlackMessageRelayBatch(l, m, undefined, TINY),
+    };
+    const d = drainer("http://127.0.0.1:9/internal/v1/slack/message-events", { stopTimeoutMs: 2_000 }, maintenanceBlocked);
+    const started = Date.now();
+    await d.start(); // requeue is blocked too
+    await new Promise((r) => setTimeout(r, 150)); // first tick is stuck in blocked maintenance
+    await d.stop();
+    expect(Date.now() - started).toBeLessThan(2_500);
+    await holder.query("ROLLBACK"); holder.release();
+    await closePool();
+    expect(vi.mocked((await import("../../logger.js")).logger.error)).toHaveBeenCalledWith(expect.stringContaining("drain 실패"), { errorName: expect.any(String) });
   });
 
   describe("drainer against a real HTTP Radar stub", () => {
@@ -243,6 +354,31 @@ describe.skipIf(!adminUrl)("PostgreSQL outbox + HTTP drain (real PostgreSQL)", (
       await new Promise((r) => setTimeout(r, 250));
       await restarted.stop(); await radar.close();
       expect(radar.requests).toHaveLength(1);
+    });
+
+    it("Retry-After: 172800 is stored as >= 172800s (no 24h cap); an absurd value parks visibly and is not auto-requeued", async () => {
+      const radar = radarStub(); const url = await radar.listen();
+      radar.script.push("429-172800");
+      await enqueueSlackMessageRelay(meta(1));
+      const d = drainer(url); await d.start();
+      await until(async () => (await rows())[0]?.last_status_code === 429);
+      await d.stop();
+      const [row] = await rows();
+      expect(new Date(row.next_attempt_at).getTime() - Date.now()).toBeGreaterThanOrEqual(172_800_000 - 5_000);
+      expect(row).toMatchObject({ status: "pending", attempts: 0, last_error: "rate_limited" });
+
+      await getPool().query("TRUNCATE slack_message_relay_outbox RESTART IDENTITY");
+      radar.script.push("429-absurd");
+      await enqueueSlackMessageRelay(meta(2));
+      const e = drainer(url); await e.start();
+      await until(async () => (await getSlackMessageRelayStats()).parked === 1);
+      await e.stop();
+      expect((await rows())[0]).toMatchObject({ status: "parked", last_error: "retry_after_excessive" });
+      const again = drainer(url); await again.start(); // restart must NOT requeue it (that would be an early retry)
+      await new Promise((r) => setTimeout(r, 200));
+      await again.stop(); await radar.close();
+      expect((await rows())[0]).toMatchObject({ status: "parked" });
+      expect(radar.requests).toHaveLength(2);
     });
 
     it("401 parks visibly, stops sending (no endless retry), and a restart after fixing the key re-queues parked rows", async () => {

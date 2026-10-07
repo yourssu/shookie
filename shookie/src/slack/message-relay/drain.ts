@@ -24,6 +24,7 @@ export interface RelayStore {
 export const RELAY_RETENTION = {
   deliveredMs: 3 * 24 * 60 * 60 * 1_000,
   failedMs: 30 * 24 * 60 * 60 * 1_000,
+  // Measured from the later of creation and the scheduled retry, so a long Retry-After is never cut short.
   maxPendingAgeMs: 3 * 24 * 60 * 60 * 1_000,
   batch: 500,
 } as const;
@@ -62,8 +63,13 @@ export interface RelayDrainerOptions {
   maxBackoffMs?: number;
   /** Delivery attempts (excluding 429) before a row becomes terminally failed. */
   maxAttempts?: number;
-  /** Upper bound for a server-supplied Retry-After. Large but finite so a bad header cannot park rows forever. */
+  /**
+   * Longest server-supplied Retry-After that is honoured. Anything longer is NEVER shortened and retried early:
+   * the row is parked visibly (error log, 'parked') for an operator instead.
+   */
   maxRetryAfterMs?: number;
+  /** Upper bound for stop() to wait for in-flight work; database work is itself bounded by its own deadlines. */
+  stopTimeoutMs?: number;
 }
 
 const RETRY_AFTER_DEFAULT_MS = 60_000;
@@ -98,6 +104,8 @@ export class RelayDrainer {
   private readonly maxBackoffMs: number;
   private readonly maxAttempts: number;
   private readonly maxRetryAfterMs: number;
+  private readonly stopTimeoutMs: number;
+  private hardStopped = false;
 
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
@@ -107,7 +115,7 @@ export class RelayDrainer {
   private readonly aborts = new Set<AbortController>();
 
   constructor(private readonly options: RelayDrainerOptions) {
-    this.store = options.store ?? databaseRelayStore;
+    this.store = this.guard(options.store ?? databaseRelayStore);
     this.fetcher = options.fetcher ?? ((input, init) => fetch(input, init));
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
@@ -117,16 +125,33 @@ export class RelayDrainer {
     this.idlePollMs = options.idlePollMs ?? 2_000;
     this.errorPollMs = options.errorPollMs ?? 10_000;
     this.maintenanceEveryMs = options.maintenanceEveryMs ?? 5 * 60_000;
-    this.leaseMs = options.leaseMs ?? Math.max(60_000, this.requestTimeoutMs * 4);
+    // Must exceed a whole batch's worth of requests plus bounded outcome writes; a crashed worker recovers after it.
+    this.leaseMs = options.leaseMs ?? Math.max(120_000, this.requestTimeoutMs * 8 + 20_000);
     this.baseBackoffMs = options.baseBackoffMs ?? 5_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 15 * 60_000;
     this.maxAttempts = options.maxAttempts ?? 15;
-    this.maxRetryAfterMs = options.maxRetryAfterMs ?? 24 * 60 * 60_000;
+    this.maxRetryAfterMs = options.maxRetryAfterMs ?? 7 * 24 * 60 * 60_000;
+    this.stopTimeoutMs = options.stopTimeoutMs ?? 30_000;
+  }
+
+  /** After a hard stop no further database call is started (rows stay recoverable through their lease). */
+  private guard(store: RelayStore): RelayStore {
+    const skip = <T>(fallback: T, call: () => Promise<T>) => (this.hardStopped ? Promise.resolve(fallback) : call());
+    return {
+      claim: (l, m) => skip([], () => store.claim(l, m)),
+      delivered: (r, d) => skip(false, () => store.delivered(r, d)),
+      defer: (r, ms, d) => skip(false, () => store.defer(r, ms, d)),
+      finish: (r, st, d) => skip(false, () => store.finish(r, st, d)),
+      requeueParked: () => skip(0, () => store.requeueParked()),
+      prune: () => skip({ expired: 0, deleted: 0 }, () => store.prune()),
+      stats: () => skip({ pending: 0, delivering: 0, delivered: 0, failed: 0, parked: 0 }, () => store.stats()),
+    };
   }
 
   /** Re-queues rows parked by a previous configuration error (operator fixed URL/key and restarted), then starts polling. */
   async start(): Promise<void> {
     this.stopping = false;
+    this.hardStopped = false;
     try {
       const requeued = await this.store.requeueParked();
       if (requeued > 0) logger.warn("Slack 메시지 릴레이 parked 행을 재시도 대기열로 복구", { requeued });
@@ -142,7 +167,20 @@ export class RelayDrainer {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     for (const controller of this.aborts) controller.abort();
-    await this.running;
+    const running = this.running;
+    if (!running) return;
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+      running.then(() => false),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), this.stopTimeoutMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (timedOut) {
+      // Every database call has its own deadline and destroys its connection, so this is a last-resort bound:
+      // forbid new calls and let the caller continue shutdown instead of waiting forever.
+      this.hardStopped = true;
+      logger.error("Slack 메시지 릴레이 drain 종료 대기 초과 — 이후 DB 호출 중단(행은 lease 만료로 복구)");
+    }
   }
 
   private schedule(delayMs: number): void {
@@ -265,9 +303,16 @@ export class RelayDrainer {
         await this.store.delivered(row, { statusCode: status });
       } else if (status === 429) {
         const requested = parseRetryAfter(retryAfter, this.now()) ?? RETRY_AFTER_DEFAULT_MS;
-        const delay = Math.min(requested, this.maxRetryAfterMs);
-        await this.store.defer(row, delay, { statusCode: status, error: "rate_limited", countAttempt: false });
-        logger.warn("Slack 메시지 릴레이 429 — Retry-After 만큼 durable 지연", { eventId: row.eventId, delayMs: delay });
+        if (requested > this.maxRetryAfterMs) {
+          // Never retry earlier than Radar asked: park visibly; an operator (or restart) decides.
+          await this.store.finish(row, "parked", { statusCode: status, error: "retry_after_excessive" });
+          logger.error("Slack 메시지 릴레이 Retry-After가 허용 한도 초과 — 조기 재시도 없이 park함", {
+            eventId: row.eventId, retryAfterMs: requested, maxMs: this.maxRetryAfterMs,
+          });
+        } else {
+          await this.store.defer(row, requested, { statusCode: status, error: "rate_limited", countAttempt: false });
+          logger.warn("Slack 메시지 릴레이 429 — Retry-After 전체를 durable 지연", { eventId: row.eventId, delayMs: requested });
+        }
       } else if ([401, 403, 404, 405].includes(status) || (status >= 300 && status < 400)) {
         // Authentication / route / redirect problems are configuration errors: park the row and stop hammering Radar.
         await this.store.finish(row, "parked", { statusCode: status, error: "config" });

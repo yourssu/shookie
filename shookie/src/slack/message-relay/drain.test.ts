@@ -77,21 +77,30 @@ describe("RelayDrainer HTTP contract", () => {
     expect(s.calls.delivered).toHaveLength(0);
   });
 
-  it("honours a full 429 Retry-After durably with NO 30s clamp and refunds the attempt", async () => {
+  it("honours a full 429 Retry-After durably: 172800s waits >= 172800s, never the old 24h cap; attempt refunded", async () => {
     const s = store([[row(1)], [row(2)], [row(3)]]);
     const fetcher = vi.fn()
-      .mockResolvedValueOnce(respond(429, { "retry-after": "3600" }))
+      .mockResolvedValueOnce(respond(429, { "retry-after": "172800" }))
       .mockResolvedValueOnce(respond(429, { "retry-after": new Date(Date.now() + 7_200_000).toUTCString() }))
-      .mockResolvedValueOnce(respond(429, { "retry-after": String(10 * 24 * 3600) }));
+      .mockResolvedValueOnce(respond(429, { "retry-after": "3600" }));
     const d = make(s, fetcher);
     await d.tick(); await d.tick(); await d.tick(); await d.stop();
     const [a, b, c] = s.calls.defer.map((x) => x[1] as number);
-    expect(a).toBe(3_600_000);
+    expect(a).toBeGreaterThanOrEqual(172_800_000);
     expect(b).toBeGreaterThan(7_100_000);
     expect(b).toBeLessThanOrEqual(7_200_000);
-    expect(c).toBe(24 * 3600_000); // only a sanity ceiling of 24h for absurd values
+    expect(c).toBe(3_600_000);
     expect(s.calls.defer.every((x) => (x[2] as { countAttempt: boolean }).countAttempt === false)).toBe(true);
     expect(s.calls.finish).toHaveLength(0);
+  });
+
+  it("an absurd Retry-After is parked visibly (no early retry, no shortening)", async () => {
+    const s = store([[row(1)]]);
+    const d = make(s, async () => respond(429, { "retry-after": String(30 * 24 * 3600) }));
+    await d.tick(); await d.stop();
+    expect(s.calls.defer).toHaveLength(0);
+    expect(s.calls.finish[0]!.slice(1)).toEqual(["parked", { statusCode: 429, error: "retry_after_excessive" }]);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("park"), expect.objectContaining({ eventId: "Ev0SYNTH1" }));
   });
 
   it("429 without a usable Retry-After defers a conservative default instead of hammering", async () => {
@@ -190,5 +199,21 @@ describe("RelayDrainer HTTP contract", () => {
     const before = Object.values(s.calls).flat().length;
     await new Promise((r) => setTimeout(r, 30));
     expect(Object.values(s.calls).flat().length).toBe(before);
+  });
+
+  it("stop() is bounded even if a database call never returns, and no database call starts afterwards", async () => {
+    const s = store([[row(1), row(2)]]);
+    const hang = new Promise<boolean>(() => undefined);
+    s.delivered = async (...a) => { s.calls.delivered!.push(a); return hang; };
+    const d = make(s, async () => respond(200), { concurrency: 1, stopTimeoutMs: 80 });
+    await d.start(); // scheduled run, as in production
+    await vi.waitFor(() => expect(s.calls.delivered).toHaveLength(1));
+    const started = Date.now();
+    await d.stop();
+    expect(Date.now() - started).toBeLessThan(400);
+    const calls = Object.values(s.calls).flat().length;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(Object.values(s.calls).flat().length).toBe(calls);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("종료 대기 초과"));
   });
 });

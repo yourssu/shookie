@@ -27,8 +27,8 @@ SocketModeClient 'slack_event'
 
 ### 신원(app/team) 설정 오류는 조용히 흐르지 않는다
 
-- **부팅 시 1회**(메시지별 조회 아님): 릴레이가 켜져 있으면 기존 봇 토큰으로 `auth.test`를 한 번 호출해 `team_id`가 `RADAR_SLACK_RELAY_TEAM_ID`와 같은지 확인하고, 다르거나 응답이 없거나 10초를 넘기면 **부팅 실패**한다(새 스코프/연결 없음).
-- 앱 ID는 `auth.test`로 알 수 없고(`bots.info`는 `users:read` 필요 — 스코프 변경 금지) 따라서 **런타임에 fail closed**: 캡처 대상 공개 메시지의 `api_app_id`/`team_id`가 설정과 다르면 outbox에 넣지 않고 **ACK도 하지 않으며**(Bolt 처리도 보류) 60초마다 `신원(app/team) 불일치` error 로그(차단 건수 포함)를 남긴다. 잘못된 설정으로 스트림 전체가 조용히 ACK되어 Radar에 도달하지 않는 상황을 막기 위한 의도된 선택이며, 비대상 이벤트(DM, 멘션, 리액션 등)에는 영향이 없다. 로그를 보면 `RADAR_SLACK_RELAY_ENABLED=false`로 롤백하거나 ID를 고쳐 재배포한다.
+- **부팅 시 1회**(메시지별 조회 아님): 릴레이가 켜져 있으면 기존 봇 토큰으로 `auth.test`를 한 번 호출해 `team_id`가 `RADAR_SLACK_RELAY_TEAM_ID`와 같은지 확인하고, 다르거나 응답이 없거나 10초를 넘기면 **부팅 실패**한다. 이어서 같은 토큰의 봇에 `bots.info`를 한 번 호출해 `app_id`를 확인하며 다르면 **부팅 실패**한다(ID/토큰은 로그에 남기지 않음). 새 스코프/연결 없음.
+- `bots.info`는 보통 `users:read`가 필요하고 스코프 변경은 금지이므로 호출이 거부되면 앱 ID는 "런타임 강제"로 남고(시작 로그에 `app: runtime-enforced`), 이 경우 **런타임에 fail closed**로 보호한다(검증 완료 전/후 모두 동일): 캡처 대상 공개 메시지의 `api_app_id`/`team_id`가 설정과 다르면 outbox에 넣지 않고 **ACK도 하지 않으며**(Bolt 처리도 보류) 60초마다 `신원(app/team) 불일치` error 로그(차단 건수 포함)를 남긴다. 잘못된 설정으로 스트림 전체가 조용히 ACK되어 Radar에 도달하지 않는 상황을 막기 위한 의도된 선택이며, 비대상 이벤트(DM, 멘션, 리액션 등)에는 영향이 없다. 로그를 보면 `RADAR_SLACK_RELAY_ENABLED=false`로 롤백하거나 ID를 고쳐 재배포한다.
 
 ### 한계 (절대 무손실을 약속하지 않음)
 
@@ -55,12 +55,13 @@ SocketModeClient 'slack_event'
 | 응답 | 동작 |
 | --- | --- |
 | 2xx | `delivered` (메타데이터만 3일 보관 후 삭제) |
-| 429 | `Retry-After`(초 또는 HTTP-date)를 **그대로** durable 지연(시도 횟수 미차감, 상한은 비정상 값 방지용 24시간). 헤더가 없으면 60초 |
+| 429 | `Retry-After`(초 또는 HTTP-date) **전체**를 durable 지연(시도 횟수 미차감, 줄이거나 조기 재시도하지 않음; 예: 172800초 → 최소 172800초 후). 헤더가 없으면 60초. 7일을 넘는 비정상 값은 **조기 재시도 없이** `parked(retry_after_excessive)` + error 로그 — 재시작해도 자동 재큐잉되지 않으며 운영자가 판단 |
 | 408/425/5xx, 타임아웃, 네트워크 오류 | 지수 백오프(5s→최대 15분, 지터), 최대 15회 후 `failed`(30일 보관, 로그 error) |
 | 401/403/404/405, 3xx(리다이렉트는 따라가지 않음) | 설정 오류: 해당 행을 `parked`, drain **중지**(무한 재시도 없음), 10분마다 error 로그. 키/URL 수정 후 **재시작하면 parked 행이 자동 재큐잉** |
 | 그 외 4xx | 계약 위반: `failed`로 즉시 보관 |
 
-- 배치 20건, 동시 HTTP 3개, 요청 타임아웃 5초, 클레임 lease 60초(크래시 시 lease 만료로 재전송), `FOR UPDATE SKIP LOCKED`로 동시 클레임 방지, 3일 넘게 pending인 행은 `failed(expired)`.
+- 배치 20건, 동시 HTTP 3개, 요청 타임아웃 5초, 클레임 lease 120초(크래시/outcome 기록 타임아웃 시 lease 만료로 같은 eventId 재전송), `FOR UPDATE SKIP LOCKED`로 동시 클레임 방지, pending 행은 생성 시각과 예정된 재시도 시각 중 늦은 쪽 기준 3일이 지나면 `failed(expired)`(긴 Retry-After가 만료로 잘리지 않음).
+- **drainer의 모든 DB 호출**(claim, 결과 기록, 정리, 통계, parked 복구)은 enqueue와 같은 방식으로 유한하다: 커넥션 획득 2s, `lock_timeout` 2s, `statement_timeout` 5s(정리·통계 15s), 전체 10s(20s). 초과 시 커넥션을 파기해 서버가 롤백하고 행은 `delivering`으로 남아 lease 만료 후 복구된다. `stop()`은 진행 중 HTTP를 abort하고 최대 30초만 기다리며, 초과하면 이후 DB 호출을 시작하지 않고 계속 종료한다.
 - 종료 순서: Socket 앱 중지 → 진행 중 캡처 커밋 대기 → drainer 중지(진행 중 HTTP abort, 미전송 행 반환) → 풀 종료. 풀 종료 후에는 쓰기가 없다.
 
 ## 환경변수

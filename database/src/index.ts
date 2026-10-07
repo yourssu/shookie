@@ -9,6 +9,8 @@ export {
 export { runMigrations } from "./migrate.js";
 export {
   DEFAULT_ENQUEUE_DEADLINES,
+  DRAIN_DB_BOUNDS,
+  MAINTENANCE_DB_BOUNDS,
   SlackMessageRelayDeadlineError,
   enqueueSlackMessageRelay,
   claimSlackMessageRelayBatch,
@@ -21,6 +23,7 @@ export {
   type EnqueueResult,
   type SlackMessageRelayMetadata,
   type SlackMessageRelayDeadlines,
+  type SlackMessageRelayDbBounds,
   type SlackMessageRelayRow,
   type SlackMessageRelayOutcomeDetail,
   type SlackMessageRelayRetention,
