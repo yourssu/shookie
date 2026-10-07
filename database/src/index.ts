@@ -8,6 +8,26 @@ export {
 } from "./meeting-reminders.js";
 export { runMigrations } from "./migrate.js";
 export {
+  DEFAULT_ENQUEUE_DEADLINES,
+  SlackMessageRelayDeadlineError,
+  enqueueSlackMessageRelay,
+  claimSlackMessageRelayBatch,
+  markSlackMessageRelayDelivered,
+  deferSlackMessageRelay,
+  finishSlackMessageRelayUndelivered,
+  requeueParkedSlackMessageRelays,
+  pruneSlackMessageRelays,
+  getSlackMessageRelayStats,
+  type EnqueueResult,
+  type SlackMessageRelayMetadata,
+  type SlackMessageRelayDeadlines,
+  type SlackMessageRelayRow,
+  type SlackMessageRelayOutcomeDetail,
+  type SlackMessageRelayRetention,
+  type SlackMessageRelayPruneResult,
+  type SlackMessageRelayStats,
+} from "./slack-message-relay.js";
+export {
   logAgentCall,
   upsertSession,
   startAgentCall,
