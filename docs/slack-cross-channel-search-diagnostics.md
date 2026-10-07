@@ -24,11 +24,35 @@ JSON 96,000 bytes/본문 projection 24,000 bytes이며 공유 thread/history 한
 > 독립 리뷰와 pinned squash/deploy 후 새 MCP OpenClaw 검색 및 genuine other-channel
 > source comparison이 필요하다. 실제 성공 후 main이 별도 진단 제거 task를 만든다.
 
-## 목적과 운영 경계
+## PR113 복원 후속: 같은 페이지의 검증된 primary 보존
+
+사용자 원래 요청 '최근 슈타임에 어떤 업데이트 있었는지 슬랙 검색해서 알려줘'의
+MCP replay에서 trusted `slack-event:Ev0C79DR6WCE` 네 호출 모두
+`response_received → check_passed → schema_passed → cross_role_text_relation`이었다.
+양쪽 page primary/context가 존재하고 users/kinds/threadsCompatible=true이나
+동일/prefix/substring/trim/줄바꿈 비교는 false였다. API/스키마 실패가 아니며
+원본 text/response/IDs/count는 수집하지 않았다. 모든 downstream 통과는 미확정이다.
+
+이번 기능 수정은 모든 기존 검증 후 **양쪽 same-page + all-observation metadata 호환**에서
+primary 본문/source/author/thread를 그대로 보존하고 비동일 대체 context 표현을 생략한다.
+문자열 동등성이나 교차-role 권한 증명이 아니다. 생략은 complete=false/truncated=true로
+cursor traversal에 sticky 유지한다. nonprefix는 primary 잘림 증거가 아니므로
+textTruncated를 강제하지 않으며 실제 projection 잘림/기존 exact-prefix 규칙은 유지한다.
+같은-role exact hash 충돌·양쪽 same-page 없는 unequal seed promotion은 계속 fail-closed다.
+관측 hash/복합 키/160 전달키와 모든 예산·권한·취소 계약은 변경하지 않는다.
+
+PR113의 helper/stage enums/primitive predicates는 그대로 유지한다. 기존
+`cross_role_text_relation` enum도 제거하지 않지만 compatible same-page 비동일 본문은
+이제 이 reason으로 거절하지 않는다. 새 모듈/로그필드/본문 덤프는 없다.
+합성 검증은 실제 전체 coverage 성공 증명이 아니다. **actual E2E: NOT RUN**이며
+main이 원래 슈타임 exact MCP 요청과 OpenClaw/current-marker 회귀를 실제 genuine
+primary source와 독립 비교해야 한다. 실제 성공 및 별도 요청 전 진단을 제거하지 않는다.
+
+## 목적과 운영 경계 (PR110 당시 진단 추가 범위)
 
 PR108의 공개 채널 검색이 실제 요청에서 로컬 `unavailable`로 거절됐지만 단계가
 확정되지 않았다. 이 변경은 **관측만 추가**한다. 권한, 검색 API, 스코프·출처,
-PREFIX-only guard, 명시적 kind 증거, all-observations 검사, composite `(channel,ts)` 키,
+당시 PREFIX-only guard, 명시적 kind 증거, all-observations 검사, composite `(channel,ts)` 키,
 커서 seed/해시/160-key 제한, 취소, 반환 계약은 그대로다. SUBSTRING/trim/줄바꿈
 비교는 진단일 뿐 허용 조건이 아니다. query의 root hint도 thread provenance가 아니다.
 
@@ -91,7 +115,9 @@ API가 throw하면 **pending 고정 단계만** 기록한다. 진단 코드가 e
   `pagePrimaryPresent/pageContextPresent/seedPrimaryPresent/seedContextPresent`.
   기존 pageMetadata의 `primaryKnownKinds/contextKnownKinds=none|bot|participant|mixed|unknown`;
   cursor metadata를 새로 저장/복구하지 않는다. same-role에서는 이전 page 관측만 요약한다.
-- cross-role: presence → users → explicit kind → threads → **PREFIX** 순서의 첫 실패.
+- cross-role: presence → users → explicit kind → threads 순서의 첫 실패.
+  모두 통과한 same-page 비동일 본문은 primary 보존/대체 context 생략(partial)이다.
+  과거 text_relation reason은 정확 prefix 관계 거절을 뜻했으며 enum은 유지한다.
   `usersCompatible/kindsCompatible/threadsCompatible`는 pageMetadata의 기존 Set에서만 계산한다.
   missing role은 presence 필드로 구분하고 compatible=true를 명시적 일치로 해석하지 않는다.
 - text: `comparisonAvailable=true`일 때만 `equal`, `primaryPrefix/contextPrefix`,
@@ -113,14 +139,15 @@ API가 throw하면 **pending 고정 단계만** 기록한다. 진단 코드가 e
    로그 부재나 이전 generic conversationError/no persisted tool calls는 transport 미실행 증거가 아니다.
 4. 실제 E2E PASS 이후 별도 cleanup PR에서 이 모듈·search 관측·해당 테스트/문서만 제거한다.
 
-**현재 실제 실패 단계 식별 / 실제 E2E: NOT RUN (main 담당).**
+**실제 실패 단계는 위 text_relation으로 식별됨. 기능 수정 후 실제 E2E: NOT RUN (main 담당).**
 
 ## 로컬 검증과 복구
 
 `yarn workspace database build`, `yarn workspace shookie build` 후 Slack tools,
 actual main registration, handler/SDK wiring, cancellation 관련 테스트를 검증한다.
 새 테스트는 runtime casts/getter/proxy/revoked/toJSON, whitelist, logger throw,
-첫 Zod 누락 필드, PREFIX 미완화, DB tool redaction, immutable seed/unlock/retry를 검사한다.
+첫 Zod 누락 필드, metadata 첫 실패, same-page primary 보존/partial과 기존 prefix marker,
+same-role/seed-only fail-closed, DB tool redaction, immutable seed/unlock/retry를 검사한다.
 
 전체 suite 및 unrelated clone/snapshot/timeout 재현은 이 bounded task의 검증이 아니다.
 기존 clone/snapshot timeout 실패가 해소됐다고 주장하지 않는다. 해당 실패가 나오면

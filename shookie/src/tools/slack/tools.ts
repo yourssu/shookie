@@ -7,7 +7,7 @@ export function createSlackReadTools(client: SlackReadClient) {
   return {
     slack_search: createTool({
       id: "slack-search",
-      description: "assistant.search.context로 같은 workspace의 비공유 공개 채널을 키워드 검색합니다. channel 생략은 workspace_public, 지정하면 해당 공개 채널만 검색. 공개 채널에서 요청해야 하며 인증된 event action_token과 bot search:read.public 필요. target requester/bot 채널 가입은 검색 조건 아님; native RTS가 사용자 접근을 필터링합니다. private/DM·공유/외부 workspace·in:/OR 등 연산자는 불가. 일반 단어만 입력. 최대 20 match/페이지, 4페이지, context 포함 전달 최대 40개. 검색 출력 전체 JSON 96KB/본문 24KB 예산이며 context 생략·textTruncated는 partial입니다. 각 message.channel/permalink가 실제 출처이며 context는 match/full thread와 다릅니다. complete/truncated 확인, nextCursor 그대로 복사(placeholder/재구성 금지). 우회 스캔 없음.",
+      description: "assistant.search.context로 같은 workspace의 비공유 공개 채널을 키워드 검색합니다. channel 생략은 workspace_public, 지정하면 해당 공개 채널만 검색. 공개 채널에서 요청해야 하며 인증된 event action_token과 bot search:read.public 필요. target requester/bot 채널 가입은 검색 조건 아님; native RTS가 사용자 접근을 필터링합니다. private/DM·공유/외부 workspace·in:/OR 등 연산자는 불가. 일반 단어만 입력. 최대 20 match/페이지, 4페이지, context 포함 전달 최대 40개. 검색 출력 전체 JSON 96KB/본문 24KB 예산이며 context 생략·textTruncated는 partial입니다. 같은 페이지의 검증된 primary/context 본문이 다르면 metadata 호환을 확인한 뒤 primary를 보존하고 대체 context 표현을 생략(partial)합니다. 문자열 동등성 인정이나 context 본문/출처 합성이 아니며 nonprefix만으로 primary textTruncated를 설정하지 않습니다. 각 message.channel/permalink가 실제 출처이며 context는 match/full thread와 다릅니다. complete/truncated 확인, nextCursor 그대로 복사(placeholder/재구성 금지). 우회 스캔 없음.",
       inputSchema: searchInput, outputSchema: readOutput,
       execute: async (input, context) => reader.search(input, context?.requestContext),
     }),
