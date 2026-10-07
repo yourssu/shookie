@@ -70,8 +70,13 @@ describe("main-shookie agent instructions", () => {
     expect(enabled).toContain("assistant.search.context");
     expect(enabled).toContain("인증된 event action_token");
     expect(enabled).toContain("search:read.public");
-    expect(enabled).toContain("요청자 접근 검증");
-    expect(enabled).toContain("다른 채널·공유 채널 불가");
+    expect(enabled).toContain("요청자 live membership과 bot 읽기 권한 필요");
+    expect(enabled).toContain("타 private/DM·공유 채널 불가");
+    expect(enabled).toContain("channel 생략은 workspace_public 검색");
+    expect(enabled).toContain("read_channel은 현재 채널만");
+    expect(enabled).toContain("placeholder/재구성은 금지");
+    expect(enabled).toContain("대상 채널 가입 불필요");
+    expect(enabled).toContain("첨부/이미지는 현재 채널 exact-message 권한만 유지");
     expect(enabled).toContain("빈결과가 아니라 지원 불가");
     expect(enabled).toContain("권한으로 승격하지 않는다");
     expect(enabled).toContain("complete/truncated/textTruncated");
