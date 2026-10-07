@@ -24,6 +24,7 @@ SocketModeClient 'slack_event'
 - 원본 이벤트 객체는 수정하지 않는다. 멘션 그룹 치환, AI 핸들러, 리액션 릴레이, 행사 참석, 회의/사용자 OAuth, customRoutes는 영향이 없다. 릴레이는 해당 플래그와 독립이다.
 - 저장 실패(DB 장애·락·타임아웃)는 **fail closed**: 오류를 던져 ACK하지 않는다(`processEventErrorHandler`가 `RelayCaptureError`는 항상 `false`). Slack이 같은 `event_id`로 재전송하면 `ON CONFLICT DO NOTHING`으로 중복 없이 처리된다.
 - ACK 경로의 DB 작업은 모두 유한하다: 커넥션 획득 500ms, `lock_timeout` 500ms, `statement_timeout` 1s, 전체 2s. 트랜잭션 안에서 네트워크 호출은 없고 Radar HTTP는 ACK 경로에 절대 포함되지 않는다.
+- 공유 풀(`database/src/pool.ts`)에는 pg-pool 네이티브 `connectionTimeoutMillis`=5초가 설정되어 있다. 핸드셰이크에 응답하지 않는 서버(TCP는 받지만 PostgreSQL 시작에 답하지 않음)에 대해 호출자의 deadline(ACK 경로 500ms, drain 2s)이 먼저 만료되어 실패하더라도, 물리 소켓은 최대 5초 안에 파기되어 풀 용량이 반환되고 `closePool()`이 종료된다. 이 값은 공유 풀 전체(모든 기능)에 적용되며 정상 연결은 수 ms이고, 풀이 가득 찼을 때(`max=10`)의 체크아웃 대기에도 같은 5초 상한이 적용된다.
 
 ### 신원(app/team) 설정 오류는 조용히 흐르지 않는다
 

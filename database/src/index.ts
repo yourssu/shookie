@@ -1,5 +1,5 @@
 export { conversationRepository, type ConversationRepository, type ConversationEvent, type ConversationTurn } from "./conversations.js";
-export { getPool, closePool } from "./pool.js";
+export { getPool, closePool, DB_CONNECTION_TIMEOUT_MS } from "./pool.js";
 export {
   claimMeetingReminder,
   markMeetingReminderDelivered,
