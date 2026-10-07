@@ -70,6 +70,16 @@ const envSchema = z.object({
     .max(10_000)
     .default(10_000),
 
+  // Radar Slack message relay (optional; disabled by default)
+  RADAR_SLACK_RELAY_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  RADAR_SLACK_RELAY_URL: z.string().default(""),
+  RADAR_SLACK_RELAY_APP_ID: z.string().default(""),
+  RADAR_SLACK_RELAY_TEAM_ID: z.string().default(""),
+  RADAR_SLACK_RELAY_INTERNAL_API_KEY: z.string().default(""),
+
   // LLM (OpenAI-compatible)
   LLM_API_KEY: z.string().min(1),
   LLM_BASE_URL: z.string().default("https://api.deepseek.com"),
@@ -119,6 +129,57 @@ export function getMeetingReminderConfig() {
     throw new Error("RADAR_MEETING_REMINDER_API_URL must target /internal/v1/meeting-reminders without credentials, query, or fragment");
   }
   return { apiUrl: parsed.toString().replace(/\/$/u, ""), apiKey, requestTimeoutMs: 10_000 };
+}
+
+export interface SlackMessageRelayConfig {
+  apiUrl: string;
+  apiKey: string;
+  appId: string;
+  teamId: string;
+}
+
+/**
+ * Radar Slack message relay. Disabled (null) unless RADAR_SLACK_RELAY_ENABLED=true; when enabled every
+ * value is mandatory and validated so a half-configured relay fails at boot instead of dropping events.
+ * The app/team identity is fixed configuration (the authenticated Socket Mode app), never looked up per event.
+ */
+export function getSlackMessageRelayConfig(): SlackMessageRelayConfig | null {
+  if (!config.RADAR_SLACK_RELAY_ENABLED) return null;
+
+  const apiUrl = config.RADAR_SLACK_RELAY_URL.trim();
+  if (!apiUrl) throw new Error("Slack message relay requires RADAR_SLACK_RELAY_URL");
+  const appId = config.RADAR_SLACK_RELAY_APP_ID.trim();
+  if (!/^A[A-Z0-9]{2,31}$/u.test(appId)) {
+    throw new Error("RADAR_SLACK_RELAY_APP_ID must be a Slack app ID such as A0123ABCDEF");
+  }
+  const teamId = config.RADAR_SLACK_RELAY_TEAM_ID.trim();
+  if (!/^T[A-Z0-9]{2,31}$/u.test(teamId)) {
+    throw new Error("RADAR_SLACK_RELAY_TEAM_ID must be a Slack workspace ID such as T0123ABCDEF");
+  }
+  const apiKey = config.RADAR_SLACK_RELAY_INTERNAL_API_KEY;
+  if (apiKey.length < 16 || apiKey.length > 512 || /\s/u.test(apiKey)) {
+    throw new Error("RADAR_SLACK_RELAY_INTERNAL_API_KEY must be 16-512 characters without whitespace");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error("RADAR_SLACK_RELAY_URL must be an absolute URL");
+  }
+  const isLocalHttp =
+    parsed.protocol === "http:" &&
+    (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]");
+  if (parsed.protocol !== "https:" && !isLocalHttp) {
+    throw new Error("RADAR_SLACK_RELAY_URL must use HTTPS outside localhost");
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("RADAR_SLACK_RELAY_URL must not contain credentials, a query, or a fragment");
+  }
+  if (parsed.pathname.replace(/\/$/u, "") !== "/internal/v1/slack/message-events") {
+    throw new Error("RADAR_SLACK_RELAY_URL must target /internal/v1/slack/message-events");
+  }
+  return { apiUrl: parsed.toString().replace(/\/$/u, ""), apiKey, appId, teamId };
 }
 
 export function getSlackUserOAuthConfig() {
