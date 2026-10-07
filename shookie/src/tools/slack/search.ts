@@ -14,16 +14,72 @@ const apiTs = z.string().regex(/^[0-9]{1,16}\.[0-9]{1,6}$/).transform(ts => `${t
 const userId = z.string().regex(/^[UW][A-Z0-9]{1,63}$/);
 const scopeFields = { channel_id: z.string().optional(), team_id: z.string().optional(), channel: z.string().optional(), team: z.string().optional() };
 const contextMessage = z.object({ ...scopeFields, ts: apiTs, text: z.string(), user_id: userId.optional(), user: userId.optional(),
-  is_author_bot: z.boolean().optional(), bot_id: z.string().regex(/^B[A-Z0-9]{1,63}$/).optional(), thread_ts: apiTs.optional() }).passthrough();
+  is_author_bot: z.boolean().optional(), bot_id: z.string().regex(/^B[A-Z0-9]{1,63}$/).optional(), thread_ts: apiTs.optional() });
 const searchMessage = z.object({ ...scopeFields, channel_id: publicChannelId, team_id: z.string(), message_ts: apiTs,
   content: z.string(), author_user_id: userId.optional(), is_author_bot: z.boolean(), permalink: z.string().max(512).optional(),
-  thread_ts: apiTs.optional(), context_messages: z.object({ before: z.array(contextMessage).max(20).optional(), after: z.array(contextMessage).max(20).optional() }).optional(),
-}).passthrough();
+  thread_ts: apiTs.optional(), context_messages: z.object({ before: z.array(contextMessage).optional(), after: z.array(contextMessage).optional() }).optional(),
+});
 const responseSchema = z.object({ results: z.object({ messages: z.array(searchMessage).max(20),
   files: z.array(z.unknown()).max(0).optional(), channels: z.array(z.unknown()).max(0).optional(), users: z.array(z.unknown()).max(0).optional(),
 }), response_metadata: z.object({ next_cursor: z.string().max(4096).optional(), warnings: z.array(z.string()).max(0).optional() }).optional(),
   next_cursor: z.string().max(4096).optional(), has_more: z.boolean().optional(), warning: z.string().optional(),
-}).passthrough();
+});
+
+// Local processing safety limits, NOT Slack API shape or public output limits.
+const processingLimits = { maxObservations: 2048, maxTextBytes: 1_048_576, maxMetadataUnits: 4096 };
+const maxTextProjectionBytes = 24_000;
+
+/**
+ * Replace Zod's raw traversal with a fixed-shape, single-read snapshot. Budget checks
+ * use those same reads: no raw serialization, enumeration, coercion, iterator,
+ * toJSON or second getter/Proxy access. Zod only sees inert copies afterwards.
+ * Unknown fields are irrelevant to validation and must never be traversed.
+ */
+function validationSnapshot(raw: unknown, exceedBudget: () => never): unknown {
+  let observations = 0, textBytes = 0;
+  type Project = (value: unknown) => unknown;
+  const primitive: Project = value => {
+    if (typeof value === "string" && value.length > processingLimits.maxMetadataUnits) exceedBudget();
+    return value === null || ["undefined", "string", "boolean", "number"].includes(typeof value) ? value : null;
+  };
+  const text: Project = value => {
+    if (typeof value !== "string") return primitive(value);
+    // UTF-8 bytes >= JS code units, including lone surrogates. Reject before any scan.
+    if (value.length > processingLimits.maxTextBytes - textBytes) exceedBudget();
+    textBytes += Buffer.byteLength(value);
+    if (textBytes > processingLimits.maxTextBytes) exceedBudget();
+    return value;
+  };
+  const object = (shape: Record<string, Project>): Project => value => {
+    if (value === undefined) return undefined;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const copy: Record<string, unknown> = {};
+    for (const [key, project] of Object.entries(shape)) copy[key] = project((value as Record<string, unknown>)[key]);
+    return copy;
+  };
+  const messages = (item: Project, maximum: number): Project => value => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) return null;
+    const length = value.length;
+    if (!Number.isSafeInteger(length) || length < 0 || length > maximum ||
+        length > processingLimits.maxObservations - observations) exceedBudget();
+    observations += length; // Count all observations, not unique or selected messages.
+    const copy: unknown[] = [];
+    for (let i = 0; i < length; i++) copy.push(item(value[i]));
+    return copy;
+  };
+  // These arrays must be empty. Do not traverse arbitrary malformed item payloads.
+  const emptyArray: Project = value => value === undefined ? undefined : !Array.isArray(value) ? null : value.length === 0 ? [] : [null];
+  const scope = { channel_id: primitive, team_id: primitive, channel: primitive, team: primitive };
+  const contextual = object({ ...scope, ts: primitive, text, user_id: primitive, user: primitive,
+    is_author_bot: primitive, bot_id: primitive, thread_ts: primitive });
+  const primary = object({ ...scope, message_ts: primitive, content: text, author_user_id: primitive,
+    is_author_bot: primitive, permalink: primitive, thread_ts: primitive,
+    context_messages: object({ before: messages(contextual, processingLimits.maxObservations), after: messages(contextual, processingLimits.maxObservations) }) });
+  return object({ results: object({ messages: messages(primary, 20), files: emptyArray, channels: emptyArray, users: emptyArray }),
+    response_metadata: object({ next_cursor: primitive, warnings: emptyArray }),
+    next_cursor: primitive, has_more: primitive, warning: primitive })(raw);
+}
 type DeliveryRole = "primary" | "context";
 type RoleHashes = Partial<Record<DeliveryRole, string>>;
 type SearchMessage = ReadResult["messages"][number];
@@ -32,7 +88,7 @@ type KindEvidence = { bot: boolean; participant: boolean };
 type PageMetadata = { users: Set<string>; knownKinds: Set<string>; threads: Set<string> };
 type State = { binding: string; cursor: string; page: number; lossy: boolean; fingerprints: Record<string, RoleHashes>;
   deliveredRoles: Record<string, DeliveryRole>; used: string[]; expires: number };
-const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 24_000 };
+const limits = { pageSize: 20, maxPages: 4, maxPageBytes: 96_000 };
 const messageKey = (message: SearchMessage) => JSON.stringify([message.channel, message.ts]);
 
 /** Validate the message address before accepting navigation-only query hints. Never infer thread provenance. */
@@ -134,7 +190,8 @@ export class SlackSearcher {
       breadcrumb("response_received");
       stage("check_failed"); check(raw); breadcrumb("check_passed");
       stage("schema_failed");
-      const response = responseSchema.safeParse(raw);
+      const snapshot = validationSnapshot(raw, () => { stage("budget_exceeded"); return unavailable(); });
+      const response = responseSchema.safeParse(snapshot);
       if (!response.success) { stage("schema_failed", summarizeCrossSearchSchema(response.error.issues)); unavailable(); }
       breadcrumb("schema_passed");
       stage("validation_exception");
@@ -275,40 +332,50 @@ export class SlackSearcher {
         projected.set(key, message); // primary wins; context keeps its first representative relation
       }
       const messages = [...projected.values()];
-      const primaryCount = messages.filter(m => m.searchMatch).length;
-      const headerBytes = () => messages.reduce((sum, m) => sum + Buffer.byteLength(JSON.stringify({ ...m, text: "" })), 0);
-      while (headerBytes() > limits.maxPageBytes && messages.length > primaryCount) { messages.pop(); lossy = true; }
-      let budget = limits.maxPageBytes - headerBytes();
-      if (budget < 0) { stage("budget_exceeded"); unavailable(); }
-      for (const message of messages) {
-        const original = message.text;
-        const safeText = original.split(actionToken).join("[SLACK_ACTION_TOKEN_REDACTED]");
-        message.text = jsonTextPrefix(safeText, Math.min(8_000, budget));
-        message.textTruncated ||= message.text !== original;
-        lossy ||= message.textTruncated;
-        budget -= Buffer.byteLength(JSON.stringify(message.text)) - 2;
-      }
-      for (const message of messages) deliveredRoles[messageKey(message)] = message.searchMatch ? "primary" : "context";
-      // Only actually delivered (channel,ts) keys, at most 40/page * 4 pages, with two hashes/key.
-      // Store each role's original API hash, never the context hash as a primary delivery hash.
-      for (const key of Object.keys(deliveredRoles)) fingerprints[key] = { ...observed.get(key)! };
-      messages.sort((a, b) => BigInt(a.ts.replace(".", "")) < BigInt(b.ts.replace(".", "")) ? -1 : a.ts === b.ts ? 0 : 1);
       const next = data.response_metadata?.next_cursor?.trim() || data.next_cursor?.trim();
       if (data.response_metadata?.next_cursor && data.next_cursor && data.response_metadata.next_cursor !== data.next_cursor) { stage("cursor_conflict"); unavailable(); }
       if (next && (next === previous?.cursor || previous?.used.includes(next))) { stage("cursor_replay"); unavailable(); }
       const page = (previous?.page ?? 0) + 1;
-      let nextCursor: string | null = null;
-      if (next && page < limits.maxPages) {
+      const nextCursor = next && page < limits.maxPages ? randomUUID() : null;
+      const result = (items: SearchMessage[], complete: boolean): ReadResult => ({
+        status: "ok", api: "assistant.search.context", searchScope, ...(channel ? { source: { channel } } : {}),
+        message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문/context 잘림을 확인해주세요.",
+        messages: items, page, nextCursor, complete, truncated: !complete, limits: { ...limits, pageSize: limit },
+      });
+      const primaryCount = messages.filter(m => m.searchMatch).length;
+      // Reserve the ACTUAL JSON envelope: commas, brackets, limits, source, cursor,
+      // Korean status text and boolean spellings. Both completion branches are covered.
+      // Blank text copies ensure we never serialize an unbounded body to measure it.
+      const headerBytes = () => {
+        const headers = messages.map(m => ({ ...m, text: "" }));
+        return Math.max(Buffer.byteLength(JSON.stringify(result(headers, true))), Buffer.byteLength(JSON.stringify(result(headers, false))));
+      };
+      let headers = headerBytes();
+      while (headers > limits.maxPageBytes && messages.length > primaryCount) { messages.pop(); lossy = true; headers = headerBytes(); }
+      let budget = limits.maxPageBytes - headers;
+      if (budget < 0) { stage("budget_exceeded"); unavailable(); }
+      for (const message of messages) {
+        const original = message.text;
+        const safeText = original.split(actionToken).join("[SLACK_ACTION_TOKEN_REDACTED]");
+        message.text = jsonTextPrefix(safeText, Math.min(maxTextProjectionBytes, budget));
+        message.textTruncated ||= message.text !== original;
+        lossy ||= message.textTruncated;
+        budget -= Buffer.byteLength(JSON.stringify(message.text)) - 2;
+      }
+      messages.sort((a, b) => BigInt(a.ts.replace(".", "")) < BigInt(b.ts.replace(".", "")) ? -1 : a.ts === b.ts ? 0 : 1);
+      const output = result(messages, !next && !data.has_more && !lossy);
+      if (Buffer.byteLength(JSON.stringify(output)) > limits.maxPageBytes) { stage("budget_exceeded"); unavailable(); }
+      for (const message of messages) deliveredRoles[messageKey(message)] = message.searchMatch ? "primary" : "context";
+      // Only actually delivered (channel,ts) keys, at most 40/page * 4 pages, with two hashes/key.
+      // Store each role's original API hash, never the context hash as a primary delivery hash.
+      for (const key of Object.keys(deliveredRoles)) fingerprints[key] = { ...observed.get(key)! };
+      if (nextCursor) {
         if (this.cursors.size >= 1000) this.cursors.delete(this.cursors.keys().next().value!);
-        nextCursor = randomUUID();
-        this.cursors.set(nextCursor, { binding, cursor: next, page, lossy, fingerprints, deliveredRoles, used: [...(previous?.used ?? []), next], expires: Date.now() + 10 * 60_000 });
+        this.cursors.set(nextCursor, { binding, cursor: next!, page, lossy, fingerprints, deliveredRoles, used: [...(previous?.used ?? []), next!], expires: Date.now() + 10 * 60_000 });
       }
       if (cursor) this.cursors.delete(cursor);
-      const complete = !next && !data.has_more && !lossy;
       logCrossChannelSearchDiagnostic(context, "success", { finalSuccess: true });
-      return { status: "ok", api: "assistant.search.context", searchScope, ...(channel ? { source: { channel } } : {}),
-        message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문/context 잘림을 확인해주세요.",
-        messages, page, nextCursor, complete, truncated: !complete, limits: { ...limits, pageSize: limit } };
+      return output;
     } catch (error) {
       logCrossChannelSearchDiagnostic(context, pending, observations);
       return { ...errorResult(error), limits };
