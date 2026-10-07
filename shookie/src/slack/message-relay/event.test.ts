@@ -34,6 +34,7 @@ describe("relay message extraction", () => {
 
   it.each(["bot_message", "thread_broadcast", "file_share", "me_message"])("captures subtype %s", (subtype) => {
     const event: Record<string, unknown> = { subtype };
+    if (subtype === "thread_broadcast") event.thread_ts = "1699999999.999999";
     if (subtype === "bot_message") { delete event.user; event.bot_id = "B0SYNTH01"; }
     expect(captured(envelope(event)).subtype).toBe(subtype);
   });
@@ -48,6 +49,15 @@ describe("relay message extraction", () => {
       { user: undefined, bot_id: "B0SYNTH01" },
       { subtype: "file_share", user: undefined, bot_id: "B0SYNTH01" },
     ]) expect(extractRelayMessage(envelope(event), identity).kind).toBe("invalid");
+  });
+
+  it.each([
+    ["missing thread_ts", {}],
+    ["null thread_ts", { thread_ts: null }],
+    ["thread_ts == ts (normalizes to null)", { thread_ts: "1700000000.000200" }],
+  ])("rejects thread_broadcast with %s as invalid, matching the backend contract (never outboxed)", (_name, extra) => {
+    expect(extractRelayMessage(envelope({ subtype: "thread_broadcast", ...extra }), identity))
+      .toEqual({ kind: "invalid", reason: "thread_broadcast_thread_ts", eventId: "Ev0ATZSYNTH01" });
   });
 
   it("normalizes thread parents to null and keeps replies/broadcast thread timestamps", () => {

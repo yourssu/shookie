@@ -1,0 +1,26 @@
+{
+  "comment": "Cross-contract fixture for POST /internal/v1/slack/message-events (version 1). Mirrors the shared backend contract (task wk-xicsgf8a / Radar PR138 rules as specified to this task); the backend source was not available to this worktree.",
+  "valid": [
+    { "name": "plain human message", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200" },
+      "payload": { "threadTs": null, "userId": "U0HUMAN01", "subtype": null } },
+    { "name": "thread parent normalised", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "thread_ts": "1700000000.000200" },
+      "payload": { "threadTs": null, "userId": "U0HUMAN01", "subtype": null } },
+    { "name": "first reply", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "thread_ts": "1700000000.000100" },
+      "payload": { "threadTs": "1700000000.000100", "userId": "U0HUMAN01", "subtype": null } },
+    { "name": "thread broadcast", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "thread_ts": "1700000000.000100", "subtype": "thread_broadcast" },
+      "payload": { "threadTs": "1700000000.000100", "userId": "U0HUMAN01", "subtype": "thread_broadcast" } },
+    { "name": "bot_message without user", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "bot_id": "B0SYNTH01", "ts": "1700000000.000200", "subtype": "bot_message" },
+      "payload": { "threadTs": null, "userId": null, "subtype": "bot_message" } },
+    { "name": "file_share", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "subtype": "file_share" },
+      "payload": { "threadTs": null, "userId": "U0HUMAN01", "subtype": "file_share" } },
+    { "name": "me_message", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "W0HUMAN01", "ts": "1700000000.000200", "subtype": "me_message" },
+      "payload": { "threadTs": null, "userId": "W0HUMAN01", "subtype": "me_message" } }
+  ],
+  "notOutboxed": [
+    { "name": "broadcast missing thread_ts", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "subtype": "thread_broadcast" } },
+    { "name": "broadcast thread_ts == ts", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "thread_ts": "1700000000.000200", "subtype": "thread_broadcast" } },
+    { "name": "thread_ts after ts", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.000200", "thread_ts": "1700000000.000300" } },
+    { "name": "bad ts precision", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "user": "U0HUMAN01", "ts": "1700000000.02" } },
+    { "name": "non-bot without user", "envelope": { "channel_type": "channel", "channel": "C0SYNTH01", "bot_id": "B0SYNTH01", "ts": "1700000000.000200" } }
+  ]
+}

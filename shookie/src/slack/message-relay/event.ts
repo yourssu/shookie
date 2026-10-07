@@ -79,6 +79,9 @@ export function extractRelayMessage(body: unknown, identity: RelayIdentity): Rel
     // A parent message announces itself as its own thread; normalize so parents are not "replies".
     threadTs = raw === ts ? null : raw;
   }
+  // Backend contract: a thread_broadcast is by definition a reply, so it needs a real parent (threadTs non-null and != ts).
+  // Anything else is malformed: never outbox it (Radar would reject it forever).
+  if (subtype === "thread_broadcast" && threadTs === null) return invalid("thread_broadcast_thread_ts");
 
   let userId: string | null = null;
   if (event.user !== undefined && event.user !== null) {
