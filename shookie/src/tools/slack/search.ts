@@ -150,11 +150,17 @@ export class SlackSearcher {
       if (access.kind !== "public_channel") { return { ...failure("unsupported", "검색은 공개 채널에서 요청해야 합니다. private 채널·DM/MPIM에서의 검색은 지원하지 않습니다."), limits }; }
       if (!access.workspaceHost || !this.client.apiCall) unavailable();
       // Page-local metadata checks only, <=20 unique primary channels. No reusable permission cache.
-      const verified = new Set<string>();
+      const verified = new Map<string, string | undefined>();
       const verify = async (id: string) => {
         if (verified.has(id)) return;
         if (verified.size >= 20) unavailable();
-        await verifyPublicSlackChannel(this.client, access, id); verified.add(id);
+        const { name } = await verifyPublicSlackChannel(this.client, access, id);
+        // Display only, page-local and token-safe; never enters binding/identity/hash state.
+        verified.set(id, name?.includes(actionToken) ? undefined : name);
+      };
+      const display = (id: string) => {
+        const channelName = verified.get(id);
+        return channelName === undefined ? {} : { channelName };
       };
       if (channel) await verify(channel);
       const terms = query.trim().split(/\s+/).map(term => `"${term}"`).join(" ");
@@ -192,7 +198,7 @@ export class SlackSearcher {
           if (normalizedPermalink === undefined) unavailable();
         }
         const primaryBot = m.is_author_bot, primaryUser = m.author_user_id;
-        const candidate: SearchMessage = { channel: m.channel_id, ts: m.message_ts, text: m.content, textTruncated: false,
+        const candidate: SearchMessage = { channel: m.channel_id, ...display(m.channel_id), ts: m.message_ts, text: m.content, textTruncated: false,
           author: { userId: primaryUser ?? null, botId: null, kind: primaryBot ? "bot" : primaryUser ? "participant" : "system" },
           ...(m.thread_ts ? { threadTs: m.thread_ts } : {}), ...(normalizedPermalink ? { permalink: normalizedPermalink } : {}), searchMatch: true };
         candidates.push(candidate);
@@ -205,7 +211,7 @@ export class SlackSearcher {
           if ((position === "before" && contextTime >= matchTime) || (position === "after" && contextTime <= matchTime)) unavailable();
           if (m.thread_ts && c.thread_ts && c.thread_ts !== m.thread_ts) unavailable();
           const contextBot = c.is_author_bot, contextBotId = c.bot_id, contextUser = c.user_id, alternateUser = c.user;
-          const contextual: SearchMessage = { channel: m.channel_id, ts: c.ts, text: c.text, textTruncated: false,
+          const contextual: SearchMessage = { channel: m.channel_id, ...display(m.channel_id), ts: c.ts, text: c.text, textTruncated: false,
             author: { userId: contextUser ?? alternateUser ?? null, botId: contextBotId ?? null, kind: contextBot || contextBotId ? "bot" : contextUser || alternateUser ? "participant" : "system" },
             ...(c.thread_ts ? { threadTs: c.thread_ts } : {}), searchMatch: false, contextForTs: m.message_ts, contextPosition: position };
           contexts.push(contextual);
@@ -289,7 +295,7 @@ export class SlackSearcher {
       const page = (previous?.page ?? 0) + 1;
       const nextCursor = next && page < limits.maxPages ? randomUUID() : null;
       const result = (items: SearchMessage[], complete: boolean): ReadResult => ({
-        status: "ok", api: "assistant.search.context", searchScope, ...(channel ? { source: { channel } } : {}),
+        status: "ok", api: "assistant.search.context", searchScope, ...(channel ? { source: { channel, ...display(channel) } } : {}),
         message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문 잘림 및 context 생략(대체 표현 포함)을 확인해주세요.",
         messages: items, page, nextCursor, complete, truncated: !complete, limits: { ...limits, pageSize: limit },
       });

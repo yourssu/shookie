@@ -39,7 +39,7 @@ describe("actual main Slack tool registration", () => {
     const primary = { channel_id: "CTARGET", team_id: "T1", message_ts: "1700000000.000002", content: "PRIVATE_DIAGNOSTIC_PRIMARY", author_user_id: "U2", is_author_bot: false,
       permalink: "https://synthetic.slack.com/archives/CTARGET/p1700000000000002" };
     fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
-    fixture.client.conversations.info.mockImplementation(async ({ channel }) => ({ ok: true, channel: { id: channel, context_team_id: "T1", is_channel: true, is_private: false, is_group: false } }));
+    fixture.client.conversations.info.mockImplementation(async ({ channel }) => ({ ok: true, channel: { id: channel, name: `PRIVATE_CHANNEL_NAME_${channel}`, context_team_id: "T1", is_channel: true, is_private: false, is_group: false } }));
     fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
     const malformed = { ...primary } as Partial<typeof primary>; delete malformed.is_author_bot;
     fixture.client.apiCall.mockResolvedValue({ ok: true, action_token: secret, raw_source: "PRIVATE_RAW_SOURCE", results: { messages: scenario === "first_schema_issue" ? [malformed] : [primary,
@@ -65,7 +65,7 @@ describe("actual main Slack tool registration", () => {
       if (scenario === "first_schema_issue") expect(result).toMatchObject({ status: "unavailable", message: "Slack 결과를 안전하게 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", messages: [], nextCursor: null });
       else {
         expect(result).toMatchObject({ status: "ok", complete: false, truncated: true, searchScope: "workspace_public",
-          messages: [{ channel: primary.channel_id, ts: primary.message_ts, text: primary.content, textTruncated: false, searchMatch: true,
+          messages: [{ channel: primary.channel_id, channelName: "PRIVATE_CHANNEL_NAME_CTARGET", ts: primary.message_ts, text: primary.content, textTruncated: false, searchMatch: true,
             permalink: primary.permalink, author: { userId: "U2", botId: null, kind: "participant" } }, {}] });
         const messages = (result as { messages: object[] }).messages;
         expect(messages).toHaveLength(2);
@@ -77,7 +77,7 @@ describe("actual main Slack tool registration", () => {
         .filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic", "slack_cross_channel_search_diagnostic"].includes(name as string));
       expect(records).toEqual([]);
       const diagnosticAndToolDb = JSON.stringify([records, vi.mocked(logToolCall).mock.calls]);
-      for (const value of [secret, query, "PRIVATE_DIAGNOSTIC_PRIMARY", "PRIVATE_DIAGNOSTIC_CONTEXT", "PRIVATE_RAW_SOURCE", "PRIVATE_DIAGNOSTIC_CURSOR", "FORGED_GENERIC_REQUEST_ID", "FORGED_BODY_ID", "CTARGET", "C1", "T1", "U1", "U2", primary.message_ts]) expect(diagnosticAndToolDb).not.toContain(value);
+      for (const value of [secret, query, "PRIVATE_DIAGNOSTIC_PRIMARY", "PRIVATE_DIAGNOSTIC_CONTEXT", "PRIVATE_CHANNEL_NAME_CTARGET", "PRIVATE_CHANNEL_NAME_C1", "PRIVATE_RAW_SOURCE", "PRIVATE_DIAGNOSTIC_CURSOR", "FORGED_GENERIC_REQUEST_ID", "FORGED_BODY_ID", "CTARGET", "C1", "T1", "U1", "U2", primary.message_ts]) expect(diagnosticAndToolDb).not.toContain(value);
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName: "slack_search", input: { redacted: true }, output: { redacted: true } }));
       expect(JSON.stringify([vi.mocked(logger.debug).mock.calls, vi.mocked(repository.complete).mock.calls])).not.toContain(secret);
       expect(fixture.client.apiCall).toHaveBeenCalledExactlyOnceWith("assistant.search.context", expect.objectContaining({ action_token: secret, context_channel_id: "C1", query: `"${query}"` }));
@@ -97,6 +97,12 @@ describe("actual main Slack tool registration", () => {
     expect(instructions).toContain("search:read.public");
     expect(instructions).toContain("타 private/DM·공유 채널 불가");
     expect(instructions).toContain("channel 생략은 workspace_public 검색");
+    expect(instructions).toContain("channelName이 있으면 #채널명으로 표시하고 없으면 <#channelID>로 표시한다");
+    expect(instructions).toContain("출처 permalink는 유지하고 도구 호출에는 channel ID를 사용한다");
+    expect(instructions).toContain("채널 이름을 추측하거나 query/권한 근거로 사용하지 않는다");
+    expect(tools.slack_search.description).toContain("channelName이 있으면 #채널명으로 표시하고 없으면 <#channelID>로 표시하세요");
+    expect(tools.slack_search.description).toContain("출처 permalink는 유지하고 도구 호출에는 channel ID를 사용하세요");
+    expect(tools.slack_search.description).toContain("이름 추측·query/권한 근거로 사용하지 마세요");
     expect(await execute(tools.slack_read_channel, {})).toMatchObject({ status: "access_denied" });
   });
   it("honors optional injected bot client and executes registered tools using trusted request context", async () => {
