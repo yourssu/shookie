@@ -178,6 +178,10 @@ yarn workspace shookie test
 
 이 기능은 기본적으로 꺼져 있으며 `SLACK_MENTION_GROUP_REPLACEMENT_ENABLED=true`일 때만 동작합니다. 작성자 User OAuth에는 `chat:write`만 사용하고, Radar 조회는 `RADAR_MENTION_GROUPS_API_URL`의 `/internal/v1/mention-groups`와 전용 `SHOOKIE_MENTION_GROUPS_API_KEY`를 사용합니다. 상세 환경변수와 안전한 기본값은 `.env.example`을 참고하세요.
 
+### Radar 메시지 릴레이 (선택, 기본 꺼짐)
+
+`RADAR_SLACK_RELAY_ENABLED=true`이면 공개 채널 메시지 **메타데이터만** PostgreSQL outbox에 저장한 뒤(Slack ACK 이전) Radar `/internal/v1/slack/message-events`로 별도 전달합니다. 동작·한계·운영 절차는 [`docs/slack-message-relay.md`](docs/slack-message-relay.md)를 참고하세요.
+
 채널 메시지를 수신하고 OAuth 후 대기 메시지를 다시 읽으려면 Slack 앱에 공개/비공개 채널의 message event 구독과 해당 history scope가 필요합니다. 실제 Slack Redirect URL, 앱 scope/event 설정, 메시지 편집 정책과 알림 동작 검증은 자격증명이 있는 배포 환경에서 진행해야 합니다.
 
 ### Slack 첨부 텍스트 읽기
