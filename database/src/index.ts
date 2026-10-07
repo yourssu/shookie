@@ -1,5 +1,5 @@
 export { conversationRepository, type ConversationRepository, type ConversationEvent, type ConversationTurn } from "./conversations.js";
-export { getPool, closePool } from "./pool.js";
+export { getPool, closePool, DB_CONNECTION_TIMEOUT_MS } from "./pool.js";
 export {
   claimMeetingReminder,
   markMeetingReminderDelivered,
@@ -7,6 +7,29 @@ export {
   releaseUndeliveredMeetingReminder,
 } from "./meeting-reminders.js";
 export { runMigrations } from "./migrate.js";
+export {
+  DEFAULT_ENQUEUE_DEADLINES,
+  DRAIN_DB_BOUNDS,
+  MAINTENANCE_DB_BOUNDS,
+  SlackMessageRelayDeadlineError,
+  enqueueSlackMessageRelay,
+  claimSlackMessageRelayBatch,
+  markSlackMessageRelayDelivered,
+  deferSlackMessageRelay,
+  finishSlackMessageRelayUndelivered,
+  requeueParkedSlackMessageRelays,
+  pruneSlackMessageRelays,
+  getSlackMessageRelayStats,
+  type EnqueueResult,
+  type SlackMessageRelayMetadata,
+  type SlackMessageRelayDeadlines,
+  type SlackMessageRelayDbBounds,
+  type SlackMessageRelayRow,
+  type SlackMessageRelayOutcomeDetail,
+  type SlackMessageRelayRetention,
+  type SlackMessageRelayPruneResult,
+  type SlackMessageRelayStats,
+} from "./slack-message-relay.js";
 export {
   logAgentCall,
   upsertSession,

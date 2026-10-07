@@ -6,6 +6,7 @@ import {
   getSlackUserOAuthConfig,
   getSlackEventAttendanceConfig,
   getMeetingReminderConfig,
+  getSlackMessageRelayConfig,
 } from "./config.js";
 import { setLogLevel, logger } from "./logger.js";
 import { createAgent } from "./agent/index.js";
@@ -25,6 +26,8 @@ import { registerAddMentionGroupCommand } from "./slack/mention-groups/add-comma
 import { registerUngroupMentionGroupCommand } from "./slack/mention-groups/ungroup-command.js";
 import { registerMeetingReminderScheduler } from "./slack/meeting-reminders.js";
 import { RadarMentionGroupsClient } from "./slack/mention-groups/radar-client.js";
+import { createMessageRelay } from "./slack/message-relay/index.js";
+import { verifyRelayIdentity } from "./slack/message-relay/identity.js";
 
 async function main() {
   // 1. 로깅 설정
@@ -37,6 +40,7 @@ async function main() {
   const meetingReminderConfig = getMeetingReminderConfig();
   const mentionGroupConfig = getMentionGroupReplacementConfig();
   const mentionGroupCommandConfig = getMentionGroupCommandConfig();
+  const messageRelayConfig = getSlackMessageRelayConfig();
   const mentionGroupCatalog = mentionGroupConfig
     ? new RadarMentionGroupsClient(mentionGroupConfig)
     : undefined;
@@ -45,6 +49,8 @@ async function main() {
   if (appliedMigrations.length > 0) {
     logger.info("DB 마이그레이션 완료", { appliedMigrations });
   }
+  // Public-message metadata outbox: persisted before Bolt ACKs, delivered to Radar by a separate bounded drainer.
+  const messageRelay = messageRelayConfig ? createMessageRelay(messageRelayConfig) : null;
   let resumePendingMention: ((state: ConsumedSlackOAuthState) => Promise<void>) | null = null;
   const userOAuth = userOAuthConfig
     ? createSlackUserOAuthController(userOAuthConfig, mentionGroupConfig
@@ -66,6 +72,7 @@ async function main() {
   const { app } = createSocketModeApp({
     token: config.SLACK_BOT_TOKEN,
     appToken: config.SLACK_APP_TOKEN,
+    ...(messageRelay ? { messageRelay: messageRelay.capture } : {}),
     ...(userOAuth && userOAuthConfig
       ? {
           customRoutes: [
@@ -113,11 +120,20 @@ async function main() {
   }
 
   // 6. 시작
+  if (messageRelayConfig) {
+    // 한 번만(메시지별 조회 아님): 워크스페이스와 앱을 모두 확인하지 못하면(불일치/조회 실패 포함) Socket 시작 전에 부팅 실패.
+    await verifyRelayIdentity(app.client, { appId: messageRelayConfig.appId, teamId: messageRelayConfig.teamId });
+    logger.info("Radar Slack 메시지 릴레이 신원 확인 완료", { team: "verified", app: "verified" });
+  }
   try {
     await app.start();
   } catch (error) {
     await app.stop();
     throw error;
+  }
+  if (messageRelay) {
+    await messageRelay.drainer.start();
+    logger.info("Radar Slack 메시지 릴레이 활성화 (outbox → Radar 전송)");
   }
   logger.info("슈키가 시작되었습니다! 🚀");
 
@@ -130,8 +146,13 @@ async function main() {
     try {
       await app.stop();
     } finally {
-      await closePool();
-      process.exit(0);
+      try {
+        // Socket is closed: let in-flight outbox commits finish, stop the drainer, only then close the pool.
+        await messageRelay?.close();
+      } finally {
+        await closePool();
+        process.exit(0);
+      }
     }
   };
   process.on("SIGTERM", shutdown);

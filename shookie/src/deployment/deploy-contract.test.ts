@@ -155,4 +155,19 @@ describe("deployment contract", () => {
     expect(db).toContain("name: shookie_pgdata");
     expect(readRepoFile("docker-compose.yml")).not.toMatch(/^ {2}db:/m);
   });
+
+  it("delivers the Slack message relay settings default-off with a dedicated secret key", () => {
+    const compose = readRepoFile("docker-compose.yml");
+    expect(compose).toContain("RADAR_SLACK_RELAY_ENABLED: ${RADAR_SLACK_RELAY_ENABLED:-false}");
+    expect(deploy).toContain("DEPLOY_RADAR_SLACK_RELAY_ENABLED: ${{ vars.RADAR_SLACK_RELAY_ENABLED || 'false' }}");
+    expect(deploy).toContain("DEPLOY_RADAR_SLACK_RELAY_INTERNAL_API_KEY: ${{ secrets.RADAR_SLACK_RELAY_INTERNAL_API_KEY }}");
+    for (const name of ["ENABLED", "URL", "APP_ID", "TEAM_ID", "INTERNAL_API_KEY"]) {
+      expect(compose).toContain(`RADAR_SLACK_RELAY_${name}:`);
+      expect(script).toContain(`export RADAR_SLACK_RELAY_${name}="\${DEPLOY_RADAR_SLACK_RELAY_${name}:-}"`);
+      expect(deploy.match(/^ {10}envs: (.*)$/m)![1]!.split(",")).toContain(`DEPLOY_RADAR_SLACK_RELAY_${name}`);
+    }
+    // The relay key is its own credential, never an alias of another Radar key.
+    expect(compose).not.toMatch(/RADAR_SLACK_RELAY_INTERNAL_API_KEY: \$\{(?!RADAR_SLACK_RELAY_INTERNAL_API_KEY)/);
+    expect(deploy).not.toMatch(/RADAR_SLACK_RELAY_INTERNAL_API_KEY: \$\{\{ secrets\.(?!RADAR_SLACK_RELAY_INTERNAL_API_KEY)/);
+  });
 });

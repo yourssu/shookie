@@ -152,3 +152,53 @@ describe("mention group replacement config", () => {
     expect(getMentionGroupReplacementConfig()).toBeNull();
   });
 });
+
+describe("Radar Slack message relay config", () => {
+  const enabled = {
+    RADAR_SLACK_RELAY_ENABLED: "true",
+    RADAR_SLACK_RELAY_URL: "https://radar.example.com/internal/v1/slack/message-events",
+    RADAR_SLACK_RELAY_APP_ID: "A0ATZCLF99A",
+    RADAR_SLACK_RELAY_TEAM_ID: "T2SRCGYPQ",
+    RADAR_SLACK_RELAY_INTERNAL_API_KEY: "0123456789abcdef0123",
+  };
+
+  it("is disabled by default and needs no other values", async () => {
+    vi.stubEnv("RADAR_SLACK_RELAY_ENABLED", undefined);
+    const loaded = await loadConfig();
+    expect(loaded.config.RADAR_SLACK_RELAY_ENABLED).toBe(false);
+    expect(loaded.getSlackMessageRelayConfig()).toBeNull();
+    // Stray partial values never enable it.
+    expect((await loadConfig({ RADAR_SLACK_RELAY_URL: "https://x.example/internal/v1/slack/message-events" })).getSlackMessageRelayConfig()).toBeNull();
+  });
+
+  it("returns the fixed identity, URL and dedicated key when fully configured", async () => {
+    expect((await loadConfig(enabled)).getSlackMessageRelayConfig()).toEqual({
+      apiUrl: enabled.RADAR_SLACK_RELAY_URL, apiKey: enabled.RADAR_SLACK_RELAY_INTERNAL_API_KEY,
+      appId: "A0ATZCLF99A", teamId: "T2SRCGYPQ",
+    });
+    expect((await loadConfig({ ...enabled, RADAR_SLACK_RELAY_URL: "http://localhost:8080/internal/v1/slack/message-events/" })).getSlackMessageRelayConfig()?.apiUrl)
+      .toBe("http://localhost:8080/internal/v1/slack/message-events");
+  });
+
+  it.each([
+    ["missing URL", { RADAR_SLACK_RELAY_URL: "" }, "RADAR_SLACK_RELAY_URL"],
+    ["plain HTTP off localhost", { RADAR_SLACK_RELAY_URL: "http://radar.example.com/internal/v1/slack/message-events" }, "HTTPS"],
+    ["credentials in URL", { RADAR_SLACK_RELAY_URL: "https://user:pw@radar.example.com/internal/v1/slack/message-events" }, "credentials"],
+    ["query in URL", { RADAR_SLACK_RELAY_URL: "https://radar.example.com/internal/v1/slack/message-events?key=1" }, "query"],
+    ["wrong route", { RADAR_SLACK_RELAY_URL: "https://radar.example.com/internal/v1/mention-groups" }, "/internal/v1/slack/message-events"],
+    ["relative URL", { RADAR_SLACK_RELAY_URL: "/internal/v1/slack/message-events" }, "absolute"],
+    ["bad app id", { RADAR_SLACK_RELAY_APP_ID: "app" }, "APP_ID"],
+    ["missing team id", { RADAR_SLACK_RELAY_TEAM_ID: "" }, "TEAM_ID"],
+    ["short key", { RADAR_SLACK_RELAY_INTERNAL_API_KEY: "short" }, "16-512"],
+    ["key with whitespace", { RADAR_SLACK_RELAY_INTERNAL_API_KEY: "0123456789 abcdef0123" }, "whitespace"],
+    ["missing key", { RADAR_SLACK_RELAY_INTERNAL_API_KEY: "" }, "16-512"],
+  ])("fails closed at boot when enabled with %s", async (_name, overrides, message) => {
+    const loaded = await loadConfig({ ...enabled, ...overrides });
+    expect(() => loaded.getSlackMessageRelayConfig()).toThrow(message);
+  });
+
+  it("does not depend on mention group or user OAuth flags", async () => {
+    const loaded = await loadConfig({ ...enabled, SLACK_USER_OAUTH_ENABLED: "false", SLACK_MENTION_GROUP_REPLACEMENT_ENABLED: "false" });
+    expect(loaded.getSlackMessageRelayConfig()).not.toBeNull();
+  });
+});
