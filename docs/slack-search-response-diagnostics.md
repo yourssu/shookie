@@ -6,15 +6,16 @@
 > 동등 representation/권한 승인이나 본문/source 합성이 아니며 sticky partial이다.
 > nonprefix만으로 primary.textTruncated를 설정하지 않는다(실제 projection 및 기존
 > exact-prefix short-primary 규칙 유지). same-role exact hash와 unequal seed-only 거절은
-> 그대로다. PR113에서 복원한 별도 cross-channel 진단은 추가/확대/제거하지 않는다.
+> 그대로다. PR113에서 복원했던 별도 cross-channel 임시 진단도 현재 코드에서는 제거됐다.
+> PR114의 검증된 primary 보존/대체 context 생략 기능은 유지하며 아래 진단 절차는 모두 과거 이력이다.
 > 최신 계약은 [읽기 도구](slack-read-tools.md)와
-> [cross-channel 진단 및 후속 기능](slack-cross-channel-search-diagnostics.md)을 따른다.
+> [cross-channel 진단 제거 및 기능 이력](slack-cross-channel-search-diagnostics.md)을 따른다.
 
 > **현재 코드: 임시 진단 제거됨.** 아래 로그 계약·진단 필드·당시 테스트/운영 절차는 과거 이력이며 현재 emit 계약이 아니다. `search-diagnostics.ts`의 첫 Zod issue 요약·permalink predicate·role 비교/로거 및 source-only 집계를 제거했다. 기능용 KindEvidence의 bot/participant 캐시, PageMetadata의 users/knownKinds/threads, pageObserved는 유지한다. 아래 명시적 kind 지식과 known query 정규화 기능 가드는 그대로이며 오래된 projected-kind 진단을 현재 explicit-known Set으로 소급 해석하지 않는다.
 >
 > **main이 전달한 제거 전 실제 근거:** PR105 배포 및 live SHA/restarts=0 확인 뒤 search-only 새 이벤트에서 실제 searchMatch·원문/수정 댓글 출처 대조가 PASS였다. 검색은 complete=false/truncated=true/nextCursor=null/textTruncated=true인 정직한 partial이다. PR103 독립 thread read는 3페이지 complete PASS다(안전 요약: `/tmp/shookie-e2e/pr105-results.md`). history fallback을 검색 PASS로 대체하지 않았다. 20 matches/전체 query pagination/다른 requester E2E는 미검증이다.
 >
-> **현재 제거 코드 vs 운영 완료:** 임시 action-token/search/read 3종 emit 및 전용 plumbing을 코드에서 제거했지만 이 변경의 배포 후 실제 재검증은 아직 미수행이다. main이 최종 SHA 전체 diff·fresh review·pinned squash·deploy SUCCESS/live SHA/restarts=0 확인 후 새 Slack 이벤트 실제 검색과 독립 thread read·출처/도구 결과 및 3종 임시 emit 부재를 재검증해야 한다. worker는 merge/배포/서버/E2E를 실행하지 않는다. stop/exit/cleanup_completed까지 main이 확인한 뒤 최종 완료로 보고한다.
+> **현재 제거 코드 vs 운영 완료:** 임시 action-token/search/read 3종은 PR106에서 제거·운영 재검증되었다. 별도 cross-channel 임시 emit도 현재 코드에서 제거했으며 이 최신 제거 코드의 배포 후 실제 재검증은 NOT RUN이다. PR114 이전 운영 근거를 이 코드의 E2E PASS로 사용하지 않는다. main이 최종 SHA 전체 diff·fresh review·pinned squash·deploy SUCCESS/live SHA/restarts=0 확인 후 새 Slack 이벤트 실제 검색과 독립 thread read·출처/도구 결과 및 4종 임시 emit 부재를 재검증해야 한다. worker는 merge/배포/서버/E2E를 실행하지 않는다. stop/exit/cleanup_completed까지 main이 확인한 뒤 최종 완료로 보고한다.
 
 ## 과거 근거 및 진단 계약 (아카이브)
 
