@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const src = fileURLToPath(new URL("../../", import.meta.url));
-const names = ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"];
+const names = ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic", "slack_cross_channel_search_diagnostic"];
+const modules = ["action-token-diagnostics", "search-diagnostics", "read-diagnostics", "cross-channel-search-diagnostics"];
 function productionFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const path = join(directory, entry.name);
@@ -13,15 +14,15 @@ function productionFiles(directory: string): string[] {
 }
 
 describe("temporary Slack diagnostic removal", () => {
-  it("has no production reference to the three temporary emit names or removed modules", () => {
+  it("has no production reference to the four temporary emit names or removed modules", () => {
     for (const path of productionFiles(src)) {
       const source = readFileSync(path, "utf8");
-      // Exact retired module basenames; a distinct bounded cross-channel observer is not a reintroduction.
-      for (const name of [...names, "/action-token-diagnostics.js\"", "/search-diagnostics.js\"", "/read-diagnostics.js\"", "disposeDiagnostics"]) {
+      // Exact retired basenames cover either quote style and extensionless/dynamic imports.
+      for (const name of [...names, ...modules, "disposeDiagnostics"]) {
         expect(source, path).not.toContain(name);
       }
     }
-    for (const name of ["action-token-diagnostics", "search-diagnostics", "read-diagnostics"]) {
+    for (const name of modules) {
       expect(existsSync(join(src, "tools/slack", `${name}.ts`))).toBe(false);
     }
   });
