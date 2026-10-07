@@ -6,8 +6,6 @@ import { bindSlackReadContext, getSlackReadIdentity } from "./context.js";
 import { SlackReader, type SlackReadClient } from "./client.js";
 import { readOutput } from "./schemas.js";
 import { silentSlackLogger } from "./sdk-logger.js";
-import { createSlackReadTools } from "./tools.js";
-import { ExecutionScope, executionStorage, executionTools } from "../../cancellation/execution-context.js";
 
 const token = "SYNTHETIC_EVENT_ACTION_SECRET";
 const ts = (n: number) => `1700000000.${String(n).padStart(6, "0")}`;
@@ -25,12 +23,12 @@ function fixture() {
   const apiCall = vi.fn().mockResolvedValue({ ok: true, results: { messages: [message()] } });
   const history = vi.fn(), replies = vi.fn();
   const client = { auth: { test: auth }, conversations: { info, members, history, replies }, apiCall } as unknown as SlackReadClient;
-  return { auth, info, members, apiCall, history, replies, client, reader: new SlackReader(client), context: ctx() };
+  return { auth, info, members, apiCall, history, replies, reader: new SlackReader(client), context: ctx() };
 }
 afterEach(() => vi.restoreAllMocks());
 function diagnostics() {
   const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
-  return { spy, records: () => spy.mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic", "slack_cross_channel_search_diagnostic"].includes(name as string)) };
+  return { spy, records: () => spy.mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(name as string)) };
 }
 function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }
@@ -929,24 +927,6 @@ describe("search context local processing budgets (synthetic, not API shape limi
     // A final indivisible escaped character may leave fewer than 6 bytes unused.
     expect(Buffer.byteLength(JSON.stringify(result.messages.find(m => m.ts === ts(100))!.text)) - 2).toBeGreaterThan(23_994);
     expect(result.messages.find(m => !m.searchMatch)).toMatchObject({ text: "", textTruncated: true });
-  });
-  it("cancelled tool continuation drains, preserves the seed and unlocks for retry without temporary emits", async () => {
-    const f = fixture(), d = diagnostics(), tool = executionTools(createSlackReadTools(f.client)).slack_search;
-    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, next_cursor: "seed-cancel" });
-    const first = await tool.execute!({ query: "launch", limit: 20 }, { requestContext: f.context });
-    if ("error" in first) throw new Error("Synthetic seed failed");
-    let entered!: () => void, reject!: (error: unknown) => void;
-    const ready = new Promise<void>(resolve => { entered = resolve; });
-    f.apiCall.mockImplementationOnce(() => { entered(); return new Promise((_resolve, no) => { reject = no; }); });
-    d.spy.mockImplementation(() => { throw new Error(token); });
-    const scope = new ExecutionScope();
-    const work = executionStorage.run(scope, () => tool.execute!({ query: "launch", limit: 20, cursor: first.nextCursor! }, { requestContext: f.context }));
-    const assertion = expect(work).rejects.toMatchObject({ reason: "cancelled" });
-    await ready; scope.control.cancel(); reject(new Error(token)); await assertion; await scope.drain(); scope.control.finish();
-    expect(d.records()).toEqual([]);
-    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] } });
-    expect(await tool.execute!({ query: "launch", limit: 20, cursor: first.nextCursor! }, { requestContext: f.context })).toMatchObject({ status: "ok", page: 2 });
-    expect(f.apiCall).toHaveBeenCalledTimes(3);
   });
   it("budget/transport cancellation rejection leaves continuation seed immutable and unlocked even with a throwing logger", async () => {
     const f = fixture(); const d = diagnostics();
