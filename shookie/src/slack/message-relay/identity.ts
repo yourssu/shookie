@@ -5,7 +5,7 @@ export interface IdentityClient {
   bots?: { info(args: { bot: string }): Promise<{ ok?: boolean; bot?: { app_id?: string } }> };
 }
 
-export type RelayIdentityVerification = { teamVerified: true; appVerified: boolean };
+export type RelayIdentityVerification = { teamVerified: true; appVerified: true };
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -22,13 +22,13 @@ async function bounded<T>(work: Promise<T>, ms: number, label: string): Promise<
 }
 
 /**
- * One-time startup check (never per message) against the already-configured bot token:
- *  - auth.test must report the configured workspace, else startup FAILS;
- *  - bots.info for the token's own bot must report the configured app id, else startup FAILS.
- *    bots.info normally needs users:read; scopes are not ours to change, so when it is unavailable the app id stays
- *    "unverified" (reported to the caller, never logged with ids) and is enforced fail-closed at runtime by the
- *    capture path: an eligible event with another api_app_id is neither outboxed nor ACKed.
- * Nothing here logs tokens or response bodies.
+ * One-time startup check (never per message) against the already-configured bot token. An enabled relay must verify
+ * BOTH the trusted workspace and the Slack app before the Socket starts, otherwise startup FAILS:
+ *  - auth.test must report the configured workspace and a bot_id;
+ *  - bots.info for that bot must report the configured app id.
+ * A missing/failed/timed-out bots.info (e.g. missing users:read), a missing app_id or any mismatch fails startup; there is
+ * no "unverified, continue" path. The runtime envelope guard (no outbox => no ACK) remains as defense in depth.
+ * Nothing here logs tokens, ids or response bodies.
  */
 export async function verifyRelayIdentity(
   client: IdentityClient,
@@ -44,17 +44,21 @@ export async function verifyRelayIdentity(
       "RADAR_SLACK_RELAY_TEAM_ID does not match the workspace of SLACK_BOT_TOKEN; refusing to start the Slack message relay",
     );
   }
+  if (typeof auth.bot_id !== "string" || !client.bots) {
+    throw new Error("auth.test did not return a bot_id; cannot verify RADAR_SLACK_RELAY_APP_ID");
+  }
 
   let appId: string | undefined;
-  if (client.bots && typeof auth.bot_id === "string") {
-    try {
-      const info = await bounded(client.bots.info({ bot: auth.bot_id }), timeoutMs, "bots.info");
-      if (info.ok !== false && typeof info.bot?.app_id === "string") appId = info.bot.app_id;
-    } catch {
-      // missing_scope / transient error: fall back to runtime enforcement below.
-    }
+  try {
+    const info = await bounded(client.bots.info({ bot: auth.bot_id }), timeoutMs, "bots.info");
+    if (info.ok !== false && typeof info.bot?.app_id === "string") appId = info.bot.app_id;
+  } catch (error) {
+    // Metadata only: never include the Slack response/message, which may echo identifiers.
+    throw new Error(`bots.info failed (${error instanceof Error ? error.name : typeof error}); cannot verify RADAR_SLACK_RELAY_APP_ID, refusing to start the Slack message relay`);
   }
-  if (appId === undefined) return { teamVerified: true, appVerified: false };
+  if (appId === undefined) {
+    throw new Error("bots.info returned no app_id; cannot verify RADAR_SLACK_RELAY_APP_ID, refusing to start the Slack message relay");
+  }
   if (appId !== identity.appId) {
     throw new Error(
       "RADAR_SLACK_RELAY_APP_ID does not match the Slack app of SLACK_BOT_TOKEN; refusing to start the Slack message relay",

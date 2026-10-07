@@ -121,11 +121,9 @@ async function main() {
 
   // 6. 시작
   if (messageRelayConfig) {
-    // 한 번만(메시지별 조회 아님): 설정된 팀이 실제 봇 토큰의 워크스페이스와 다르면 부팅 실패.
-    const verification = await verifyRelayIdentity(app.client, { appId: messageRelayConfig.appId, teamId: messageRelayConfig.teamId });
-    logger.info("Radar Slack 메시지 릴레이 신원 확인", verification.appVerified
-      ? { team: "verified", app: "verified" }
-      : { team: "verified", app: "runtime-enforced (bots.info unavailable)" });
+    // 한 번만(메시지별 조회 아님): 워크스페이스와 앱을 모두 확인하지 못하면(불일치/조회 실패 포함) Socket 시작 전에 부팅 실패.
+    await verifyRelayIdentity(app.client, { appId: messageRelayConfig.appId, teamId: messageRelayConfig.teamId });
+    logger.info("Radar Slack 메시지 릴레이 신원 확인 완료", { team: "verified", app: "verified" });
   }
   try {
     await app.start();

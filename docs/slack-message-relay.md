@@ -27,8 +27,8 @@ SocketModeClient 'slack_event'
 
 ### 신원(app/team) 설정 오류는 조용히 흐르지 않는다
 
-- **부팅 시 1회**(메시지별 조회 아님): 릴레이가 켜져 있으면 기존 봇 토큰으로 `auth.test`를 한 번 호출해 `team_id`가 `RADAR_SLACK_RELAY_TEAM_ID`와 같은지 확인하고, 다르거나 응답이 없거나 10초를 넘기면 **부팅 실패**한다. 이어서 같은 토큰의 봇에 `bots.info`를 한 번 호출해 `app_id`를 확인하며 다르면 **부팅 실패**한다(ID/토큰은 로그에 남기지 않음). 새 스코프/연결 없음.
-- `bots.info`는 보통 `users:read`가 필요하고 스코프 변경은 금지이므로 호출이 거부되면 앱 ID는 "런타임 강제"로 남고(시작 로그에 `app: runtime-enforced`), 이 경우 **런타임에 fail closed**로 보호한다(검증 완료 전/후 모두 동일): 캡처 대상 공개 메시지의 `api_app_id`/`team_id`가 설정과 다르면 outbox에 넣지 않고 **ACK도 하지 않으며**(Bolt 처리도 보류) 60초마다 `신원(app/team) 불일치` error 로그(차단 건수 포함)를 남긴다. 잘못된 설정으로 스트림 전체가 조용히 ACK되어 Radar에 도달하지 않는 상황을 막기 위한 의도된 선택이며, 비대상 이벤트(DM, 멘션, 리액션 등)에는 영향이 없다. 로그를 보면 `RADAR_SLACK_RELAY_ENABLED=false`로 롤백하거나 ID를 고쳐 재배포한다.
+- **부팅 시 1회, Socket 시작 전**(메시지별 조회 아님): 릴레이가 켜져 있으면 기존 봇 토큰으로 `auth.test`를 한 번 호출해 `team_id`가 `RADAR_SLACK_RELAY_TEAM_ID`와 같고 `bot_id`가 있는지 확인하고, 이어서 그 `bot_id`로 `bots.info`를 한 번 호출해 `app_id`가 `RADAR_SLACK_RELAY_APP_ID`와 같은지 확인한다. **워크스페이스와 앱 둘 다** 확인되어야 하며, 불일치·응답 없음·10초 초과·`bots.info` 실패(예: `users:read` 없음)·`app_id` 누락은 모두 **부팅 실패**다. "미검증 상태로 계속" 경로는 없고, 검증 전에는 Socket 연결도 drain도 시작되지 않는다. 오류 메시지에 ID/토큰/응답 본문은 포함하지 않는다. 새 스코프/연결 없음(운영 봇 토큰은 이미 `users:read`로 `bots.info` 확인됨).
+- 방어 심화(defense in depth) — **런타임 fail closed**: 캡처 대상 공개 메시지의 `api_app_id`/`team_id`가 설정과 다르면 outbox에 넣지 않고 **ACK도 하지 않으며**(Bolt 처리도 보류) 60초마다 `신원(app/team) 불일치` error 로그(차단 건수 포함)를 남긴다. 비대상 이벤트(DM, 멘션, 리액션 등)에는 영향이 없다. 로그를 보면 `RADAR_SLACK_RELAY_ENABLED=false`로 롤백하거나 ID를 고쳐 재배포한다.
 
 ### 한계 (절대 무손실을 약속하지 않음)
 
