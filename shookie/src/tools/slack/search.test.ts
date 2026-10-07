@@ -424,7 +424,7 @@ describe("search response guards and privacy without temporary emits", () => {
   it("identifies the defensive header budget path without changing its failure", async () => {
     const d = diagnostics(), f = fixture(); const byteLength = Buffer.byteLength;
     vi.spyOn(Buffer, "byteLength").mockImplementation((value, encoding) =>
-      typeof value === "string" && value.includes('"text":""') ? 24_001 : byteLength(value, encoding));
+      typeof value === "string" && value.includes('"text":""') ? 96_001 : byteLength(value, encoding));
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable() });
     expect(d.records()).toEqual([]); expect(f.apiCall).toHaveBeenCalledTimes(1);
   });
@@ -772,7 +772,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       const withContext = messages.map((m, index) => index === 0 ? { ...m, context_messages: { after: [
         ...messages.slice(1).map(p => ({ ts: p.message_ts, text: `${p.content} longer` })),
         ...Array.from({ length: 20 }, (_, n) => ({ ts: ts(base + 40 + n), text: `synthetic raw context ${base + n}` })),
-      ].slice(0, 20), before: Array.from({ length: 19 }, (_, n) => ({ ts: ts(base - 20 + n), text: `synthetic raw before ${base + n}` })) } } : m);
+      ], before: Array.from({ length: 19 }, (_, n) => ({ ts: ts(base - 20 + n), text: `synthetic raw before ${base + n}` })) } } : m);
       f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: withContext }, next_cursor: `page-${page}` });
       const result = await f.reader.search({ query: "launch", ...(cursor ? { cursor } : {}) }, f.context);
       expect(result).toMatchObject({ status: "ok", page, complete: false });
@@ -794,10 +794,155 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     const result = await f.reader.search({ query: "launch" }, f.context);
     expect(result).toMatchObject({ status: "ok", complete: false });
-    expect(Buffer.byteLength(JSON.stringify(result.messages))).toBeLessThan(24_100);
-    expect(Buffer.byteLength(JSON.stringify(result.messages[0].text)) - 2).toBeLessThanOrEqual(8_000);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(96_000);
+    expect(Buffer.byteLength(JSON.stringify(result.messages[0].text)) - 2).toBeLessThanOrEqual(24_000);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [...pair(), { ...message(6), context_messages: { before: [{ ts: ts(2), text: long, channel_id: "GSECRET" }] } }] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+  });
+});
+
+describe("search context local processing budgets (synthetic, not API shape limits)", () => {
+  const contextItems = (count: number, base = 1) => Array.from({ length: count }, (_, i) => ({ ts: ts(base + i), text: `CONTEXT_${base + i}` }));
+  it.each([21, 64])("validates and projects %s before/after items with honest output partial", async count => {
+    const f = fixture(); diagnostics();
+    for (const position of ["before", "after"] as const) {
+      const primary = message(position === "before" ? 100 : 0);
+      const items = contextItems(count);
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...primary, context_messages: { [position]: items } }] } });
+      const result = await f.reader.search({ query: "launch" }, f.context);
+      expect(result).toMatchObject({ status: "ok", complete: count === 21, truncated: count !== 21, limits: { maxPageBytes: 96_000 } });
+      expect(result.messages).toHaveLength(Math.min(count + 1, 40));
+      expect(result.messages.find(m => m.searchMatch)).toMatchObject({ ts: primary.message_ts, text: primary.content });
+      expect(result.messages.filter(m => !m.searchMatch).every(m => m.contextPosition === position && m.contextForTs === primary.message_ts)).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(96_000);
+    }
+  });
+  it("processes context totals across primaries and does not hash/store omitted keys", async () => {
+    const f = fixture(); diagnostics();
+    const messages = Array.from({ length: 3 }, (_, i) => ({ ...message(1000 + i), context_messages: { before: contextItems(64, i * 100 + 1) } }));
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages }, next_cursor: "budget-page" });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(result.messages.filter(m => m.searchMatch)).toHaveLength(3); expect(result.messages).toHaveLength(40);
+    const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, { fingerprints: object; deliveredRoles: object }> } }).searcher.cursors;
+    const state = cursors.get(result.nextCursor!)!;
+    expect(Object.keys(state.fingerprints)).toHaveLength(40);
+    expect(Object.keys(state.fingerprints).sort()).toEqual(result.messages.map(m => JSON.stringify([m.channel, m.ts])).sort());
+    expect(JSON.stringify(state)).not.toContain("CONTEXT_");
+  });
+  it("counts every duplicate observation and bounds aggregate arrays before reading items", async () => {
+    const f = fixture(); const d = diagnostics();
+    const duplicate = { ts: ts(1), text: "" };
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), context_messages: { before: Array(2047).fill(duplicate) } }] } });
+    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok", complete: true, messages: [{}, {}] });
+    const read = vi.fn(() => { throw new Error("DO_NOT_READ"); });
+    for (const count of [2048, 10_000_000]) {
+      const oversized = Object.defineProperty(new Array(count), "0", { get: read });
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), context_messages: { before: oversized } }] } });
+      expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
+    }
+    // Each array alone is within 2048, but the whole page is not.
+    const second = Object.defineProperty(new Array(1024), "0", { get: read });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...message(2), context_messages: { before: Array(1024).fill(duplicate) } },
+      { ...message(3), context_messages: { before: second } },
+    ] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
+    expect(read).not.toHaveBeenCalled(); expect(JSON.stringify(d.spy.mock.calls)).not.toContain("DO_NOT_READ");
+  });
+  it("caps cumulative UTF-8 text, including emoji, before hashing or output projection", async () => {
+    const f = fixture(); diagnostics();
+    for (const body of ["a".repeat(1_048_576), "😀".repeat(262_144)]) {
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: body }] } });
+      expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "ok", complete: false, truncated: true, messages: [{ textTruncated: true }] });
+      f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: body, context_messages: { before: [{ ts: ts(1), text: "x" }] } }] } });
+      expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
+    }
+    const nextRead = vi.fn(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [Object.defineProperty({ ...message(), content: "a".repeat(2_000_000) }, "author_user_id", { get: nextRead })] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable"); expect(nextRead).not.toHaveBeenCalled();
+  });
+  it.each(["scope", "user", "kind", "thread", "prefix", "hash", "schema"])("rejects late %s beyond output selection without leaking any page content", async fault => {
+    const f = fixture(); const d = diagnostics();
+    const before = contextItems(64);
+    const target = { ts: ts(70), text: "short longer", user_id: "U2", is_author_bot: false, thread_ts: ts(1) };
+    const late = { ...target, ...(fault === "scope" ? { channel_id: "COTHER" } : {}),
+      ...(fault === "user" ? { user_id: "UOTHER" } : {}), ...(fault === "kind" ? { is_author_bot: true } : {}),
+      ...(fault === "thread" ? { thread_ts: ts(3) } : {}), ...(fault === "prefix" || fault === "hash" ? { text: "LATE_SECRET" } : {}),
+      ...(fault === "schema" ? { user_id: "invalid" } : {}) };
+    const messages = [{ ...message(70), content: "short", thread_ts: ts(1) },
+      { ...message(100), context_messages: { before: [...before, ...(fault === "hash" ? [target] : []), late] } }];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages }, next_cursor: "rejected" });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
+    expect(JSON.stringify(result)).not.toContain("CONTEXT_"); expect(JSON.stringify(d.spy.mock.calls)).not.toContain("LATE_SECRET");
+    const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, unknown> } }).searcher.cursors;
+    expect(cursors.size).toBe(0);
+  });
+  it("does not enumerate unknown keys/metadata, serialize raw, invoke coercion or re-read getters", async () => {
+    const f = fixture(); diagnostics();
+    const forbidden = vi.fn(() => { throw new Error(token); });
+    const text = vi.fn(() => "VALID_CONTEXT"), length = vi.fn(() => 64);
+    const raw = new Proxy(Object.defineProperty({ ts: ts(1), toJSON: forbidden }, "text", { get: text }), {
+      ownKeys: forbidden, getOwnPropertyDescriptor: forbidden,
+      get(target, key, receiver) { if (key === "toJSON" || key === "then" || key === "catch") return forbidden(); return Reflect.get(target, key, receiver); },
+    });
+    const items = new Proxy(Array(64).fill(raw), { get(target, key, receiver) {
+      if (key === "length") return length(); if (key === Symbol.iterator) return forbidden(); return Reflect.get(target, key, receiver);
+    } });
+    const primary = Object.defineProperty({ ...message(), context_messages: { before: items }, toJSON: forbidden }, "ignored", { get: forbidden, enumerable: true });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [primary] }, toJSON: forbidden });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("ok");
+    expect(text).toHaveBeenCalledTimes(64); expect(length).toHaveBeenCalledTimes(1); expect(forbidden).not.toHaveBeenCalled();
+    // Malformed recognized scalars are not handed to Zod for promise/type inspection.
+    const hostile = new Proxy({}, { get: forbidden, ownKeys: forbidden, getOwnPropertyDescriptor: forbidden });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(), content: hostile }] } });
+    expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable"); expect(forbidden).not.toHaveBeenCalled();
+  });
+  it("bounds malformed arrays and oversized non-text fields without visiting arbitrary payloads", async () => {
+    const f = fixture(); diagnostics(); const read = vi.fn(() => { throw new Error(token); });
+    for (const raw of [
+      { results: { messages: [Object.defineProperty({ ...message(), team_id: "T".repeat(1_000_000) }, "message_ts", { get: read })] } },
+      { results: { messages: [], files: Object.defineProperty(new Array(10_000_000), "0", { get: read }) } },
+      { results: { messages: [] }, response_metadata: { warnings: Object.defineProperty(new Array(10_000_000), "0", { get: read }) } },
+      { results: { messages: [{ ...message(), context_messages: { before: Array(2047).fill(null) } }] } },
+    ]) {
+      f.apiCall.mockResolvedValueOnce({ ok: true, ...raw });
+      expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
+    }
+    expect(read).not.toHaveBeenCalled();
+  });
+  it.each([undefined, "C1"])("accounts for escaped UTF-8, full envelope/cursor and prioritizes primary text (%s)", async channel => {
+    const f = fixture(); diagnostics();
+    const body = '😀\\\"\n\u0000\ud800'.repeat(5000);
+    const messages = Array.from({ length: 4 }, (_, i) => ({ ...message(100 + i), content: body,
+      ...(i === 0 ? { context_messages: { before: [{ ts: ts(1), text: body }] } } : {}) }));
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages }, next_cursor: "cursor-escape" });
+    const result = await f.reader.search({ query: "launch", ...(channel ? { channel } : {}) }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(96_000);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(95_800);
+    expect(result.messages.filter(m => m.searchMatch)).toHaveLength(4);
+    for (const m of result.messages) expect(Buffer.byteLength(JSON.stringify(m.text)) - 2).toBeLessThanOrEqual(24_000);
+    // A final indivisible escaped character may leave fewer than 6 bytes unused.
+    expect(Buffer.byteLength(JSON.stringify(result.messages.find(m => m.ts === ts(100))!.text)) - 2).toBeGreaterThan(23_994);
+    expect(result.messages.find(m => !m.searchMatch)).toMatchObject({ text: "", textTruncated: true });
+  });
+  it("budget/transport cancellation rejection leaves continuation seed immutable and unlocked even with a throwing logger", async () => {
+    const f = fixture(); const d = diagnostics();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, next_cursor: "seed-budget" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, unknown> } }).searcher.cursors;
+    const seed = JSON.stringify(cursors.get(first.nextCursor!));
+    d.spy.mockImplementation(() => { throw new Error(token); });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(3), context_messages: { before: new Array(2048) } }] } });
+    expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
+    expect(JSON.stringify(cursors.get(first.nextCursor!))).toBe(seed); expect(cursors.size).toBe(1);
+    f.apiCall.mockRejectedValueOnce(Object.assign(new Error("synthetic cancellation"), { name: "AbortError" }));
+    expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
+    expect(JSON.stringify(cursors.get(first.nextCursor!))).toBe(seed); expect(cursors.size).toBe(1);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message(3)] } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2 });
   });
 });
 
@@ -919,7 +1064,7 @@ describe("bot + trusted event action_token Real-time Search", () => {
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
   });
   it("bounds source text and context without losing or misrepresenting scope checks", async () => {
-    const f = fixture(); f.apiCall.mockResolvedValue({ ok: true, results: { messages: Array.from({ length: 20 }, (_, n) => ({ ...message(100 + n), content: "😀\n\"".repeat(10_000),
+    const f = fixture(); f.apiCall.mockResolvedValue({ ok: true, results: { messages: Array.from({ length: 20 }, (_, n) => ({ ...message(100 + n), content: "😀\n\"".repeat(8_000),
       context_messages: { before: Array.from({ length: 20 }, (_, j) => ({ ts: ts(1 + n * 20 + j), text: "context" })) },
     })) } });
     // Keep before timestamps actually before their parent.
@@ -929,7 +1074,7 @@ describe("bot + trusted event action_token Real-time Search", () => {
     const result = await f.reader.search({ query: "launch" }, f.context);
     expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
     expect(result.messages.filter(m => m.searchMatch)).toHaveLength(20); expect(result.messages.length).toBeLessThanOrEqual(40);
-    expect(Buffer.byteLength(JSON.stringify(result.messages))).toBeLessThan(24_100); expect(result.messages.some(m => m.textTruncated)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(96_000); expect(result.messages.some(m => m.textTruncated)).toBe(true);
   });
   it("promotes a prior context-only message to the terminal page's actual match with full primary provenance", async () => {
     const f = fixture();

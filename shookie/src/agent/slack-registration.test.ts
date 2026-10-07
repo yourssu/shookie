@@ -145,7 +145,8 @@ describe("actual main Slack tool registration", () => {
       message_ts: "1700000000.000002", content: "SYNTHETIC_SEARCH_MATCH", is_author_bot: true, author_user_id: "U2",
       permalink: `${canonicalPermalink}?thread_ts=1700000000.000001&cid=C1`,
     }, { channel_id: "C1", team_id: "T1", message_ts: "1700000000.000004", content: "SYNTHETIC_OTHER_MATCH", is_author_bot: false,
-      context_messages: { before: [{ ts: "1700000000.000002", text: "SYNTHETIC_SEARCH_MATCH longer context", user_id: "U2", thread_ts: "1700000000.000001" }] },
+      // >20 valid observations must pass actual registration/handler/DB plumbing too.
+      context_messages: { before: Array.from({ length: 64 }, () => ({ ts: "1700000000.000002", text: "SYNTHETIC_SEARCH_MATCH longer context", user_id: "U2", thread_ts: "1700000000.000001" })) },
     }] }, action_token: "EVENT_ACTION_SECRET" });
     const spy = vi.spyOn(main, "stream").mockImplementation(async (_messages: unknown, options: { requestContext?: RequestContext } = {}) => {
       expect(JSON.stringify(_messages)).not.toContain("EVENT_ACTION_SECRET");
