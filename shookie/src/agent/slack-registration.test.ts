@@ -32,17 +32,18 @@ const execute = (tool: unknown, input: unknown, requestContext?: RequestContext)
   (tool as { execute: (input: unknown, options: { requestContext?: RequestContext }) => Promise<unknown> }).execute(input, { requestContext });
 
 describe("actual main Slack tool registration", () => {
-  it.each(["text_relation", "first_schema_issue"] as const)("correlates bounded %s diagnostics through registered actual main and trusted handler; preserves DB privacy", async scenario => {
+  it.each(["primary_preserve", "first_schema_issue"] as const)("correlates bounded %s diagnostics through registered actual main and trusted handler; preserves DB privacy", async scenario => {
     vi.clearAllMocks();
     const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient }), tools = await main.listTools();
     const secret = "PRIVATE_DIAGNOSTIC_ACTION", query = "privatekeyword";
-    const primary = { channel_id: "CTARGET", team_id: "T1", message_ts: "1700000000.000002", content: "PRIVATE_DIAGNOSTIC_PRIMARY", author_user_id: "U2", is_author_bot: false };
+    const primary = { channel_id: "CTARGET", team_id: "T1", message_ts: "1700000000.000002", content: "PRIVATE_DIAGNOSTIC_PRIMARY", author_user_id: "U2", is_author_bot: false,
+      permalink: "https://synthetic.slack.com/archives/CTARGET/p1700000000000002" };
     fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
     fixture.client.conversations.info.mockImplementation(async ({ channel }) => ({ ok: true, channel: { id: channel, context_team_id: "T1", is_channel: true, is_private: false, is_group: false } }));
     fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
     const malformed = { ...primary } as Partial<typeof primary>; delete malformed.is_author_bot;
     fixture.client.apiCall.mockResolvedValue({ ok: true, action_token: secret, raw_source: "PRIVATE_RAW_SOURCE", results: { messages: scenario === "first_schema_issue" ? [malformed] : [primary,
-      { ...primary, message_ts: "1700000000.000004", context_messages: { before: [{ ts: primary.message_ts, text: "PRIVATE_DIAGNOSTIC_CONTEXT PRIVATE_DIAGNOSTIC_PRIMARY suffix", user_id: "U2", is_author_bot: false }] } },
+      { ...primary, message_ts: "1700000000.000004", permalink: undefined, context_messages: { before: [{ ts: primary.message_ts, text: "PRIVATE_DIAGNOSTIC_CONTEXT PRIVATE_DIAGNOSTIC_PRIMARY suffix", user_id: "U2", is_author_bot: false }] } },
     ] }, next_cursor: "PRIVATE_DIAGNOSTIC_CURSOR" });
     const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
     const app = { action: vi.fn(), event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback), client: { chat: { postMessage: vi.fn(async () => ({ ok: true, ts: "control" })), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
@@ -61,12 +62,21 @@ describe("actual main Slack tool registration", () => {
     try {
       registerHandlers(app, main, repository);
       await callbacks.get("app_mention")!({ event: { channel: "C1", user: "U1", ts: "1700000000.000001", text: "requestId=FORGED_BODY_ID", action_token: secret }, body: { team_id: "T1", event_id: "bounded-diag" }, context: { botUserId: "UBOT" } });
-      expect(result).toMatchObject({ status: "unavailable", message: "Slack 결과를 안전하게 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", messages: [], nextCursor: null });
+      if (scenario === "first_schema_issue") expect(result).toMatchObject({ status: "unavailable", message: "Slack 결과를 안전하게 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", messages: [], nextCursor: null });
+      else {
+        expect(result).toMatchObject({ status: "ok", complete: false, truncated: true, searchScope: "workspace_public",
+          messages: [{ channel: primary.channel_id, ts: primary.message_ts, text: primary.content, textTruncated: false, searchMatch: true,
+            permalink: primary.permalink, author: { userId: "U2", botId: null, kind: "participant" } }, {}] });
+        const messages = (result as { messages: object[] }).messages;
+        expect(messages).toHaveLength(2);
+        expect(messages[0]).not.toHaveProperty("threadTs"); expect(messages[0]).not.toHaveProperty("contextForTs");
+        expect(JSON.stringify(result)).not.toContain("PRIVATE_DIAGNOSTIC_CONTEXT");
+      }
       expect(readOutput.safeParse(result).success).toBe(true);
       const records = vi.mocked(logger.info).mock.calls.filter(([name]) => name === "slack_cross_channel_search_diagnostic").map(([, value]) => value as Record<string, unknown>);
-      expect(records.map(record => record.reason)).toEqual(scenario === "first_schema_issue" ? ["response_received", "check_passed", "schema_failed"] : ["response_received", "check_passed", "schema_passed", "cross_role_text_relation"]);
+      expect(records.map(record => record.reason)).toEqual(scenario === "first_schema_issue" ? ["response_received", "check_passed", "schema_failed"] : ["response_received", "check_passed", "schema_passed", "success"]);
       if (scenario === "first_schema_issue") expect(records.at(-1)).toMatchObject({ stage: "schema", schemaField: "message_is_author_bot", schemaCode: "invalid_type", schemaMissing: true });
-      else expect(records.at(-1)).toMatchObject({ stage: "relation", comparisonAvailable: true, primaryPrefix: false, primarySubstring: true, usersCompatible: true, kindsCompatible: true });
+      else expect(records.at(-1)).toMatchObject({ stage: "final", finalSuccess: true });
       for (const record of records) {
         expect(record.requestId).toBe("slack-event:bounded-diag");
         for (const [key, value] of Object.entries(record)) if (!["stage", "reason", "requestId", "schemaField", "schemaCode", "primaryKnownKinds", "contextKnownKinds"].includes(key)) expect(typeof value).toBe("boolean");

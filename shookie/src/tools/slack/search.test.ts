@@ -37,7 +37,6 @@ function localUnavailable() {
 describe("role-aware fingerprint guards without temporary emits (synthetic)", () => {
   it.each([
     ["primary", "primary", [message(), { ...message(), content: "other" }]],
-    ["primary", "context", [message(), { ...message(3), context_messages: { before: [{ ts: ts(2), text: "other" }] } }]],
     ["context", "context", [{ ...message(3), context_messages: { before: [{ ts: ts(2), text: "first" }, { ts: ts(2), text: "other" }] } }]],
     // Last equal observation is context, even though the projected representative remains primary.
     ["context", "context", [message(), { ...message(3), context_messages: { before: [
@@ -452,7 +451,7 @@ describe("search response guards and privacy without temporary emits", () => {
   });
 });
 
-describe("narrow primary-short/context-long representations (synthetic, not live E2E)", () => {
+describe("same-page primary preservation with omitted alternate context (synthetic, not live E2E)", () => {
   const short = "synthetic short", long = `${short} longer context 😀`;
   const pair = (content = short, text = long, contextMeta = {}) => [
     { ...message(2), content },
@@ -472,9 +471,16 @@ describe("narrow primary-short/context-long representations (synthetic, not live
   });
   it.each([
     [short, "nonprefix"], [long, short], [" value ", "value"], ["a\r\nb", "a\nb"],
-  ])("rejects unverified alternate representations %s / %s", async (primary, contextual) => {
-    const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(primary, contextual) } });
-    expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
+    ["needle", "before needle after"], ["PRIMARY_ONLY", "UNRELATED_CONTEXT_ONLY"],
+  ])("preserves primary %s and omits unequal context %s without claiming primary truncation", async (primary, contextual) => {
+    const d = diagnostics(), f = fixture();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(primary, contextual, { user_id: "U2", thread_ts: ts(1) }) } });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]).toEqual({ channel: "C1", ts: ts(2), text: primary, textTruncated: false,
+      author: { userId: "U2", botId: null, kind: "participant" }, searchMatch: true, permalink: message(2).permalink });
+    expect(readOutput.safeParse(result).success).toBe(true);
     expect(d.records()).toEqual([]);
   });
   it.each([
@@ -488,7 +494,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", message: localUnavailable(), messages: [], nextCursor: null });
     expect(d.records()).toEqual([]);
-    // Metadata failure precedes even a text-relation failure, matching the old OR guard.
+    // Discarding nonprefix context never bypasses any metadata failure.
     d.spy.mockClear();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, "not a prefix", meta).map((m, i) => i === 0 ? { ...m, thread_ts: ts(1) } : m) } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
@@ -630,17 +636,40 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     expect(d.records()).toEqual([]);
     for (const value of [short, long, ts(2), "U2", token]) expect(JSON.stringify(d.records())).not.toContain(value);
   });
-  it.each(["primary", "context"])("does not hide same-%s prefix conflicts behind the alternate role", async role => {
+  it.each(["primary", "context"].flatMap(role => ["prefix", "substring", "trim", "lineEnding", "unrelated"].map(relation => [role, relation])))("does not hide same-%s %s conflicts behind the alternate role", async (role, relation) => {
     const d = diagnostics(), f = fixture();
-    const messages = role === "primary" ? [...pair(), { ...message(2), content: long }] : [
-      ...pair(), { ...message(5), context_messages: { before: [{ ts: ts(2), text: `${long} changed` }] } },
+    const original = role === "primary" ? short : long;
+    const different = relation === "prefix" ? `${original} changed` : relation === "substring" ? `before ${original} after` :
+      relation === "trim" ? ` ${original} ` : relation === "lineEnding" ? `${original}\r\n` : "UNRELATED_ROLE_BODY";
+    const messages = role === "primary" ? [...pair(), { ...message(2), content: different }] : [
+      ...pair(), { ...message(5), context_messages: { before: [{ ts: ts(2), text: different }] } },
     ];
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable");
     expect(d.records()).toEqual([]);
   });
-  it("reads role hashes back independently, never overwrites primary with context, and retries failures", async () => {
-    const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() }, next_cursor: "next1" });
+  it.each(["primary", "context"].flatMap(role => ["prefix", "substring", "trim", "lineEnding", "unrelated"].map(relation => [role, relation])))("rejects cursor same-%s exact hash conflict (%s) without mutating the seed", async (role, relation) => {
+    const f = fixture();
+    const body = "SYNTHETIC_SEED_BODY\nSECOND_LINE";
+    const different = relation === "prefix" ? `${body} tail` : relation === "substring" ? `before ${body} after` :
+      relation === "trim" ? ` ${body} ` : relation === "lineEnding" ? body.replace("\n", "\r\n") : "UNRELATED_ROLE_BODY";
+    const page = (text: string) => role === "primary" ? [{ ...message(2), content: text }] : [
+      { ...message(4), context_messages: { before: [{ ts: ts(2), text }] } },
+    ];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: page(body) }, next_cursor: "next" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first.status).toBe("ok");
+    const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, unknown> } }).searcher.cursors;
+    const seed = JSON.stringify(cursors.get(first.nextCursor!));
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: page(different) } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", messages: [] });
+    expect(JSON.stringify(cursors.get(first.nextCursor!))).toBe(seed);
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: page(body) } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", page: 2, messages: [] });
+  });
+  it.each([long, "UNRELATED_CONTEXT_BODY"])("reads observed role hashes independently and retries failures (%s)", async alternate => {
+    const long = alternate;
+    const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long) }, next_cursor: "next1" });
     const first = await f.reader.search({ query: "launch" }, f.context);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(2), content: long }] } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
@@ -652,17 +681,42 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(5), context_messages: { before: [{ ts: ts(2), text: long }] } }] } });
     expect(await f.reader.search({ query: "launch", cursor: second.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false, truncated: true, messages: [{ ts: ts(5) }] });
   });
-  it("requires same-page prefix evidence for cross-role-only seed promotion; no raw cursor text", async () => {
+  it.each([long, "UNRELATED_CONTEXT_BODY"])("requires both same-page roles for unequal cross-role-only seed promotion (%s)", async alternate => {
     const d = diagnostics(), f = fixture();
-    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(1) }, next_cursor: "next" });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, alternate).slice(1) }, next_cursor: "next" });
     const first = await f.reader.search({ query: "launch" }, f.context);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [{ ...message(2), content: short }] } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
     expect(d.records()).toEqual([]);
-    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, alternate) } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false,
-      messages: [{ ts: ts(2), text: short, textTruncated: true, searchMatch: true, permalink: message(2).permalink }] });
-    for (const value of [short, long, token]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
+      messages: [{ ts: ts(2), text: short, textTruncated: alternate.startsWith(short), searchMatch: true, permalink: message(2).permalink }] });
+    for (const value of [short, alternate, token]) expect(JSON.stringify(d.spy.mock.calls)).not.toContain(value);
+  });
+  it.each(["primary", "context"] as const)("unequal %s-only seed still fails despite another key's discarded alternate context", async seedRole => {
+    const f = fixture();
+    const alternate = "UNRELATED_CONTEXT_BODY";
+    const seedMessages = [...pair(short, alternate), ...(seedRole === "primary" ? [message(6)] : [
+      { ...message(8), context_messages: { before: [{ ts: ts(6), text: "seed context only" }] } },
+    ])];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: seedMessages }, next_cursor: "next1" });
+    const first = await f.reader.search({ query: "launch" }, f.context);
+    expect(first).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(first.messages[0]).toMatchObject({ text: short, textTruncated: false, permalink: message(2).permalink });
+    const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, unknown> } }).searcher.cursors;
+    const seed = JSON.stringify(cursors.get(first.nextCursor!));
+    const unequal = seedRole === "primary" ? [{ ...message(9), context_messages: { before: [{ ts: ts(6), text: "unequal new context" }] } }] : [{ ...message(6), content: "unequal new primary" }];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: unequal } });
+    expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
+    expect(JSON.stringify(cursors.get(first.nextCursor!))).toBe(seed);
+    // Equal-hash promotion/repeat remains valid, and the earlier omission stays partial.
+    const equal = seedRole === "primary" ? [{ ...message(9), context_messages: { before: [{ ts: ts(6), text: message(6).content }] } }] : [{ ...message(6), content: "seed context only" }];
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: equal } });
+    const second = await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context);
+    expect(second).toMatchObject({ status: "ok", page: 2, complete: false, truncated: true });
+    if (seedRole === "context") expect(second.messages).toEqual([expect.objectContaining({ ts: ts(6), text: "seed context only", textTruncated: false, searchMatch: true, permalink: message(6).permalink })]);
+    else expect(second.messages).toEqual([expect.objectContaining({ ts: ts(9), searchMatch: true })]);
+    for (const value of [short, alternate, "seed context only", "U2", token]) expect(seed).not.toContain(value);
   });
   it("does not persist alternate-role hashes for context omitted by the projection bound", async () => {
     const f = fixture(); const contexts = Array.from({ length: 20 }, (_, n) => ({ ts: ts(10 + n), text: `synthetic ${n}` }));
@@ -688,11 +742,11 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     ["thread", false, false], ["thread", false, true], ["thread", true, false], ["thread", true, true],
     ["author", false, false], ["author", false, true], ["author", true, false], ["author", true, true],
     ["kind", false, false], ["kind", false, true], ["kind", true, false], ["kind", true, true],
-  ])("rejects all-observation prefix metadata contradiction despite omitted latest %s (%s/%s)", async (field, primaryExplicitLast, contextExplicitLast) => {
+  ].flatMap(row => [long, "UNRELATED_CONTEXT_BODY"].map(text => [...row, text])))("rejects all-observation metadata contradiction despite omitted latest %s (%s/%s, %s)", async (field, primaryExplicitLast, contextExplicitLast, text) => {
     const d = diagnostics(), f = fixture();
     const primary = { ...message(2), content: short, author_user_id: undefined };
     const primaryMeta = field === "thread" ? { thread_ts: ts(1) } : field === "kind" ? { is_author_bot: true } : { author_user_id: "U2" };
-    const contextual = { ts: ts(2), text: long };
+    const contextual = { ts: ts(2), text };
     // User presence alone is inferred, not known participant: kind negatives need explicit false.
     const contextMeta = field === "thread" ? { thread_ts: ts(3) } : field === "kind" ? { is_author_bot: false, user_id: "U3" } : { user_id: "U3" };
     const primaries = [primary, { ...primary, ...primaryMeta }];
@@ -743,24 +797,23 @@ describe("narrow primary-short/context-long representations (synthetic, not live
   it.each([
     [{ user_id: "UOTHER" }, long, "cross_role_user"],
     [{ user_id: "U2", thread_ts: ts(3) }, long, "cross_role_thread"],
-    [{ user_id: "U2" }, "nonprefix", "cross_role_text_relation"],
-  ])("unknown context kind cannot bypass bot-primary user/thread/text guard: %j", async (meta, text, _failure) => {
+  ])("unknown context kind cannot bypass bot-primary user/thread guard: %j", async (meta, text, _failure) => {
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, text, meta).map((m, i) =>
       i === 0 ? { ...m, is_author_bot: true, thread_ts: ts(1) } : m) } });
     expect(await f.reader.search({ query: "launch" }, f.context)).toMatchObject({ status: "unavailable", messages: [], nextCursor: null });
     expect(d.records()).toEqual([]);
   });
-  it("rejects primary-only cursor seed versus a longer context without current-page primary evidence", async () => {
+  it.each([long, "UNRELATED_CONTEXT_BODY"])("rejects primary-only cursor seed versus unequal context without current-page primary evidence (%s)", async alternate => {
     const d = diagnostics(), f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(0, 1) }, next_cursor: "next" });
     const first = await f.reader.search({ query: "launch" }, f.context);
-    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair().slice(1) } });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, alternate).slice(1) } });
     expect((await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).status).toBe("unavailable");
     expect(d.records()).toEqual([]);
-    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair() } });
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, alternate) } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.context)).toMatchObject({ status: "ok", complete: false, messages: [{ ts: ts(4) }] });
   });
-  it("keeps cursor state role-hash-only for delivered timestamps and preserves 40/page cumulative dedup", async () => {
+  it.each(["prefix", "nonprefix"])("keeps cursor state role-hash-only and 160 delivered keys (%s)", async relation => {
     const f = fixture();
     // Inspect private synthetic state only to assert the no-raw-text/bounded-memory contract.
     const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, { fingerprints: Record<string, Record<string, string>>; deliveredRoles: Record<string, string> }> } }).searcher.cursors;
@@ -770,7 +823,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
       const base = page * 100;
       const messages = Array.from({ length: 20 }, (_, n) => ({ ...message(base + n), content: `synthetic raw primary ${base + n}` }));
       const withContext = messages.map((m, index) => index === 0 ? { ...m, context_messages: { after: [
-        ...messages.slice(1).map(p => ({ ts: p.message_ts, text: `${p.content} longer` })),
+        ...messages.slice(1).map(p => ({ ts: p.message_ts, text: relation === "prefix" ? `${p.content} longer` : `synthetic raw alternate ${p.message_ts}` })),
         ...Array.from({ length: 20 }, (_, n) => ({ ts: ts(base + 40 + n), text: `synthetic raw context ${base + n}` })),
       ], before: Array.from({ length: 19 }, (_, n) => ({ ts: ts(base - 20 + n), text: `synthetic raw before ${base + n}` })) } } : m);
       f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: withContext }, next_cursor: `page-${page}` });
@@ -788,12 +841,13 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     }
     expect(all).toHaveLength(160); expect(new Set(all.map(m => m.ts)).size).toBe(160); expect(cursor).toBeUndefined();
   });
-  it("validates omitted context authority before prefix/projection and bounds UTF-8 short text", async () => {
+  it.each(["prefix", "nonprefix"])("validates omitted context authority before projection and bounds UTF-8 primary text (%s)", async relation => {
     const f = fixture();
-    const messages = pair("😀\n\"".repeat(10_000), "😀\n\"".repeat(10_000) + " end");
+    const primary = "😀\n\"".repeat(10_000);
+    const messages = pair(primary, relation === "prefix" ? primary + " end" : "UNRELATED_CONTEXT_BODY");
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages } });
     const result = await f.reader.search({ query: "launch" }, f.context);
-    expect(result).toMatchObject({ status: "ok", complete: false });
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true, messages: [{ textTruncated: true }, {}] });
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(96_000);
     expect(Buffer.byteLength(JSON.stringify(result.messages[0].text)) - 2).toBeLessThanOrEqual(24_000);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [...pair(), { ...message(6), context_messages: { before: [{ ts: ts(2), text: long, channel_id: "GSECRET" }] } }] } });
@@ -862,13 +916,27 @@ describe("search context local processing budgets (synthetic, not API shape limi
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [Object.defineProperty({ ...message(), content: "a".repeat(2_000_000) }, "author_user_id", { get: nextRead })] } });
     expect((await f.reader.search({ query: "launch" }, f.context)).status).toBe("unavailable"); expect(nextRead).not.toHaveBeenCalled();
   });
-  it.each(["scope", "user", "kind", "thread", "prefix", "hash", "schema"])("rejects late %s beyond output selection without leaking any page content", async fault => {
+  it("omits a late alternate context beyond output selection while preserving the complete primary object", async () => {
+    const f = fixture(); diagnostics();
+    f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
+      { ...message(70), content: "SYNTHETIC_PRIMARY_BODY", thread_ts: ts(1) },
+      { ...message(100), context_messages: { before: [...contextItems(64), { ts: ts(70), text: "SYNTHETIC_UNRELATED_ALTERNATE", user_id: "U2", is_author_bot: false, thread_ts: ts(1) }] } },
+    ] } });
+    const result = await f.reader.search({ query: "launch" }, f.context);
+    expect(result).toMatchObject({ status: "ok", complete: false, truncated: true });
+    expect(result.messages).toHaveLength(40);
+    expect(result.messages.find(m => m.ts === ts(70))).toEqual({ channel: "C1", ts: ts(70), text: "SYNTHETIC_PRIMARY_BODY", textTruncated: false,
+      author: { userId: "U2", botId: null, kind: "participant" }, threadTs: ts(1), permalink: message(70).permalink, searchMatch: true });
+    expect(JSON.stringify(result)).not.toContain("SYNTHETIC_UNRELATED_ALTERNATE");
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(96_000);
+  });
+  it.each(["scope", "user", "kind", "thread", "hash", "schema"])("rejects late %s beyond output selection without leaking any page content", async fault => {
     const f = fixture(); const d = diagnostics();
     const before = contextItems(64);
     const target = { ts: ts(70), text: "short longer", user_id: "U2", is_author_bot: false, thread_ts: ts(1) };
     const late = { ...target, ...(fault === "scope" ? { channel_id: "COTHER" } : {}),
       ...(fault === "user" ? { user_id: "UOTHER" } : {}), ...(fault === "kind" ? { is_author_bot: true } : {}),
-      ...(fault === "thread" ? { thread_ts: ts(3) } : {}), ...(fault === "prefix" || fault === "hash" ? { text: "LATE_SECRET" } : {}),
+      ...(fault === "thread" ? { thread_ts: ts(3) } : {}), ...(fault === "hash" ? { text: "LATE_SECRET" } : {}),
       ...(fault === "schema" ? { user_id: "invalid" } : {}) };
     const messages = [{ ...message(70), content: "short", thread_ts: ts(1) },
       { ...message(100), context_messages: { before: [...before, ...(fault === "hash" ? [target] : []), late] } }];

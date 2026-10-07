@@ -107,23 +107,23 @@ describe("workspace-public native RTS permission, actual source and live public 
 });
 
 describe("composite channel/ts identity, independent roles and opaque traversal", () => {
-  it("keeps differing text/actors/threads and role-prefix evidence independent at the same timestamp", async () => {
+  it.each(["short longer", "UNRELATED_C2_CONTEXT"])("keeps differing text/actors/threads and alternate context independent at the same timestamp (%s)", async alternate => {
     const f = fixture(); f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [
       { ...match("C2", 2, "short"), thread_ts: ts(1), is_author_bot: true, author_user_id: "UBOT" },
       { ...match("C3", 2, "entirely different"), thread_ts: ts(0), author_user_id: "UOTHER" },
-      { ...match("C2", 4), context_messages: { before: [{ ts: ts(2), text: "short longer", thread_ts: ts(1), is_author_bot: true, user_id: "UBOT" }] } },
+      { ...match("C2", 4), context_messages: { before: [{ ts: ts(2), text: alternate, thread_ts: ts(1), is_author_bot: true, user_id: "UBOT" }] } },
       { ...match("C3", 4), context_messages: { before: [{ ts: ts(2), text: "entirely different", thread_ts: ts(0), is_author_bot: false, user_id: "UOTHER" }] } },
     ] }, next_cursor: "next-1" });
     const first = await f.reader.search({ query: "launch" }, f.ctx);
     expect(first).toMatchObject({ status: "ok", complete: false }); expect(first.messages).toHaveLength(4);
-    expect(first.messages.find(m => m.channel === "C2" && m.ts === ts(2))).toMatchObject({ text: "short", textTruncated: true, author: { kind: "bot", userId: "UBOT" }, threadTs: ts(1) });
+    expect(first.messages.find(m => m.channel === "C2" && m.ts === ts(2))).toMatchObject({ text: "short", textTruncated: alternate.startsWith("short"), author: { kind: "bot", userId: "UBOT" }, threadTs: ts(1) });
     expect(first.messages.find(m => m.channel === "C3" && m.ts === ts(2))).toMatchObject({ text: "entirely different", textTruncated: false, author: { kind: "participant", userId: "UOTHER" }, threadTs: ts(0) });
     const cursors = (f.reader as unknown as { searcher: { cursors: Map<string, { fingerprints: Record<string, object>; deliveredRoles: Record<string, string> }> } }).searcher.cursors;
     const seed = JSON.stringify(cursors.get(first.nextCursor!));
     const state = cursors.get(first.nextCursor!)!;
     expect(Object.keys(state.fingerprints).sort()).toEqual(first.messages.map(m => JSON.stringify([m.channel, m.ts])).sort());
     expect(Object.keys(state.deliveredRoles).sort()).toEqual(Object.keys(state.fingerprints).sort());
-    for (const secret of ["short", "longer", "UBOT", "UOTHER", "entirely different", token]) expect(seed).not.toContain(secret);
+    for (const secret of ["short", "longer", alternate, "UBOT", "UOTHER", "entirely different", token]) expect(seed).not.toContain(secret);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [match("COTHER", 2, "new same ts"), match("C2", 2, "conflict")] } });
     expect(await f.reader.search({ query: "launch", cursor: first.nextCursor }, f.ctx)).toMatchObject({ status: "unavailable", messages: [] });
     expect(JSON.stringify(cursors.get(first.nextCursor!))).toBe(seed); // failed attempt is immutable/unlocked

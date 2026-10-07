@@ -1,5 +1,15 @@
 # Slack 검색 응답 검증 임시 안전 진단 (아카이브)
 
+> **정책 갱신:** 아래 PR102/104의 PREFIX-only·비prefix/primary-longer 거절 문구는
+> 당시 정책 이력이다. 현재는 양쪽 SAME-PAGE 검증 + 모든 관측의 user/explicit-kind/thread
+> 호환을 통과한 비동일 cross-role에서 primary를 그대로 보존하고 대체 context를 생략한다.
+> 동등 representation/권한 승인이나 본문/source 합성이 아니며 sticky partial이다.
+> nonprefix만으로 primary.textTruncated를 설정하지 않는다(실제 projection 및 기존
+> exact-prefix short-primary 규칙 유지). same-role exact hash와 unequal seed-only 거절은
+> 그대로다. PR113에서 복원한 별도 cross-channel 진단은 추가/확대/제거하지 않는다.
+> 최신 계약은 [읽기 도구](slack-read-tools.md)와
+> [cross-channel 진단 및 후속 기능](slack-cross-channel-search-diagnostics.md)을 따른다.
+
 > **현재 코드: 임시 진단 제거됨.** 아래 로그 계약·진단 필드·당시 테스트/운영 절차는 과거 이력이며 현재 emit 계약이 아니다. `search-diagnostics.ts`의 첫 Zod issue 요약·permalink predicate·role 비교/로거 및 source-only 집계를 제거했다. 기능용 KindEvidence의 bot/participant 캐시, PageMetadata의 users/knownKinds/threads, pageObserved는 유지한다. 아래 명시적 kind 지식과 known query 정규화 기능 가드는 그대로이며 오래된 projected-kind 진단을 현재 explicit-known Set으로 소급 해석하지 않는다.
 >
 > **main이 전달한 제거 전 실제 근거:** PR105 배포 및 live SHA/restarts=0 확인 뒤 search-only 새 이벤트에서 실제 searchMatch·원문/수정 댓글 출처 대조가 PASS였다. 검색은 complete=false/truncated=true/nextCursor=null/textTruncated=true인 정직한 partial이다. PR103 독립 thread read는 3페이지 complete PASS다(안전 요약: `/tmp/shookie-e2e/pr105-results.md`). history fallback을 검색 PASS로 대체하지 않았다. 20 matches/전체 query pagination/다른 requester E2E는 미검증이다.
@@ -127,7 +137,7 @@ query 보조 관찰 예외에는 class=unknown/parameter booleans=false를 사�
 
 main의 `/tmp/shookie-e2e/pr102-results.md` / `pr102-new-thread-diagnostics.log`를 확인했다. `slack-event:Ev0C8118NH9N`에서 thread read는 18:00:21.872Z `response/result_limit_exceeded`, search는 response/check 통과 후 18:00:22.076Z `primary→context`, `priorOrigin=page`, `firstPage=true`, `comparisonAvailable=true`, `trimEqual=false`, `lineEndingEqual=false`, `prefixRelation=previous_prefix`였다. 이는 동일 ts의 짧은 primary가 긴 context의 정확 prefix인 **해당 관측** 근거다. 봇 최종 응답은 generic processing failure였으며, 개별 로컬 가드 근거가 그 최종 실패의 모든 원인을 설명하거나 전체 E2E PASS를 뜻하지 않는다.
 
-허용은 same-page 검증 primary-prefix-context에 한정한다. 같은 역할 hash 충돌/비prefix/primary-longer는 unavailable이며 normalization으로 허용하지 않는다. prefix 관계에서 명시적 author/thread 충돌도 실패한다. 모든 page-local 관측의 role별 user/kind/thread primitive Set을 집계해 **모든 primary-context 쌍**의 명시적 값이 양립하는지 검증한다(역할 중 한쪽에 알려진 값이 전혀 없으면 기존 unknown wildcard). 최신 객체가 metadata를 생략해도 앞선 명시적 값은 사라지지 않는다. 이 집계는 schema 관측 상한 안에서만 존재하며 cursor에 metadata를 추가 저장하지 않는다. exact-equal cross-role의 기존 metadata 계약과 동일 역할 본문 hash 가드는 바꾸지 않는다. primary 원본 본문/metadata를 유지하고 확인된 짧은 표현은 textTruncated=true, complete=false/partial로 표시한다. cursor에는 역할 hash와 deliveredRoles만 bounded 유지하고 긴 context hash로 primary hash를 덮어쓰지 않는다. 다른 역할 seed만으로 nonidentical continuation promotion을 추측 허용하지 않으며, 같은-page 양쪽 증거가 필요하다. 모든 scope/time/thread 검증은 projection/생략보다 먼저 수행한다.
+PR102 당시 허용은 same-page 검증 primary-prefix-context에 한정했다(현재 생략 정책은 상단 갱신 참조). 같은 역할 hash 충돌/비prefix/primary-longer는 unavailable이며 normalization으로 허용하지 않는다. prefix 관계에서 명시적 author/thread 충돌도 실패한다. 모든 page-local 관측의 role별 user/kind/thread primitive Set을 집계해 **모든 primary-context 쌍**의 명시적 값이 양립하는지 검증한다(역할 중 한쪽에 알려진 값이 전혀 없으면 기존 unknown wildcard). 최신 객체가 metadata를 생략해도 앞선 명시적 값은 사라지지 않는다. 이 집계는 schema 관측 상한 안에서만 존재하며 cursor에 metadata를 추가 저장하지 않는다. exact-equal cross-role의 기존 metadata 계약과 동일 역할 본문 hash 가드는 바꾸지 않는다. primary 원본 본문/metadata를 유지하고 확인된 짧은 표현은 textTruncated=true, complete=false/partial로 표시한다. cursor에는 역할 hash와 deliveredRoles만 bounded 유지하고 긴 context hash로 primary hash를 덮어쓰지 않는다. 다른 역할 seed만으로 nonidentical continuation promotion을 추측 허용하지 않으며, 같은-page 양쪽 증거가 필요하다. 모든 scope/time/thread 검증은 projection/생략보다 먼저 수행한다.
 
 별도 direct API 구조 관측에서는 limit15 응답에 root+요청 reply, limit14의 첫/continuation 응답에 root+reply가 public15 이내임을 안전 boolean으로 확인했다. 공식 Slack limit 설명에는 부모가 별도 추가된다는 명시가 없어 관측 근거와 구분한다. 명시적 thread reader만 API14로 부모 자리를 예약하고 history API15/public pageSize15/응답15 상한/root dedup/count/budget/maxPages4를 유지한다. direct API 성공은 Shookie PASS가 아니다. 이번 합성 테스트도 live 검색/명시적 thread read 성공을 보증하지 않는다. worker는 서버/E2E/배포/merge를 실행하지 않는다. main이 fresh review/pinned squash/deploy SUCCESS/live SHA/restarts=0 확인 후 새 이벤트 actual search(status/matches/partial/source) 및 independent thread read를 원문·수정 댓글과 대조한다. history fallback은 검색 PASS 대체가 아니며, 실제 성공 후 임시 진단 제거를 별도 관리한다.
 
@@ -161,7 +171,7 @@ main은 최종 SHA 실제 diff/fresh review 후 pinned squash와 deploy SUCCESS/
 
 owner main이 전달한 `/tmp/shookie-e2e/pr104-new-thread-diagnostics.log` / `pr104-results.md` 요약에서 search-only 요청 `slack-event:Ev0C76S997BL`은 response_received/check_passed 이후 두 번 `cross_role_kind`로 실패했다. `primary→context`, page/firstPage, previous_prefix이며 당시 `primaryKnownKinds=bot / primaryKindSource=explicit_bot`, `contextKnownKinds=participant / contextKindSource=inferred_participant`였다. user compatibility는 선행 통과했으나 kind 다음의 thread compatibility는 완료 증명이 없다. 이는 **명시적 primary bot vs user만으로 추론된 context participant**를 당시 정책이 거부한 근거다. context의 명시적 false 모순이 아니다. 실제 검색은 unavailable/FAIL이며 응답 원문/context/URL/token을 조회·복사하지 않았다. PR103의 별도 명시적 thread read 실제 PASS(SDK14)는 유지하며 이 수정은 client/thread reader를 변경하지 않는다.
 
-현재 same-page primary-prefix-context의 kind 호환성은 출력 `author.kind`가 아니라 개별 schema-validated 객체에서 캐시한 boolean/presence 근거로 판단한다:
+PR104 후속 당시 same-page primary-prefix-context의 kind 호환성은 출력 `author.kind`가 아니라 개별 schema-validated 객체에서 캐시한 boolean/presence 근거로 판단한다:
 
 | validated 근거 | explicit-known kind Set |
 |---|---|
@@ -176,7 +186,7 @@ owner main이 전달한 `/tmp/shookie-e2e/pr104-new-thread-diagnostics.log` / `p
 
 source enum의 의미/집계는 유지한다. unknown+explicit 또는 inferred+explicit 관측이 함께 있어 source=mixed라도 knownKinds는 단일 bot/participant일 수 있고 양립하면 허용한다. **source=mixed를 known contradiction으로 역변환하지 않는다.** 개별 false+bot_id는 양쪽 known flag를 누적하므로 상대가 known이면 fail-closed다. 서로 다른 관측의 true/false도 양쪽 Set에 남으며 나중 생략/undefined가 앞선 근거를 지우지 않는다. 한 역할 전체가 unknown이면 기존 wildcard를 유지한다. same-role 실패의 미평가 none/unknown 및 cursor-only 역할 부재 sentinel도 그대로다. `cross_role_kind`는 이제 이 explicit-known compatibility의 첫 실패이며, 오래된 PR104 projected-policy 실패와 구분해야 한다.
 
-users → explicit-known kinds → threads → 정확 prefix 순서는 유지한다. 모든 page 관측을 검증하며 same-role sha256 충돌은 항상 fail-closed다. 비prefix/primary-longer/다른 user/thread, authority/channel/team/scope 가드는 그대로다. exact-equal cross-role의 legacy metadata 처리도 그대로다. output author/thread/source를 context로 승격하지 않으며 짧은 primary 원본과 textTruncated=true/partial을 유지한다. metadata는 페이지 로컬 parsed primitive 캐시에만 있고 cursor에는 전달된 최대160 ts×2 role hash만 보관한다. raw own-property 검사/getter 접근, 로그 필드/레코드 수/allowlist, DB/커서 보관, API/config/model/env/dependency/SDK14/public15는 변경하지 않는다.
+PR104 후속 당시 users → explicit-known kinds → threads → 정확 prefix 순서는 유지했다(현재 마지막 prefix는 거절 조건이 아니라 short-primary marker에만 사용한다). 모든 page 관측을 검증하며 same-role sha256 충돌은 항상 fail-closed다. 비prefix/primary-longer/다른 user/thread, authority/channel/team/scope 가드는 그대로다. exact-equal cross-role의 legacy metadata 처리도 그대로다. output author/thread/source를 context로 승격하지 않으며 짧은 primary 원본과 textTruncated=true/partial을 유지한다. metadata는 페이지 로컬 parsed primitive 캐시에만 있고 cursor에는 전달된 최대160 ts×2 role hash만 보관한다. raw own-property 검사/getter 접근, 로그 필드/레코드 수/allowlist, DB/커서 보관, API/config/model/env/dependency/SDK14/public15는 변경하지 않는다.
 
 회귀는 실제 등록 handler→slack_search→API mock에서 명시 bot primary/같은 user·flag 없는 context/정확 prefix 및 알려진 permalink query를 합성 재현한다. status=ok/실제 match 객체/source/partial/queryless/primary bot 유지 및 thread 미승격과 logger/DB redaction을 검증한다. 기존 user 존재만으로 kind negative로 삼은 사례는 inferred가 known이 아니므로 **명시적 false로 보강**했다. false(유무 user)/false+bot_id/primary false+system/모든 관측 true-false·최신 생략·순서 permutation, source 혼합이지만 known 일치 positive, context-only 출력 계약 및 기존 author/thread/hash/cursor/cancellation/privacy 회귀를 유지한다. 합성 PASS는 live 검색 PASS가 아니다.
 
