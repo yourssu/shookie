@@ -342,7 +342,7 @@ export class SlackSearcher {
       const nextCursor = next && page < limits.maxPages ? randomUUID() : null;
       const result = (items: SearchMessage[], complete: boolean): ReadResult => ({
         status: "ok", api: "assistant.search.context", searchScope, ...(channel ? { source: { channel } } : {}),
-        message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문 잘림/context 생략(대체 표현 포함)을 확인해주세요.",
+        message: complete ? `${channel ? "지정한 공개 채널" : "워크스페이스 공개 채널"}의 키워드 검색 범위를 확인했습니다 (전체 기록이 아닙니다).` : "부분 검색 결과입니다. 다음 페이지와 본문 잘림 및 context 생략(대체 표현 포함)을 확인해주세요.",
         messages: items, page, nextCursor, complete, truncated: !complete, limits: { ...limits, pageSize: limit },
       });
       const primaryCount = messages.filter(m => m.searchMatch).length;
