@@ -18,7 +18,7 @@ function ctx(changes = {}, action: unknown = token) {
 }
 function fixture() {
   const auth = vi.fn().mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
-  const info = vi.fn().mockResolvedValue({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } });
+  const info = vi.fn().mockResolvedValue({ ok: true, channel: { id: "C1", context_team_id: "T1", is_channel: true, is_private: false, is_group: false } });
   const members = vi.fn().mockResolvedValue({ ok: true, members: ["U1"] });
   const apiCall = vi.fn().mockResolvedValue({ ok: true, results: { messages: [message()] } });
   const history = vi.fn(), replies = vi.fn();
@@ -322,7 +322,8 @@ describe("validated navigation query normalization (synthetic Slack API)", () =>
     expect(result.status).toBe("ok");
     expect(result.messages[0]).toMatchObject({ threadTs: ts(0), searchMatch: false, contextForTs: ts(2) });
     expect(result.messages[1]).not.toHaveProperty("threadTs");
-    expect(result.source).toEqual({ channel: "C1" });
+    expect(result.source).toBeUndefined();
+    expect(result.searchScope).toBe("workspace_public");
     expect(getSlackReadIdentity(f.context)).toBe(identity);
   });
   it("rejects a safe-looking query root that conflicts with authoritative thread metadata", async () => {
@@ -536,7 +537,7 @@ describe("narrow primary-short/context-long representations (synthetic, not live
     const d = diagnostics(), f = fixture();
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: pair(short, long, meta).map((m, i) => i === 0 ? { ...m, is_author_bot: true } : m) } });
     const result = await f.reader.search({ query: "launch" }, f.context);
-    expect(result).toMatchObject({ status: "ok", source: { channel: "C1" }, complete: false, truncated: true,
+    expect(result).toMatchObject({ status: "ok", searchScope: "workspace_public", complete: false, truncated: true,
       messages: [{ text: short, textTruncated: true, author: { kind: "bot", userId: "U2" }, searchMatch: true }, {}] });
     expect(result.messages[0]).not.toHaveProperty("threadTs");
     expect(d.records()).toEqual([]);
@@ -801,12 +802,12 @@ describe("narrow primary-short/context-long representations (synthetic, not live
 });
 
 describe("bot + trusted event action_token Real-time Search", () => {
-  it("calls the official endpoint with fixed public/messages/current-channel filters and safe literal terms", async () => {
+  it("calls the official endpoint with public/messages and trusted origin context, without an origin filter", async () => {
     const f = fixture(); const result = await f.reader.search({ query: "출시 plan" }, f.context);
-    expect(result).toMatchObject({ status: "ok", api: "assistant.search.context", source: { channel: "C1" }, complete: true, truncated: false });
+    expect(result).toMatchObject({ status: "ok", api: "assistant.search.context", searchScope: "workspace_public", complete: true, truncated: false });
     expect(readOutput.safeParse(result).success).toBe(true);
     expect(f.apiCall).toHaveBeenCalledExactlyOnceWith("assistant.search.context", {
-      action_token: token, query: 'in:<#C1> "출시" "plan"', channel_types: ["public_channel"], content_types: ["messages"],
+      action_token: token, query: '"출시" "plan"', channel_types: ["public_channel"], content_types: ["messages"],
       context_channel_id: "C1", include_bots: true, include_context_messages: true, include_message_blocks: false,
       disable_semantic_search: true, highlight: false, sort: "timestamp", sort_dir: "asc", limit: 20,
     });
@@ -854,8 +855,12 @@ describe("bot + trusted event action_token Real-time Search", () => {
   it.each(["in:C1 plan", "-in:GSECRET plan", "channel:GSECRET", "plan OR secret", "plan or secret", "plan AND secret", "plan NOT secret", "<@USER>", "launch|secret", "(plan)", '"plan"', "from:BOT", "*", "plan\nsecret"])("rejects query operators rather than allowing in: filter injection: %s", async query => {
     const f = fixture(); expect((await f.reader.search({ query }, f.context)).status).toBe("access_denied"); expect(f.auth).not.toHaveBeenCalled(); expect(f.apiCall).not.toHaveBeenCalled();
   });
-  it.each(["COTHER", "GSECRET", "DOTHER"])("blocks arbitrary channel %s before API calls", async channel => {
-    const f = fixture(); expect((await f.reader.search({ query: "launch", channel }, f.context)).status).toBe("access_denied"); expect(f.auth).not.toHaveBeenCalled();
+  it.each(["GSECRET", "DOTHER"])("rejects non-public structured target %s before API calls", async channel => {
+    const f = fixture(); expect((await f.reader.search({ query: "launch", channel }, f.context)).status).toBe("invalid_target"); expect(f.auth).not.toHaveBeenCalled();
+  });
+  it("still denies a mismatched live public target ID (the old COTHER denial fixture)", async () => {
+    const f = fixture(); expect((await f.reader.search({ query: "launch", channel: "COTHER" }, f.context)).status).toBe("access_denied");
+    expect(f.apiCall).not.toHaveBeenCalled();
   });
   it.each([
     { channel: "G1", metadata: { id: "G1", is_group: true, is_private: true } },

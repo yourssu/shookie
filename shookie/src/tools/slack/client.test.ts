@@ -248,11 +248,12 @@ describe("bot-only current-channel Slack reads", () => {
     expect((await f.reader.read("channel", {}, undefined)).status).toBe("access_denied");
     expect(f.auth).not.toHaveBeenCalled();
   });
-  it.each(["GPRIVATE", "COTHER", "DOTHER"])("blocks other channel %s before Slack API access", async channel => {
+  it.each(["GPRIVATE", "COTHER", "DOTHER"])("keeps current-only history and denies nonpublic/mismatched thread target %s", async channel => {
     const f = fixture();
-    expect((await f.reader.read("thread", { ts: root, channel }, f.ctx)).status).toBe("access_denied");
     expect((await f.reader.read("channel", { channel }, f.ctx)).status).toBe("access_denied");
     expect(f.auth).not.toHaveBeenCalled();
+    expect((await f.reader.read("thread", { ts: root, channel }, f.ctx)).status).toBe("access_denied");
+    expect(f.auth).toHaveBeenCalledTimes(channel === "COTHER" ? 1 : 0);
     expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
   });
   it.each([
@@ -334,7 +335,7 @@ describe("bot-only current-channel Slack reads", () => {
     for (const query of ["in:C1 launch", "launch in:GSECRET", "-in:C1 launch", "channel:COTHER launch"]) {
       expect((await f.reader.search({ query }, f.ctx)).status).toBe("access_denied");
     }
-    expect((await f.reader.search({ query: "launch", channel: "GSECRET" }, f.ctx)).status).toBe("access_denied");
+    expect((await f.reader.search({ query: "launch", channel: "GSECRET" }, f.ctx)).status).toBe("invalid_target");
     expect(f.auth).not.toHaveBeenCalled(); expect(f.history).not.toHaveBeenCalled(); expect(f.replies).not.toHaveBeenCalled();
   });
   it.each([

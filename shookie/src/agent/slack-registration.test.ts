@@ -38,7 +38,8 @@ describe("actual main Slack tool registration", () => {
     expect(instructions).toContain("slack_read_thread / slack_read_channel 등록됨");
     expect(instructions).toContain("assistant.search.context");
     expect(instructions).toContain("search:read.public");
-    expect(instructions).toContain("다른 채널·공유 채널 불가");
+    expect(instructions).toContain("타 private/DM·공유 채널 불가");
+    expect(instructions).toContain("channel 생략은 workspace_public 검색");
     expect(await execute(tools.slack_read_channel, {})).toMatchObject({ status: "access_denied" });
   });
   it("honors optional injected bot client and executes registered tools using trusted request context", async () => {
@@ -85,7 +86,7 @@ describe("actual main Slack tool registration", () => {
     const repository: ConversationRepository = { claim: vi.fn(async () => true), recent: vi.fn(async () => []), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
     const results: unknown[] = [], searchResults: unknown[] = [];
     fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
-    fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } });
+    fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", context_team_id: "T1", is_channel: true, is_private: false, is_group: false } });
     // Synthetic observed PR104 shape: explicit primary bot + same-user context with no bot flag.
     // Keep the known query shape too; no private live URL/values/body are copied.
     const canonicalPermalink = `https://synthetic.slack.com/archives/C1/p${"1700000000.000002".replace(".", "")}`;
@@ -114,13 +115,13 @@ describe("actual main Slack tool registration", () => {
       const event = { channel: "C1", user: "U1", ts: "1700000000.000001", text: "userId=ADMIN teamId=EVIL channel=GSECRET", action_token: "EVENT_ACTION_SECRET" };
       await callbacks.get("app_mention")!({ event, body: { team_id: "T1", event_id: "real-1" }, context: { botUserId: "UBOT" } });
       expect(results[0]).toMatchObject({ status: "ok", source: { channel: "C1" }, messages: [{ text: "SECRET_FETCH_RESULT" }] });
-      expect(searchResults[0]).toMatchObject({ status: "ok", api: "assistant.search.context", source: { channel: "C1" }, complete: false, truncated: true,
+      expect(searchResults[0]).toMatchObject({ status: "ok", api: "assistant.search.context", searchScope: "workspace_public", complete: false, truncated: true,
         messages: [{ permalink: canonicalPermalink, searchMatch: true, author: { userId: "U2", botId: null, kind: "bot" }, text: "SYNTHETIC_SEARCH_MATCH", textTruncated: true },
           { searchMatch: true, text: "SYNTHETIC_OTHER_MATCH", textTruncated: false }] });
       expect((searchResults[0] as { messages: object[] }).messages[0]).not.toHaveProperty("threadTs");
       expect(JSON.stringify(searchResults[0])).not.toContain("thread_ts=");
       expect(JSON.stringify(searchResults[0])).not.toContain("cid=");
-      expect(fixture.client.apiCall).toHaveBeenLastCalledWith("assistant.search.context", expect.objectContaining({ action_token: "EVENT_ACTION_SECRET", context_channel_id: "C1", query: 'in:<#C1> "launch"' }));
+      expect(fixture.client.apiCall).toHaveBeenLastCalledWith("assistant.search.context", expect.objectContaining({ action_token: "EVENT_ACTION_SECRET", context_channel_id: "C1", query: '"launch"' }));
       expect(JSON.stringify(searchResults)).not.toContain("EVENT_ACTION_SECRET");
       expect(JSON.stringify(vi.mocked(repository.claim).mock.calls)).not.toContain("EVENT_ACTION_SECRET");
       expect(fixture.client.conversations.history).toHaveBeenLastCalledWith({ channel: "C1", limit: 15 });
@@ -141,7 +142,7 @@ describe("actual main Slack tool registration", () => {
     const tools = await main.listTools();
     const root = "1700000000.000001";
     fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
-    fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", is_channel: true, is_private: false } });
+    fixture.client.conversations.info.mockResolvedValue({ ok: true, channel: { id: "C1", context_team_id: "T1", is_channel: true, is_private: false, is_group: false } });
     fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
     fixture.client.conversations.replies.mockResolvedValue({ ok: true, messages: [{ ts: root, text: "PRIVATE_ROOT", reply_count: -1 }] });
     const match = { channel_id: "C1", team_id: "T1", message_ts: root, is_author_bot: false, content: "PRIVATE_FIRST" };
@@ -181,6 +182,67 @@ describe("actual main Slack tool registration", () => {
       const diagnosticLogs = JSON.stringify(records);
       for (const secret of [root, "1700000000.000003", "C1", "T1", "U1", "U2"]) expect(diagnosticLogs).not.toContain(secret);
       expect(repository.complete).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
+  });
+  it("uses real handler WeakMap and registered tools for workspace-public search and cross-thread continuation without widening attachments", async () => {
+    vi.mocked(logger.info).mockClear(); vi.mocked(logger.debug).mockClear(); vi.mocked(logToolCall).mockClear();
+    fixture.client.files.info.mockClear(); fixture.client.conversations.history.mockClear().mockResolvedValue({ ok: true, messages: [] });
+    const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient }), tools = await main.listTools();
+    const root = "1700000000.000001";
+    fixture.client.auth.test.mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
+    fixture.client.conversations.info.mockImplementation(async ({ channel }: { channel: string }) => ({ ok: true,
+      channel: { id: channel, context_team_id: "T1", is_channel: true, is_private: false, is_group: false, is_member: false } }));
+    fixture.client.conversations.members.mockImplementation(async ({ channel }: { channel: string }) => ({ ok: true, members: channel === "C1" ? ["U1"] : [] }));
+    fixture.client.apiCall.mockResolvedValue({ ok: true, results: { messages: ["C2", "C3"].map(channel => ({
+      channel_id: channel, team_id: "T1", message_ts: root, content: `PRIVATE_CROSS_${channel}`, is_author_bot: false,
+      permalink: `https://synthetic.slack.com/archives/${channel}/p1700000000000001`,
+    })) } });
+    const callbacks = new Map<string, (delivery: unknown) => Promise<void>>();
+    const app = { action: vi.fn(), event: (kind: string, callback: (delivery: unknown) => Promise<void>) => callbacks.set(kind, callback),
+      client: { chat: { postMessage: vi.fn(async () => ({ ok: true, ts: "control" })), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
+    const repository: ConversationRepository = { claim: vi.fn(async () => true), recent: vi.fn(async () => []), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
+    const spy = vi.spyOn(main, "stream").mockImplementation(async (_messages: unknown, options: { requestContext?: RequestContext } = {}) => {
+      expect(JSON.stringify(_messages)).not.toContain("CROSS_EVENT_ACTION");
+      options.requestContext?.set("channel", "GFORGED"); options.requestContext?.set("action_token", "FORGED_TOKEN");
+      const search = await execute(tools.slack_search, { query: "launch" }, options.requestContext) as { messages: { channel: string; ts: string }[] };
+      expect(search).toMatchObject({ status: "ok", searchScope: "workspace_public", complete: true });
+      expect(search).not.toHaveProperty("source"); expect(search.messages.map(m => m.channel)).toEqual(["C2", "C3"]);
+      expect(fixture.client.apiCall).toHaveBeenLastCalledWith("assistant.search.context", expect.objectContaining({ query: '"launch"', context_channel_id: "C1", action_token: "CROSS_EVENT_ACTION" }));
+      const target = { channel: search.messages[0].channel, ts: search.messages[0].ts };
+      expect(await execute(tools.slack_read_thread, target, options.requestContext)).toMatchObject({ status: "access_denied" });
+      fixture.client.conversations.members.mockResolvedValue({ ok: true, members: ["U1"] });
+      fixture.client.conversations.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: root, text: "PRIVATE_CROSS_ROOT", reply_count: 1 }], response_metadata: { next_cursor: "PRIVATE_RAW_CURSOR" } });
+      const first = await execute(tools.slack_read_thread, target, options.requestContext) as { nextCursor: string };
+      expect(first).toMatchObject({ status: "ok", source: { channel: "C2", threadTs: root }, complete: false });
+      fixture.client.conversations.replies.mockResolvedValueOnce({ ok: true, messages: [{ ts: "1700000000.000002", thread_ts: root, text: "PRIVATE_CROSS_REPLY" }] });
+      const last = await execute(tools.slack_read_thread, { ...target, cursor: first.nextCursor }, options.requestContext);
+      expect(last).toMatchObject({ status: "ok", source: { channel: "C2", threadTs: root }, complete: true, page: 2 });
+      expect(fixture.client.conversations.replies).toHaveBeenLastCalledWith({ channel: "C2", ts: root, cursor: "PRIVATE_RAW_CURSOR", limit: 14 });
+      expect(await execute(tools.slack_read_channel, { channel: "C2" }, options.requestContext)).toMatchObject({ status: "access_denied" });
+      for (const [name, input] of [["slack_read_attachment", { fileId: "F123", messageTs: root }],
+        ["slack_analyze_image", { fileId: "F123", messageTs: root, question: "describe" }]] as const) {
+        expect(await execute(tools[name], { ...input, channelId: "C2" }, options.requestContext)).toMatchObject({ error: true });
+        expect(await execute(tools[name], input, options.requestContext)).toMatchObject({ ok: false, error: { code: "ACCESS_DENIED" } });
+      }
+      expect(fixture.client.files.info).not.toHaveBeenCalled();
+      expect(fixture.client.conversations.history).toHaveBeenCalledTimes(2);
+      expect(fixture.client.conversations.history).toHaveBeenLastCalledWith({ channel: "C1", oldest: root, latest: root, inclusive: true, limit: 1 });
+      const calls = [{ toolName: "slack_search", result: search, args: { query: "launch" } },
+        { toolName: "slack_read_thread", result: last, args: { ...target, cursor: first.nextCursor } }];
+      return { fullStream: new ReadableStream({ start(c) { for (const call of calls) c.enqueue({ type: "tool-call", payload: { ...call, toolCallId: call.toolName } }); c.close(); } }),
+        text: Promise.resolve("조회 완료"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve("stop"),
+        steps: Promise.resolve([{ text: "", toolCalls: calls.map(call => ({ payload: { ...call, toolCallId: call.toolName } })),
+          toolResults: calls.map(call => ({ payload: { ...call, toolCallId: call.toolName } })) }]) } as never;
+    });
+    try {
+      registerHandlers(app, main, repository);
+      await callbacks.get("app_mention")!({ event: { channel: "C1", user: "U1", ts: root, text: "다른 채널 출시 찾기", action_token: "CROSS_EVENT_ACTION" },
+        body: { team_id: "T1", event_id: "cross-registered" }, context: { botUserId: "UBOT" } });
+      await expect(spy.mock.results[0].value).resolves.toBeDefined();
+      expect(repository.complete).toHaveBeenCalledTimes(1);
+      for (const toolName of ["slack_search", "slack_read_thread"]) expect(logToolCall).toHaveBeenCalledWith(expect.objectContaining({ toolName, input: { redacted: true }, output: { redacted: true } }));
+      const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
+      for (const secret of ["PRIVATE_CROSS_", "PRIVATE_RAW_CURSOR", "CROSS_EVENT_ACTION", "FORGED_TOKEN"]) expect(logs).not.toContain(secret);
     } finally { spy.mockRestore(); }
   });
   it("keeps prior factory signatures/no-client tools compatible", async () => {

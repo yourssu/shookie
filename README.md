@@ -180,6 +180,10 @@ yarn workspace shookie test
 
 채널 메시지를 수신하고 OAuth 후 대기 메시지를 다시 읽으려면 Slack 앱에 공개/비공개 채널의 message event 구독과 해당 history scope가 필요합니다. 실제 Slack Redirect URL, 앱 scope/event 설정, 메시지 편집 정책과 알림 동작 검증은 자격증명이 있는 배포 환경에서 진행해야 합니다.
 
+### Slack 공개 채널 검색·명시적 스레드 읽기
+
+`slack_search`는 공개 채널에서 요청하면 같은 workspace의 비공유 공개 채널을 검색합니다. `channel` 생략은 workspace-public, 지정하면 해당 채널만 검색하며 기존 bot token과 인증된 event action_token을 사용합니다. 채널을 모르면 먼저 검색한 뒤 실제 message.channel/permalink와 부모 metadata로 스레드를 지정하세요. 다른 공개 채널의 `slack_read_thread`는 요청자 live membership과 bot 읽기 권한이 필요합니다. 타 private/DM·공유/외부 workspace는 지원하지 않으며 자동 가입·광역 history scan·다른 토큰 fallback은 없습니다. `slack_read_channel`과 첨부/이미지 권한은 현재 요청 채널만 유지합니다. 반환 nextCursor는 그대로 복사하고 검색 partial/full thread 및 실제 출처를 구분합니다. [범위·권한·pagination·합성/실제 검증 구분](docs/slack-read-tools.md)을 참고하세요.
+
 ### Slack 첨부 텍스트 읽기
 
 현재 요청 채널의 메시지에 첨부된 UTF-8 텍스트/Markdown, CSV, 텍스트 PDF는 메인의 `slack_read_attachment`로 읽을 수 있어요. 요청자 접근 권한과 정확한 메시지 첨부 관계를 검증하며, 다른 채널의 임의 fileId나 URL로는 읽지 않습니다. 기존 bot token만 사용하며 최소 `files:read` 등 앱 읽기 권한은 운영자가 수동으로 확인해야 합니다. OCR·이미지·영상·Office·암호화 PDF는 미지원입니다. 형식·구간/검색·출처·잘림·보안 한도와 합성/실제 E2E 구분은 [Slack 첨부 읽기 문서](docs/slack-attachments.md)를 참고하세요.

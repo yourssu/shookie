@@ -8,8 +8,8 @@ export class SlackReadAccessError extends Error {
   constructor(readonly result: ReadResult) { super(result.message); }
   get status() { return this.result.status; }
 }
-export function deny(): never { throw new SlackReadAccessError(failure("access_denied", "현재 요청자·워크스페이스·채널의 읽기 권한을 확인하지 못했습니다. 다른 채널 조회는 지원하지 않습니다.")); }
-export function invalid(): never { throw new SlackReadAccessError(failure("invalid_target", "현재 채널의 유효한 대상 또는 페이지를 지정해주세요.")); }
+export function deny(): never { throw new SlackReadAccessError(failure("access_denied", "요청자·워크스페이스·대상 채널의 권한을 확인하지 못했습니다. 타 채널은 비공유 공개 채널만 지원하며 전체 스레드는 요청자 membership도 필요합니다.")); }
+export function invalid(): never { throw new SlackReadAccessError(failure("invalid_target", "유효한 대상 또는 반환된 불투명 페이지 커서를 지정해주세요.")); }
 export function unavailable(): never { throw new SlackReadAccessError(failure("unavailable", "Slack 결과를 안전하게 확인하지 못했습니다. 잠시 후 다시 시도해주세요.")); }
 export function check(response: { ok?: boolean; error?: string }) {
   if (response.ok && !response.error) return;
@@ -30,8 +30,8 @@ export function errorResult(error: unknown): ReadResult {
   }
   if (code === "invalid_action_token") return failure("unsupported", "Slack 검색 action_token이 유효하지 않거나 만료되었습니다. 새 멘션에서 다시 요청해주세요. 관리자에게 event action_token 수신 설정을 확인해주세요.");
   if (["missing_scope", "not_in_channel", "channel_not_found", "context_channel_not_found", "no_permission", "access_denied", "invalid_auth", "not_authed"].includes(code ?? "")) {
-    return failure("access_denied", "Slack 권한을 확인하지 못했습니다. 관리자에게 현재 채널의 bot read scope와 검색용 search:read.public 권한을 확인해주세요.");
+    return failure("access_denied", "Slack 권한을 확인하지 못했습니다. 관리자에게 대상 채널의 bot 읽기 권한/참여와 검색용 search:read.public 권한을 확인해주세요. 자동 가입이나 다른 토큰으로 우회하지 않습니다.");
   }
-  if (["thread_not_found", "invalid_ts", "invalid_cursor"].includes(code ?? "")) return failure("invalid_target", "대상 메시지 또는 페이지가 유효하지 않습니다. 현재 채널을 확인해주세요.");
+  if (["thread_not_found", "invalid_ts", "invalid_cursor"].includes(code ?? "")) return failure("invalid_target", "대상 메시지 또는 페이지가 유효하지 않습니다. 대상 채널과 반환된 커서를 확인해주세요.");
   return failure("unavailable", "Slack 조회를 완료하지 못했습니다. 잠시 후 다시 시도해주세요.");
 }

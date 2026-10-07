@@ -3,9 +3,10 @@ import type { WebClient } from "@slack/web-api";
 import { getSlackSearchActionToken, type SlackReadIdentity } from "./context.js";
 import { authorizeCurrentSlackChannel, requireSlackReadIdentity } from "./authorization.js";
 import { check, deny, invalid, unavailable, errorResult, readLimits as limits } from "./errors.js";
-import { channelInput, threadInput, slackTs, type ReadResult } from "./schemas.js";
+import { channelInput, threadInput, publicChannelId, slackTs, type ReadResult } from "./schemas.js";
 import { SlackSearcher } from "./search.js";
 import { jsonTextPrefix } from "./projection.js";
+import { authorizePublicSlackThread } from "./public-authorization.js";
 
 export type SlackReadClient = Pick<WebClient, "auth" | "conversations"> & Partial<Pick<WebClient, "apiCall">>;
 function timestamp(ts: string) { return BigInt(ts.replace(".", "")); }
@@ -14,7 +15,7 @@ type Continuation = { binding: string; slackCursor: string; page: number;
   rootReplyCount?: number; lossy: boolean; seen: string[]; fingerprints: Record<string, string>;
   expires: number; usedCursors: string[] };
 
-/** Read-only, current-event-channel-only. No user token, global search, auto-join or history scan fallback. */
+/** Explicit public cross-channel threads; channel history stays current-only. No user token/join/scan fallback. */
 export class SlackReader {
   private readonly cursors = new Map<string, Continuation>();
   private readonly inFlightCursors = new Set<string>();
@@ -38,7 +39,7 @@ export class SlackReader {
           (input.channel && input.channel !== match[1]) || (input.ts && input.ts !== parent)) invalid();
       channel = match[1]; threadTs = parent; host = url.hostname;
     }
-    if (channel !== identity.channel) deny();
+    if (channel !== identity.channel && (!thread || !publicChannelId.safeParse(channel).success)) deny();
     if (thread && !threadTs) invalid();
     return { channel, ...(thread ? { threadTs } : {}), ...(host ? { host } : {}) };
   }
@@ -58,7 +59,8 @@ export class SlackReader {
         lockedCursor = parsed.data.cursor;
         this.inFlightCursors.add(lockedCursor);
       }
-      await authorizeCurrentSlackChannel(this.client, context, { channelId: target.channel, workspaceHost: target.host });
+      const origin = await authorizeCurrentSlackChannel(this.client, context, { workspaceHost: target.host });
+      if (target.channel !== identity.channel) await authorizePublicSlackThread(this.client, origin, target.channel);
       const cursor = previous?.slackCursor;
       // Observed replies pages include the parent in addition to requested replies.
       // Reserve its slot on every page; the published response bound stays unchanged.
