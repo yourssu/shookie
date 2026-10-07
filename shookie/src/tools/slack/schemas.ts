@@ -20,12 +20,16 @@ export const searchInput = z.object({
   limit: z.number().int().min(1).max(20).default(20),
 }).strict();
 
+// Display-only metadata from live conversations.info; never an address or permission.
+export const verifiedChannelName = z.string().min(1).max(80)
+  .refine(name => name.length <= 80 && name === name.trim() && !/[\u0000-\u001f\u007f-\u009f]/.test(name));
+
 export const readOutput = z.object({
   status: z.enum(["ok", "invalid_target", "access_denied", "unsupported", "rate_limited", "unavailable"]),
   message: z.string(),
-  source: z.object({ channel: z.string(), threadTs: z.string().optional() }).optional(),
+  source: z.object({ channel: z.string(), channelName: verifiedChannelName.optional(), threadTs: z.string().optional() }).optional(),
   messages: z.array(z.object({
-    channel: z.string(), ts: z.string(), threadTs: z.string().optional(),
+    channel: z.string(), channelName: verifiedChannelName.optional(), ts: z.string(), threadTs: z.string().optional(),
     author: z.object({ userId: z.string().nullable(), botId: z.string().nullable(), kind: z.enum(["participant", "bot", "system"]) }),
     text: z.string(), textTruncated: z.boolean(), replyCount: z.number().int().nonnegative().optional(),
     permalink: z.string().optional(), searchMatch: z.boolean().optional(),
