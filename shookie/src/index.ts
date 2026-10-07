@@ -27,6 +27,7 @@ import { registerUngroupMentionGroupCommand } from "./slack/mention-groups/ungro
 import { registerMeetingReminderScheduler } from "./slack/meeting-reminders.js";
 import { RadarMentionGroupsClient } from "./slack/mention-groups/radar-client.js";
 import { createMessageRelay } from "./slack/message-relay/index.js";
+import { verifyRelayIdentity } from "./slack/message-relay/identity.js";
 
 async function main() {
   // 1. 로깅 설정
@@ -119,6 +120,10 @@ async function main() {
   }
 
   // 6. 시작
+  if (messageRelayConfig) {
+    // 한 번만(메시지별 조회 아님): 설정된 팀이 실제 봇 토큰의 워크스페이스와 다르면 부팅 실패.
+    await verifyRelayIdentity(app.client, { appId: messageRelayConfig.appId, teamId: messageRelayConfig.teamId });
+  }
   try {
     await app.start();
   } catch (error) {

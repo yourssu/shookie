@@ -20,9 +20,15 @@ SocketModeClient 'slack_event'
 - 구현: `shookie/src/slack/socket-mode-app.ts`가 `receiver.init`을 감싸 receiver에 `processEvent`만 가진 facade를 준다. Bolt 옵션(`ignoreSelf`, `authorize` 등), 리스너, 재연결 기본값은 바꾸지 않는다.
 - 캡처 대상: 공개 채널(`channel_type=channel`)의 **새** 메시지, `subtype`이 없음/`bot_message`/`thread_broadcast`/`file_share`/`me_message`. 자기 봇 메시지도 포함한다(텍스트·멘션 요구 없음).
 - 제외: DM/그룹 DM/비공개 채널, `message_changed`/`message_deleted`/`message_replied` 등, `app_mention`, 리액션 등 다른 이벤트. 이들은 원본 그대로 Bolt로 전달된다.
+- `thread_broadcast`는 반드시 부모가 있는 답글이어야 한다: `thread_ts`가 없거나 `ts`와 같으면(정규화 시 `threadTs: null`) 백엔드 계약상 거부되므로 **outbox에 넣지 않고** 메타데이터 error 로그만 남긴다(Bolt 처리는 그대로 진행, ACK 정상).
 - 원본 이벤트 객체는 수정하지 않는다. 멘션 그룹 치환, AI 핸들러, 리액션 릴레이, 행사 참석, 회의/사용자 OAuth, customRoutes는 영향이 없다. 릴레이는 해당 플래그와 독립이다.
 - 저장 실패(DB 장애·락·타임아웃)는 **fail closed**: 오류를 던져 ACK하지 않는다(`processEventErrorHandler`가 `RelayCaptureError`는 항상 `false`). Slack이 같은 `event_id`로 재전송하면 `ON CONFLICT DO NOTHING`으로 중복 없이 처리된다.
 - ACK 경로의 DB 작업은 모두 유한하다: 커넥션 획득 500ms, `lock_timeout` 500ms, `statement_timeout` 1s, 전체 2s. 트랜잭션 안에서 네트워크 호출은 없고 Radar HTTP는 ACK 경로에 절대 포함되지 않는다.
+
+### 신원(app/team) 설정 오류는 조용히 흐르지 않는다
+
+- **부팅 시 1회**(메시지별 조회 아님): 릴레이가 켜져 있으면 기존 봇 토큰으로 `auth.test`를 한 번 호출해 `team_id`가 `RADAR_SLACK_RELAY_TEAM_ID`와 같은지 확인하고, 다르거나 응답이 없거나 10초를 넘기면 **부팅 실패**한다(새 스코프/연결 없음).
+- 앱 ID는 `auth.test`로 알 수 없고(`bots.info`는 `users:read` 필요 — 스코프 변경 금지) 따라서 **런타임에 fail closed**: 캡처 대상 공개 메시지의 `api_app_id`/`team_id`가 설정과 다르면 outbox에 넣지 않고 **ACK도 하지 않으며**(Bolt 처리도 보류) 60초마다 `신원(app/team) 불일치` error 로그(차단 건수 포함)를 남긴다. 잘못된 설정으로 스트림 전체가 조용히 ACK되어 Radar에 도달하지 않는 상황을 막기 위한 의도된 선택이며, 비대상 이벤트(DM, 멘션, 리액션 등)에는 영향이 없다. 로그를 보면 `RADAR_SLACK_RELAY_ENABLED=false`로 롤백하거나 ID를 고쳐 재배포한다.
 
 ### 한계 (절대 무손실을 약속하지 않음)
 

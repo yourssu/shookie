@@ -118,6 +118,32 @@ describe("relay capture at the real SocketModeReceiver -> Bolt App boundary", ()
   });
 
   it.each([
+    ["team", { team_id: "T0OTHER01" }],
+    ["app", { api_app_id: "A0OTHER01" }],
+  ])("a wrong configured %s identity fails closed: nothing outboxed, NO ACK, loud metadata-only error (never a silent dropped stream)", async (_n, override) => {
+    const persist = vi.fn(async () => undefined);
+    const f = fixture(persist);
+    const listener = vi.fn();
+    f.app.event("message", async () => { listener(); });
+    const ack = deliver(f, { ...message(), ...override });
+    await vi.waitFor(() => expect(vi.mocked(logger.error)).toHaveBeenCalledWith(expect.stringContaining("신원"), expect.objectContaining({ blockedEvents: 1 })));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(persist).not.toHaveBeenCalled();
+    expect(ack).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("PRIVATE-TEXT-SECRET");
+  });
+
+  it("identity mismatch only affects capturable public messages; DMs/other events still ACK normally", async () => {
+    const f = fixture(async () => undefined);
+    const listener = vi.fn();
+    f.app.event("message", async () => { listener(); });
+    const ack = deliver(f, { ...message({ channel_type: "im", channel: "D0SYNTH01" }), team_id: "T0OTHER01" });
+    await vi.waitFor(() => expect(ack).toHaveBeenCalledTimes(1));
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
     ["DM", { channel_type: "im", channel: "D0SYNTH01" }],
     ["private channel", { channel_type: "group" }],
     ["edit", { subtype: "message_changed" }],

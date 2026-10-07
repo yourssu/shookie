@@ -10,6 +10,17 @@ export class RelayCaptureError extends Error {
   }
 }
 
+/**
+ * The envelope's team/app differs from the configured identity. Fail closed (no ACK, nothing outboxed) and loud
+ * instead of silently ACKing a whole stream that would never reach Radar.
+ */
+export class RelayIdentityMismatchError extends RelayCaptureError {
+  constructor(readonly reason: "team" | "app") {
+    super(`Slack message relay identity mismatch (${reason})`);
+    this.name = "RelayIdentityMismatchError";
+  }
+}
+
 export type PersistRelayEvent = (metadata: SlackMessageRelayMetadata) => Promise<unknown>;
 
 export interface RelayCapture {
@@ -32,6 +43,7 @@ export function createRelayCapture(
   const inflight = new Set<Promise<unknown>>();
   let closed = false;
   let lastMismatchLog = -Infinity;
+  let mismatches = 0;
   let lastInvalidLog = -Infinity;
 
   return {
@@ -39,11 +51,15 @@ export function createRelayCapture(
       const extraction = extractRelayMessage(body, identity);
       if (extraction.kind === "ignore") return;
       if (extraction.kind === "mismatch") {
+        mismatches += 1;
         if (now() - lastMismatchLog >= MISMATCH_LOG_INTERVAL_MS) {
           lastMismatchLog = now();
-          logger.error("Slack 메시지 릴레이 신원 불일치로 캡처하지 않음", { reason: extraction.reason });
+          logger.error("Slack 메시지 릴레이 신원(app/team) 불일치 — 이벤트를 ACK하지 않고 차단함. RADAR_SLACK_RELAY_APP_ID/TEAM_ID 확인 필요", {
+            reason: extraction.reason,
+            blockedEvents: mismatches,
+          });
         }
-        return;
+        throw new RelayIdentityMismatchError(extraction.reason);
       }
       if (extraction.kind === "invalid") {
         if (now() - lastInvalidLog >= MISMATCH_LOG_INTERVAL_MS) {
