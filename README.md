@@ -222,7 +222,7 @@ Slack 앱 설정, 비밀값 분류, 로컬/수동 E2E, 기존 mention-bot 전환
 
 ### Radar 미팅 알림
 
-`RADAR_MEETING_REMINDER_API_URL`과 `SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY`를 모두 설정하면 60초마다 Radar의 pending due 알림만 조회해 해당 Slack 채널에 전송하고 ack합니다. 키는 Radar의 `RADAR_MEETING_REMINDER_INTERNAL_API_KEY`와 같아야 합니다. 전송된 occurrence는 Shookie PostgreSQL에 기록되므로 ack 재시도 시 Slack에 중복 게시하지 않습니다. 환경변수 예시는 `.env.example`을 참고하세요.
+`RADAR_MEETING_REMINDER_API_URL`과 `SHOOKIE_MEETING_REMINDER_INTERNAL_API_KEY`를 모두 설정하면 회의 시작 하루 전과 1시간 전 리마인드를 60초마다 조회해 해당 Slack 채널에 전송하고 ack합니다. 키는 Radar의 `RADAR_MEETING_REMINDER_INTERNAL_API_KEY`와 같아야 합니다. 전송된 알림은 Shookie PostgreSQL에 기록되므로 ack 재시도 시 Slack에 중복 게시하지 않습니다. 환경변수 예시는 `.env.example`을 참고하세요.
 
 ## 기술 스택
 

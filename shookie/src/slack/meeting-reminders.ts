@@ -16,6 +16,8 @@ export interface MeetingReminderConfig {
 
 interface DueReminder {
   occurrenceId: string;
+  reminderId: string;
+  reminderOffsetHours: 1 | 24;
   channelId: string;
   affiliationName: string;
   meetingTitle: string;
@@ -37,6 +39,8 @@ function parseReminders(payload: unknown): DueReminder[] {
     if (!item || typeof item !== "object") throw new Error("Radar returned an invalid reminder");
     const value = item as Record<string, unknown>;
     const occurrenceId = value.occurrenceId ?? value.occurrence_id;
+    const reminderId = value.reminderId ?? value.reminder_id ?? occurrenceId;
+    const reminderOffsetHours = value.reminderOffsetHours ?? value.reminder_offset_hours ?? 24;
     const channelId = value.channelId ?? value.channel_id;
     const affiliation = value.affiliation && typeof value.affiliation === "object"
       ? value.affiliation as Record<string, unknown>
@@ -52,8 +56,11 @@ function parseReminders(payload: unknown): DueReminder[] {
     const locationName = value.locationName ?? value.location_name ?? value.location;
     const mentionGroupHandle = value.mentionGroupHandle ?? value.mention_group_handle ?? null;
     const mentionUserIds = value.mentionUserIds ?? value.mention_user_ids ?? [];
-    if ([occurrenceId, channelId, affiliationName, meetingTitle, startsAt, endsAt].some((v) => typeof v !== "string" || !v.trim()) || typeof isOnline !== "boolean") {
+    if ([occurrenceId, reminderId, channelId, affiliationName, meetingTitle, startsAt, endsAt].some((v) => typeof v !== "string" || !v.trim()) || typeof isOnline !== "boolean") {
       throw new Error("Radar returned a reminder with missing required fields");
+    }
+    if (reminderOffsetHours !== 1 && reminderOffsetHours !== 24) {
+      throw new Error("Radar returned an invalid meeting reminder offset");
     }
     if (!Array.isArray(mentionUserIds) || mentionUserIds.some((id) => typeof id !== "string" || !/^[UW][A-Z0-9]{1,20}$/u.test(id))) {
       throw new Error("Radar returned invalid meeting reminder mention members");
@@ -62,7 +69,7 @@ function parseReminders(payload: unknown): DueReminder[] {
       throw new Error("Radar returned an invalid meeting reminder mention group");
     }
     if (!Number.isFinite(Date.parse(startsAt as string)) || !Number.isFinite(Date.parse(endsAt as string))) throw new Error("Radar returned an invalid reminder date");
-    return { occurrenceId: occurrenceId as string, channelId: channelId as string, affiliationName: affiliationName as string,
+    return { occurrenceId: occurrenceId as string, reminderId: reminderId as string, reminderOffsetHours, channelId: channelId as string, affiliationName: affiliationName as string,
       meetingTitle: meetingTitle as string, startsAt: startsAt as string, endsAt: endsAt as string, isOnline,
       locationName: typeof locationName === "string" ? locationName : null,
       mentionGroupHandle: mentionGroupHandle as string | null,
@@ -84,7 +91,8 @@ function formatMessage(reminder: DueReminder, catalog?: MentionGroupCatalog | nu
   const groupLabel = reminder.mentionGroupHandle
     ? `\`@${reminder.mentionGroupHandle}\`${mentions ? `(${mentions})` : ""}`
     : mentions;
-  return `${groupLabel ? `${groupLabel}\n` : ""}📅 *${reminder.affiliationName}* 미팅 알림\n*${reminder.meetingTitle}*\n${date} ${time} (KST)\n진행 방식: ${venue}`;
+  const timing = reminder.reminderOffsetHours === 1 ? "시작 1시간 전" : "시작 하루 전";
+  return `${groupLabel ? `${groupLabel}\n` : ""}📅 *${reminder.affiliationName}* 미팅 알림 (${timing})\n*${reminder.meetingTitle}*\n${date} ${time} (KST)\n진행 방식: ${venue}`;
 }
 
 async function request(config: MeetingReminderConfig, url: string, method = "GET"): Promise<Response> {
@@ -117,21 +125,23 @@ export async function pollMeetingRemindersOnce(
       }
       for (const reminder of reminders) {
         try {
-          const state = await claimMeetingReminder(reminder.occurrenceId, reminder.channelId);
+          const state = await claimMeetingReminder(reminder.reminderId, reminder.channelId);
           if (!state.delivered) {
             if (!state.claimed) {
-              logger.warn("미팅 알림 claim은 있으나 게시 완료가 확인되지 않아 처리를 보류합니다", { occurrenceId: reminder.occurrenceId });
+              logger.warn("미팅 알림 claim은 있으나 게시 완료가 확인되지 않아 처리를 보류합니다", { occurrenceId: reminder.occurrenceId, reminderId: reminder.reminderId });
               continue;
             }
             const mentionUserIds = resolveMentionUserIds(reminder, catalog);
             if (reminder.mentionGroupHandle && mentionUserIds.length === 0) {
               logger.warn("미팅 알림 멘션 그룹에 대상 멤버가 없습니다", {
                 occurrenceId: reminder.occurrenceId,
+                reminderId: reminder.reminderId,
                 mentionGroupHandle: reminder.mentionGroupHandle,
               });
             } else if (!reminder.mentionGroupHandle && mentionUserIds.length === 0) {
               logger.warn("미팅 알림에 연결된 Radar 멘션 그룹이 없습니다", {
                 occurrenceId: reminder.occurrenceId,
+                reminderId: reminder.reminderId,
                 affiliationName: reminder.affiliationName,
               });
             }
@@ -142,18 +152,18 @@ export async function pollMeetingRemindersOnce(
                 mrkdwn: true,
                 link_names: false,
               });
-              await markMeetingReminderDelivered(reminder.occurrenceId, sent.ts ?? "");
+              await markMeetingReminderDelivered(reminder.reminderId, sent.ts ?? "");
             } catch (error) {
-              await releaseUndeliveredMeetingReminder(reminder.occurrenceId);
+              await releaseUndeliveredMeetingReminder(reminder.reminderId);
               throw error;
             }
           }
-          const ack = await request(config, `${config.apiUrl}/${encodeURIComponent(reminder.occurrenceId)}/ack`, "POST");
+          const ack = await request(config, `${config.apiUrl}/${encodeURIComponent(reminder.reminderId)}/ack`, "POST");
           if (!ack.ok) throw new Error(`Radar reminder acknowledgement failed (${ack.status})`);
           await ack.body?.cancel();
-          await markMeetingReminderAcked(reminder.occurrenceId);
+          await markMeetingReminderAcked(reminder.reminderId);
         } catch (error) {
-          logger.error("미팅 알림을 처리하지 못했습니다", { occurrenceId: reminder.occurrenceId, error: error instanceof Error ? error.message : String(error) });
+          logger.error("미팅 알림을 처리하지 못했습니다", { occurrenceId: reminder.occurrenceId, reminderId: reminder.reminderId, error: error instanceof Error ? error.message : String(error) });
         }
       }
     } catch (error) {
