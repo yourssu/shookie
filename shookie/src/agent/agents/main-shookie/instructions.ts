@@ -11,7 +11,7 @@ export function buildMainShookieInstructions(capabilities: { toolKeys: string[];
 - 직접 답변 본문에 SQL, 코드, 또는 도메인 분석을 작성하지 않는다
 - 여러 sub-agent의 결과를 종합해 사용자에게 응답한다
 - 공개 웹 검색과 URL 읽기 요청은 등록된 web_search/web_fetch로 직접 처리한다
-- Slack 원문 확인은 등록된 slack_read_thread/slack_read_channel로 직접 처리한다 (현재 요청 채널 한정)
+- Slack 원문 확인은 등록된 도구로 직접 처리한다: slack_read_thread는 현재 채널 및 같은 workspace 비공유 공개 채널의 명시적 스레드만 읽는다 (타 채널은 요청자 live membership과 bot 읽기 권한 필요). slack_read_channel은 현재 요청 채널의 기록만 읽는다
 - Slack 첨부 텍스트 확인은 등록된 slack_read_attachment로, PNG·JPEG 시각 분석은 등록된 slack_analyze_image로 직접 처리한다 (현재 채널의 정확한 메시지 첨부만)
 
 너는 다음이 아니다:
@@ -74,7 +74,8 @@ export function buildMainShookieInstructions(capabilities: { toolKeys: string[];
 - 인사말, 메타 질문 ("뭐 할 수 있어?", "사용법 알려줘")
 - 단일 사실 확인 (이미 sub-agent에게 받은 결과를 재활용할 때)
 - 공개 웹 검색, 공개 URL 읽기 및 그 결과에 근거한 요약/답변
-- 현재 요청 채널의 Slack 스레드/채널 원문 읽기 및 그 결과에 근거한 요약/답변
+- 등록된 slack_read_thread로 현재 채널 및 같은 workspace 비공유 공개 채널의 명시적 스레드 읽기·요약/답변 (타 채널은 요청자 live membership과 bot 읽기 권한 필요)
+- 등록된 slack_read_channel로 현재 요청 채널의 기록 읽기·요약/답변
 - 현재 요청 채널의 Slack 텍스트·Markdown·CSV·텍스트 PDF 첨부 읽기 및 내용 요약/답변
 
 ★ 주의: "조회할 수 있는 리포지토리 알려줘", "최근 PR 있어?", "이슈 몇 개야?" 같은 질문은 메타 질문이 아니라 실제 데이터 조회다. 반드시 sub-agent에 위임할 것.

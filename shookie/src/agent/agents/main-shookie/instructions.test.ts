@@ -83,6 +83,21 @@ describe("main-shookie agent instructions", () => {
     expect(instructions).not.toContain("slack_read_thread / slack_read_channel 등록됨");
   });
 
+  it("keeps early identity/delegation thread scope consistent without widening current-only history or attachments", () => {
+    const enabled = buildMainShookieInstructions({ toolKeys: ["slack_read_thread", "slack_read_channel", "slack_search", "slack_read_attachment", "slack_analyze_image"] });
+    const identity = enabled.split("# 2. Time Awareness")[0];
+    const delegation = enabled.split("# 5. Delegation Discipline")[1].split("# 6. Meta Query 처리")[0];
+    expect(identity).toContain("slack_read_thread는 현재 채널 및 같은 workspace 비공유 공개 채널의 명시적 스레드만 읽는다");
+    expect(identity).toContain("slack_read_channel은 현재 요청 채널의 기록만 읽는다");
+    expect(delegation).toContain("slack_read_thread로 현재 채널 및 같은 workspace 비공유 공개 채널의 명시적 스레드 읽기");
+    expect(delegation).toContain("slack_read_channel로 현재 요청 채널의 기록 읽기");
+    for (const section of [identity, delegation]) expect(section).toContain("타 채널은 요청자 live membership과 bot 읽기 권한 필요");
+    expect(enabled).not.toContain("slack_read_thread/slack_read_channel로 직접 처리한다 (현재 요청 채널 한정)");
+    expect(enabled).not.toContain("현재 요청 채널의 Slack 스레드/채널 원문 읽기");
+    expect(identity).toContain("slack_read_attachment로, PNG·JPEG 시각 분석은 등록된 slack_analyze_image로 직접 처리한다 (현재 채널의 정확한 메시지 첨부만)");
+    expect(delegation).toContain("현재 요청 채널의 Slack 텍스트·Markdown·CSV·텍스트 PDF 첨부 읽기");
+  });
+
   it("includes current timestamp", () => {
     expect(instructions).toMatch(/\d{4}-\d{2}-\d{2}/);
   });
