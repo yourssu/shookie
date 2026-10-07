@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RequestContext } from "@mastra/core/request-context";
+import { logger } from "../../logger.js";
 import { SlackReader, type SlackReadClient } from "./client.js";
 import { bindSlackReadContext } from "./context.js";
 import { readAuthorizedSlackMessage } from "./authorization.js";
@@ -16,6 +17,7 @@ function context(changes = {}) {
   return ctx;
 }
 function fixture() {
+  vi.spyOn(logger, "info").mockImplementation(() => {});
   const auth = vi.fn().mockResolvedValue({ ok: true, bot_id: "B1", team_id: "T1", url: "https://synthetic.slack.com/" });
   const info = vi.fn(async ({ channel }: { channel: string }): Promise<{ ok: boolean; channel: Record<string, unknown> }> => ({ ok: true, channel: publicInfo(channel) }));
   // Requester is deliberately NOT a member of target channels. Native RTS supplies search permission.
@@ -27,7 +29,10 @@ function fixture() {
   const client = { auth: { test: auth }, conversations: { info, members, replies, history, join }, apiCall } as unknown as SlackReadClient;
   return { reader: new SlackReader(client), client, auth, info, members, apiCall, replies, history, join, ctx: context() };
 }
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  expect(vi.mocked(logger.info).mock.calls.filter(([name]) => name === "slack_cross_channel_search_diagnostic")).toEqual([]);
+  vi.restoreAllMocks();
+});
 
 describe("workspace-public native RTS permission, actual source and live public validation (synthetic)", () => {
   it("searches 2 nonmember targets with no origin in filter and no fabricated origin source", async () => {

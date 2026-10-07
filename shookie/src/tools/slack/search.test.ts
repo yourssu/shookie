@@ -28,7 +28,7 @@ function fixture() {
 afterEach(() => vi.restoreAllMocks());
 function diagnostics() {
   const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
-  return { spy, records: () => spy.mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(name as string)) };
+  return { spy, records: () => spy.mock.calls.filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic", "slack_cross_channel_search_diagnostic"].includes(name as string)) };
 }
 function localUnavailable() {
   try { unavailable(); } catch (error) { return (error as { result: { message: string } }).result.message; }

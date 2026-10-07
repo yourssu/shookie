@@ -1,4 +1,32 @@
-# 공개 채널 검색 로컬 거절: 한시적 안전 진단
+# 공개 채널 검색 한시적 안전 진단 (제거 / 아카이브)
+
+> **현재 코드: 교차 채널 임시 진단 제거됨.** 사용자 명시 요청에 따라 최신 PR114
+> 기능을 보존한 채 `slack_cross_channel_search_diagnostic` emit, 전용 모듈,
+> pending/stage/breadcrumb, schema 요약·permalink 보조 predicate·관찰 전용 본문 비교를 제거했다.
+> 대체 raw exception/debug/응답 로그를 추가하지 않는다. 아래 PR110/113/114 당시
+> 로그 계약·관측·진단 유지/제거 대기 문구는 과거 이력이며 현재 emit 계약이나 운영 지침이 아니다.
+>
+> **유지한 기능 계약:** same-page 검증 primary/context 및 모든 관측의 user → explicit kind →
+> thread 호환 검증 후 primary 본문·출처·author·thread를 보존하고 비동일 대체 context를 생략한다.
+> 생략은 sticky partial이며 nonprefix만으로 primary.textTruncated를 설정하지 않는다.
+> 실제 projection 및 기존 exact-prefix shortPrimary, same-role exact hash 충돌,
+> unequal seed-only fail-closed, composite `(channel,ts)`/160 전달키/역할별 hash,
+> KindEvidence/PageMetadata/pageObserved/observed/fingerprints, 처리 예산 2,048 관측/
+> 1MiB text/4,096 metadata code units와 출력 96KB/본문 24KB는 유지한다.
+> 비공개 identity/action_token WeakMap, API 호출·raw snapshot 접근 순서·횟수,
+> 오류/status·취소·커서 transaction/finally unlock 및 registered DB redaction도 유지한다.
+> 최신 상세 계약은 [운영 도구 문서](slack-read-tools.md)를 따른다.
+>
+> **제거 코드 운영 재검증: NOT RUN (main 담당).** PR114의 이전 실제 근거를 새 코드의
+> E2E PASS로 승격하지 않는다. worker는 서버/E2E/merge/배포를 하지 않는다.
+> main이 최종 tested=head=pushed SHA 실제 diff·독립 리뷰 후 exact squash SHA의 배포 성공,
+> live image/restarts, 새 실제 MCP 슈타임 exact 및 인턴십/Signal/디자인 검색 → 타 채널
+> thread 원문 대조·visible 응답/privacy·임시 emit 부재와 종료/cleanup_completed를 확인한다.
+> 전체 검색 완전성이나 빈 MCP 본문의 미규명 원인 해결을 주장하지 않는다.
+> 합성 회귀는 기능·악성 입력·커서·partial·무emit을 검증하며 전체 suite의 기존 unrelated
+> clone/snapshot timeout 해결을 의미하지 않는다. Radar/socket/security/SDK 로그는 변경하지 않는다.
+
+## 과거 진단 및 기능 수정 이력 (이하 아카이브)
 
 ## PR110 후속: context 배열 20 가정 제거
 
@@ -24,7 +52,7 @@ JSON 96,000 bytes/본문 projection 24,000 bytes이며 공유 thread/history 한
 > 독립 리뷰와 pinned squash/deploy 후 새 MCP OpenClaw 검색 및 genuine other-channel
 > source comparison이 필요하다. 실제 성공 후 main이 별도 진단 제거 task를 만든다.
 
-## PR113 복원 후속: 같은 페이지의 검증된 primary 보존
+## PR114 기능 수정 (PR113 진단 복원 후속): 같은 페이지의 검증된 primary 보존
 
 사용자 원래 요청 '최근 슈타임에 어떤 업데이트 있었는지 슬랙 검색해서 알려줘'의
 MCP replay에서 trusted `slack-event:Ev0C79DR6WCE` 네 호출 모두

@@ -1,5 +1,12 @@
 # Slack 명시적 검색·읽기 도구 (기존 bot token only)
 
+> **현재 상태:** PR114의 same-page 검증 primary 보존/대체 context 생략·sticky partial 기능은
+> 유지하고 교차 채널 임시 `slack_cross_channel_search_diagnostic` instrumentation만 제거했다.
+> 이전 action-token/search/read 3종도 제거 상태다. [진단 제거/과거 이력](slack-cross-channel-search-diagnostics.md)은
+> 아카이브이며 현재 로그 계약이 아니다. 최신 제거 코드의 배포/실제 E2E는 NOT RUN(main 담당)이다.
+> 이전 PR114 실제 근거·합성 PASS로 새 코드의 운영 성공, 전체 검색 완전성 또는 빈 MCP 본문의
+> 미규명 원인 해결을 주장하지 않는다. 아래 기능·권한·예산·커서·취소 계약은 불변이다.
+
 ## 범위 / 실제 연결
 
 기존 호출 thread 자동 맥락 수집(`slack/slack-thread-source.ts`)은 그대로 유지한다. 모델이 필요할 때 메인 에이전트의 명시적 도구를 호출한다.
@@ -85,6 +92,8 @@ readAuthorizedSlackMessage(client, requestContext, { messageTs, threadTs?, chann
 ## 임시 진단 제거 / 과거 관측 아카이브
 
 PR106에서 `slack_action_token_diagnostic`, `slack_search_response_diagnostic`, `slack_read_response_diagnostic` 3종 emit과 진단 전용 helper/correlation/observer/extractor/dispose API를 제거했으며 현재 코드에도 없다. [검색 응답/본문 충돌](slack-search-response-diagnostics.md), [thread/channel 읽기 실패](slack-read-response-diagnostics.md), [action_token 전달 구조](slack-action-token-diagnostics.md) 문서는 과거 근거 아카이브다. 현재 활성 로그 계약이나 재현 지침으로 사용하지 않는다.
+
+최신 제거는 PR113에서 복원했던 별도 `slack_cross_channel_search_diagnostic` emit과 전용 helper/pending/stage/breadcrumb/관찰 전용 비교·predicate만 대상으로 한다. PR114 기능용 KindEvidence/PageMetadata/pageObserved/observed/role hash/shortPrimary/lossy 및 정규화·예산은 유지한다. 전용 진단 테스트는 기능 거절/primary 보존·partial·raw getter 단일 접근·취소/seed 불변·무emit 회귀로 전환하고 등록 handler/DB redaction 및 기존 악성 입력·커서 테스트는 유지했다. [cross-channel 진단 문서](slack-cross-channel-search-diagnostics.md)의 과거 stage/reason 계약은 더 이상 emit하지 않는다.
 
 실제 event-only 토큰 선택·validation·비공개 WeakMap identity/token binding, 모든 검색·읽기·출처·취소 가드와 SDK 로그 차단/안전 오류/도구·DB redaction은 유지한다. 표준 단일 SocketModeReceiver/client, Bolt 기본 INFO ConsoleLogger/client retry/customRoutes/port/start/stop 및 `@slack/logger` 의존성도 그대로다. Radar/mention-groups transport diagnostics는 PR106 제거 대상이 아니었으며 이번 공개 채널 확장에서도 변경하지 않는다.
 
