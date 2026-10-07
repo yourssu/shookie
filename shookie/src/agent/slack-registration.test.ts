@@ -32,7 +32,7 @@ const execute = (tool: unknown, input: unknown, requestContext?: RequestContext)
   (tool as { execute: (input: unknown, options: { requestContext?: RequestContext }) => Promise<unknown> }).execute(input, { requestContext });
 
 describe("actual main Slack tool registration", () => {
-  it.each(["primary_preserve", "first_schema_issue"] as const)("correlates bounded %s diagnostics through registered actual main and trusted handler; preserves DB privacy", async scenario => {
+  it.each(["primary_preserve", "first_schema_issue"] as const)("preserves registered %s behavior through trusted handler without temporary emits and with DB privacy", async scenario => {
     vi.clearAllMocks();
     const main = createAgent({ slackClient: fixture.client as unknown as SlackReadClient }), tools = await main.listTools();
     const secret = "PRIVATE_DIAGNOSTIC_ACTION", query = "privatekeyword";
@@ -73,20 +73,16 @@ describe("actual main Slack tool registration", () => {
         expect(JSON.stringify(result)).not.toContain("PRIVATE_DIAGNOSTIC_CONTEXT");
       }
       expect(readOutput.safeParse(result).success).toBe(true);
-      const records = vi.mocked(logger.info).mock.calls.filter(([name]) => name === "slack_cross_channel_search_diagnostic").map(([, value]) => value as Record<string, unknown>);
-      expect(records.map(record => record.reason)).toEqual(scenario === "first_schema_issue" ? ["response_received", "check_passed", "schema_failed"] : ["response_received", "check_passed", "schema_passed", "success"]);
-      if (scenario === "first_schema_issue") expect(records.at(-1)).toMatchObject({ stage: "schema", schemaField: "message_is_author_bot", schemaCode: "invalid_type", schemaMissing: true });
-      else expect(records.at(-1)).toMatchObject({ stage: "final", finalSuccess: true });
-      for (const record of records) {
-        expect(record.requestId).toBe("slack-event:bounded-diag");
-        for (const [key, value] of Object.entries(record)) if (!["stage", "reason", "requestId", "schemaField", "schemaCode", "primaryKnownKinds", "contextKnownKinds"].includes(key)) expect(typeof value).toBe("boolean");
-      }
+      const records = [logger.info, logger.debug, logger.warn, logger.error].flatMap(log => vi.mocked(log).mock.calls)
+        .filter(([name]) => ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic", "slack_cross_channel_search_diagnostic"].includes(name as string));
+      expect(records).toEqual([]);
       const diagnosticAndToolDb = JSON.stringify([records, vi.mocked(logToolCall).mock.calls]);
       for (const value of [secret, query, "PRIVATE_DIAGNOSTIC_PRIMARY", "PRIVATE_DIAGNOSTIC_CONTEXT", "PRIVATE_RAW_SOURCE", "PRIVATE_DIAGNOSTIC_CURSOR", "FORGED_GENERIC_REQUEST_ID", "FORGED_BODY_ID", "CTARGET", "C1", "T1", "U1", "U2", primary.message_ts]) expect(diagnosticAndToolDb).not.toContain(value);
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName: "slack_search", input: { redacted: true }, output: { redacted: true } }));
       expect(JSON.stringify([vi.mocked(logger.debug).mock.calls, vi.mocked(repository.complete).mock.calls])).not.toContain(secret);
       expect(fixture.client.apiCall).toHaveBeenCalledExactlyOnceWith("assistant.search.context", expect.objectContaining({ action_token: secret, context_channel_id: "C1", query: `"${query}"` }));
       expect(fixture.client.conversations.members).toHaveBeenCalledExactlyOnceWith({ channel: "C1", limit: 200 });
+      expect(fixture.client.conversations.info.mock.calls.map(([args]) => args.channel)).toEqual(scenario === "first_schema_issue" ? ["C1"] : ["C1", "CTARGET"]);
       expect(fixture.client.conversations.history).not.toHaveBeenCalled(); expect(fixture.client.conversations.replies).not.toHaveBeenCalled();
       expect(repository.complete).toHaveBeenCalledTimes(1);
     } finally { stream.mockRestore(); }
@@ -235,7 +231,7 @@ describe("actual main Slack tool registration", () => {
         body: { team_id: "T1", event_id: `registered-failure-${toolName}` }, context: { botUserId: "UBOT" } });
       expect(results[0]).toMatchObject({ status: "unavailable", messages: [], nextCursor: null, complete: false });
       const records = vi.mocked(logger.info).mock.calls.filter(([message]) =>
-        ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic"].includes(message as string));
+        ["slack_action_token_diagnostic", "slack_search_response_diagnostic", "slack_read_response_diagnostic", "slack_cross_channel_search_diagnostic"].includes(message as string));
       expect(records).toEqual([]);
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName, input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
@@ -304,7 +300,7 @@ describe("actual main Slack tool registration", () => {
       expect(repository.complete).toHaveBeenCalledTimes(1);
       for (const toolName of ["slack_search", "slack_read_thread"]) expect(logToolCall).toHaveBeenCalledWith(expect.objectContaining({ toolName, input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls]);
-      for (const secret of ["PRIVATE_CROSS_", "PRIVATE_RAW_CURSOR", "CROSS_EVENT_ACTION", "FORGED_TOKEN"]) expect(logs).not.toContain(secret);
+      for (const secret of ["PRIVATE_CROSS_", "PRIVATE_RAW_CURSOR", "CROSS_EVENT_ACTION", "FORGED_TOKEN", "slack_cross_channel_search_diagnostic"]) expect(logs).not.toContain(secret);
     } finally { spy.mockRestore(); }
   });
   it("keeps prior factory signatures/no-client tools compatible", async () => {
