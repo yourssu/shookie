@@ -13,7 +13,10 @@ export function safeDisplayName(value: unknown, secret?: string): string | undef
   const name = value.trim();
   return name && name.length <= 80 && !/[<>@&\[\]`*_~\\\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(name) ? name : undefined;
 }
-/** Invocation-local display cache only. No grants, profiles or user OAuth credentials. */
+/** Invocation-local lookup cache only, separate from display data in existing conversation history.
+ * Logical timeout does not abort HTTP; injected clients retain their existing transport bounds.
+ * No grants, profiles or user OAuth credentials.
+ */
 export class SlackDisplayNames {
   private readonly cache = new Map<string, Promise<string | undefined>>();
   private readonly deadline = Date.now() + 750;
@@ -59,7 +62,8 @@ export class SlackDisplayNames {
       const c = field(raw, "channel"); return field(c, "id") === channel ? field(c, "name") : undefined;
     });
   }
-  // Sequential projection bounds concurrency to one, including channel lookup.
+  // Sequential projection bounds logical batch concurrency to one. A timed-out HTTP request
+  // may remain until the client's existing transport timeout/cancellation boundary settles.
   async enrich(messages: { author: { userId: string | null; botId: string | null; kind: string; displayName?: string } }[]) {
     if (!this.client.users && !this.client.bots) return;
     for (const message of messages) message.author.displayName = await this.author(message.author);

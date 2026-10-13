@@ -18,7 +18,7 @@ function fixture() {
   return { client: client as unknown as SlackReadClient, info, bots, context };
 }
 describe("bounded Slack display metadata", () => {
-  it("wires automatic and explicit channel/thread/search without changing authorship", async () => {
+  it("wires automatic channel-thread context and explicit channel/thread/search without changing authorship (not DM persistence)", async () => {
     const f = fixture();
     const automatic = await readSlackThread(f.client, { channel: "C1", threadTs: ts, currentTs: ts, userId: "U1", botUserId: "USELF" });
     expect(JSON.parse(automatic[0].content)).toMatchObject({ channelName: "개발", author: { userId: "U1", displayName: "민수", kind: "participant" } });
@@ -37,7 +37,7 @@ describe("bounded Slack display metadata", () => {
     expect(f.info).toHaveBeenCalledTimes(1); expect(f.bots).not.toHaveBeenCalled();
     expect(await names.author({ userId: null, botId: "B1", kind: "bot" })).toBe("알림 봇");
   });
-  it("bounds count, concurrency and deadline without failing reads", async () => {
+  it("caps sequential lookups and logical deadline without claiming HTTP cancellation", async () => {
     const f = fixture(), names = new SlackDisplayNames(f.client);
     for (let i = 0; i < 30; i++) await names.author({ userId: `U${i}`, botId: null, kind: "participant" });
     expect(f.info).toHaveBeenCalledTimes(20);
