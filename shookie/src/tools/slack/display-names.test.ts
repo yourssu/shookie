@@ -3,6 +3,8 @@ import { RequestContext } from "@mastra/core/request-context";
 import { SlackDisplayNames, safeDisplayName, type DisplayClient } from "./display-names.js";
 import { SlackReader, type SlackReadClient } from "./client.js";
 import { bindSlackReadContext } from "./context.js";
+import { ExecutionScope, executionStorage } from "../../cancellation/execution-context.js";
+import { ConversationStoppedError } from "../../cancellation/conversation-control.js";
 import { readSlackThread } from "../../slack/slack-thread-source.js";
 
 const ts = "1700000000.000001";
@@ -29,6 +31,51 @@ describe("bounded Slack display metadata", () => {
     }
     f.info.mockRejectedValue(new Error("missing_scope"));
     expect(await reader.read("thread", { ts }, f.context)).toMatchObject({ status: "ok", messages: [{ author: { displayName: "참여자" } }] });
+  });
+  it.each(["thread", "channel"] as const)("starts metadata budget after delayed %s content fetch and bounds the full enrichment", async kind => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      const delayed = vi.fn(async () => {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return { ok: true, messages: [{ ts, text: "root", user: "U1", reply_count: 1 },
+          { ts: "1700000000.000002", thread_ts: ts, text: "reply", user: "U2" }] };
+      });
+      if (kind === "thread") f.client.conversations.replies = delayed;
+      else f.client.conversations.history = delayed;
+      f.info.mockImplementation(async ({ user }) => {
+        if (user === "U2") return new Promise(() => {});
+        return { ok: true, user: { id: user, profile: { display_name: "민수", real_name: "" } } };
+      });
+      const pending = new SlackReader(f.client).read(kind, kind === "thread" ? { ts } : {}, f.context);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.info).toHaveBeenCalledWith({ user: "U1" });
+      await vi.advanceTimersByTimeAsync(751);
+      expect(await pending).toMatchObject({ status: "ok", messages: [
+        { author: { displayName: "민수" } }, { author: { displayName: "참여자" } },
+      ] });
+      expect(f.info).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(["channel", "user"] as const)("preserves request cancellation during automatic %s metadata lookup, with no subsequent chat/output", async phase => {
+    const f = fixture(), scope = new ExecutionScope();
+    const chat = vi.fn(), output = vi.fn();
+    let started!: () => void, finish!: () => void;
+    const began = new Promise<void>(resolve => { started = resolve; });
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    const lookup = vi.fn(async () => { started(); await blocked; throw new Error("transport aborted"); });
+    if (phase === "channel") f.client.conversations.info = lookup;
+    else f.client.users!.info = lookup;
+    try {
+      const pending = executionStorage.run(scope, async () => {
+        const messages = await readSlackThread(f.client, { channel: "C1", threadTs: ts, currentTs: ts, userId: "U1", botUserId: "USELF" });
+        chat(messages); output("answer");
+      });
+      const stopped = expect(pending).rejects.toBeInstanceOf(ConversationStoppedError);
+      await began; scope.control.cancel(); finish(); await stopped;
+      expect(chat).not.toHaveBeenCalled(); expect(output).not.toHaveBeenCalled();
+      if (phase === "channel") expect(f.info).not.toHaveBeenCalled();
+    } finally { scope.control.finish(); }
   });
   it("deduplicates users, attributes user-backed bots via users.info and only missing-user bots via bots.info", async () => {
     const f = fixture(), names = new SlackDisplayNames(f.client);

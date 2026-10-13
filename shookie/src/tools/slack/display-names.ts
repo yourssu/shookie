@@ -19,18 +19,20 @@ export function safeDisplayName(value: unknown, secret?: string): string | undef
  */
 export class SlackDisplayNames {
   private readonly cache = new Map<string, Promise<string | undefined>>();
-  private readonly deadline = Date.now() + 750;
+  private deadline: number | undefined;
   private count = 0;
   constructor(private readonly client: DisplayClient, private readonly secret?: string) {}
   private lookup(key: string, load: () => Promise<unknown>, project: (raw: unknown) => unknown): Promise<string | undefined> {
     const prior = this.cache.get(key); if (prior) return prior;
-    if (this.count >= 20 || Date.now() >= this.deadline) return Promise.resolve(undefined);
+    // Content/auth fetching is outside the optional metadata budget.
+    const deadline = this.deadline ??= Date.now() + 750;
+    if (this.count >= 20 || Date.now() >= deadline) return Promise.resolve(undefined);
     this.count++;
     const result = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const raw = await Promise.race([load(), new Promise<undefined>(resolve => {
-          timer = setTimeout(() => resolve(undefined), Math.max(0, this.deadline - Date.now()));
+          timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
         })]);
         if (field(raw, "ok") !== true || field(raw, "error")) return undefined;
         return safeDisplayName(project(raw), this.secret);

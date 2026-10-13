@@ -64,7 +64,9 @@ export async function readSlackThread(
     if (!root || !current || current.user !== mention.userId ||
         !Number.isInteger(root.reply_count) || root.reply_count !== collected.size - 1) fail();
     const names = new SlackDisplayNames(client);
+    executionCheckpoint();
     const channelName = await names.channel(mention.channel);
+    executionCheckpoint();
     const messages = [...collected.values()]
       .filter(m => timestamp(m.ts!) <= timestamp(mention.currentTs))
       .sort((a, b) => timestamp(a.ts!) < timestamp(b.ts!) ? -1 : 1)
@@ -80,8 +82,10 @@ export async function readSlackThread(
     for (const message of messages) {
       const data = JSON.parse(message.content);
       await names.enrich([data]);
+      executionCheckpoint();
       message.content = JSON.stringify(data);
     }
+    executionCheckpoint();
     return messages;
   } catch { executionCheckpoint(); return fail(); } // Never expose Slack responses, tokens or participant data through errors.
 }
