@@ -1,3 +1,4 @@
+import { SlackDisplayNames, type DisplayClient } from "../tools/slack/display-names.js";
 import type { WebClient } from "@slack/web-api";
 import { executionCheckpoint } from "../cancellation/execution-context.js";
 import type { Message } from "../services/memory/in-memory.js";
@@ -19,7 +20,7 @@ function fail(): never { throw new SlackThreadContextError("Slack thread context
 
 /** Only call for a trusted bot-mention event, never from model-supplied channel/thread IDs. */
 export async function readSlackThread(
-  client: Pick<WebClient, "conversations">, mention: ThreadMention,
+  client: Pick<WebClient, "conversations"> & DisplayClient, mention: ThreadMention,
 ): Promise<Message[]> {
   try {
     if (!validTs(mention.threadTs) || !validTs(mention.currentTs) || !mention.botUserId) fail();
@@ -62,18 +63,30 @@ export async function readSlackThread(
     const current = collected.get(mention.currentTs);
     if (!root || !current || current.user !== mention.userId ||
         !Number.isInteger(root.reply_count) || root.reply_count !== collected.size - 1) fail();
-    return [...collected.values()]
+    const names = new SlackDisplayNames(client);
+    executionCheckpoint();
+    const channelName = await names.channel(mention.channel);
+    executionCheckpoint();
+    const messages = [...collected.values()]
       .filter(m => timestamp(m.ts!) <= timestamp(mention.currentTs))
       .sort((a, b) => timestamp(a.ts!) < timestamp(b.ts!) ? -1 : 1)
-      .map(m => {
+      .map<Message>(m => {
         const own = m.user === mention.botUserId || (!m.user && !!mention.botId && m.bot_id === mention.botId);
         // JSON keeps author/text boundaries unambiguous. IDs here are data, not RequestContext identities.
         return { role: own ? "assistant" : "user", content: JSON.stringify({
-          source: "slack_thread", ts: m.ts, author: { userId: m.user ?? null, botId: m.bot_id ?? null,
+          source: "slack_thread", ...(channelName ? { channelName } : {}), ts: m.ts, author: { userId: m.user ?? null, botId: m.bot_id ?? null,
             kind: own ? "shookie" : m.bot_id || m.subtype === "bot_message" ? "other_bot" : "participant" },
           text: m.text,
         }) };
       });
+    for (const message of messages) {
+      const data = JSON.parse(message.content);
+      await names.enrich([data]);
+      executionCheckpoint();
+      message.content = JSON.stringify(data);
+    }
+    executionCheckpoint();
+    return messages;
   } catch { executionCheckpoint(); return fail(); } // Never expose Slack responses, tokens or participant data through errors.
 }
 

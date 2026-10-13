@@ -1,3 +1,4 @@
+import { SlackDisplayNames, safeDisplayName } from "./display-names.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { WebClient } from "@slack/web-api";
 import { getSlackSearchActionToken, type SlackReadIdentity } from "./context.js";
@@ -8,7 +9,7 @@ import { SlackSearcher } from "./search.js";
 import { jsonTextPrefix } from "./projection.js";
 import { authorizePublicSlackThread } from "./public-authorization.js";
 
-export type SlackReadClient = Pick<WebClient, "auth" | "conversations"> & Partial<Pick<WebClient, "apiCall">>;
+export type SlackReadClient = Pick<WebClient, "auth" | "conversations"> & Partial<Pick<WebClient, "apiCall" | "users" | "bots">>;
 function timestamp(ts: string) { return BigInt(ts.replace(".", "")); }
 type Target = { channel: string; threadTs?: string; host?: string };
 type Continuation = { binding: string; slackCursor: string; page: number;
@@ -60,7 +61,9 @@ export class SlackReader {
         this.inFlightCursors.add(lockedCursor);
       }
       const origin = await authorizeCurrentSlackChannel(this.client, context, { workspaceHost: target.host });
-      if (target.channel !== identity.channel) await authorizePublicSlackThread(this.client, origin, target.channel);
+      const targetMetadata = target.channel !== identity.channel ? await authorizePublicSlackThread(this.client, origin, target.channel) : undefined;
+      const names = new SlackDisplayNames(this.client, getSlackSearchActionToken(context));
+      const channelName = safeDisplayName(target.channel === identity.channel ? origin.channelName : targetMetadata?.name, getSlackSearchActionToken(context));
       const cursor = previous?.slackCursor;
       // Observed replies pages include the parent in addition to requested replies.
       // Reserve its slot on every page; the published response bound stays unchanged.
@@ -136,10 +139,22 @@ export class SlackReader {
           usedCursors: [...(previous?.usedCursors ?? []), next] });
       }
       if (parsed.data.cursor) this.cursors.delete(parsed.data.cursor);
+      await names.enrich(messages);
+      if (channelName) for (const message of messages) message.channelName = channelName;
       const complete = !hasMore && !lossy && (kind !== "thread" || seen.size === rootReplyCount! + 1);
-      return { status: "ok", message: complete ? "조회 범위를 모두 읽었습니다." : "부분 조회입니다. 다음 페이지·메시지 잘림·누락 가능성을 확인해주세요.",
-        source: { channel: target.channel, ...(target.threadTs ? { threadTs: target.threadTs } : {}) },
+      const output: ReadResult = { status: "ok", message: complete ? "조회 범위를 모두 읽었습니다." : "부분 조회입니다. 다음 페이지·메시지 잘림·누락 가능성을 확인해주세요.",
+        source: { channel: target.channel, ...(channelName ? { channelName } : {}), ...(target.threadTs ? { threadTs: target.threadTs } : {}) },
         messages, page, nextCursor, complete, truncated: !complete, limits };
+      // Account for the entire escaped/redacted envelope, not just message bodies.
+      for (let i = messages.length - 1; Buffer.byteLength(JSON.stringify(output)) > limits.maxPageBytes && i >= 0; i--) {
+        const excess = Buffer.byteLength(JSON.stringify(output)) - limits.maxPageBytes + 512;
+        messages[i].text = jsonTextPrefix(messages[i].text, Math.max(0, Buffer.byteLength(JSON.stringify(messages[i].text)) - 2 - excess));
+        messages[i].textTruncated = true; output.complete = false; output.truncated = true;
+        output.message = "부분 조회입니다. 본문 잘림이 있습니다.";
+        if (nextCursor) this.cursors.get(nextCursor)!.lossy = true;
+      }
+      if (Buffer.byteLength(JSON.stringify(output)) > limits.maxPageBytes) unavailable();
+      return output;
     } catch (error) {
       return errorResult(error);
     }

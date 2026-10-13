@@ -4,6 +4,9 @@ oauth_config:
   scopes:
     bot:
       - reactions:read
+      # Optional display names for thread/read/search authors (bot credential only).
+      # Apply manually and reinstall the existing app; missing scope is nonfatal.
+      - users:read
 
 settings:
   event_subscriptions:
