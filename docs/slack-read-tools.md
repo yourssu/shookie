@@ -49,6 +49,8 @@ SDK timeout 10초, `retryConfig: { retries: 0 }`, `rejectRateLimitedCalls: true`
 6. 실제 검색 match의 필수 C형 channel_id/team_id와 추가 scope aliases를 모두 검증한다. primary team은 trusted team과 exact 일치, scoped channel은 explicit target과 exact 일치해야 한다. message.channel은 origin이 아닌 실제 결과 채널이다. context before/after는 공식 schema상 channel/team을 생략하고 검증된 parent match의 scope를 상속한다. 명시적 channel_id/channel/team_id/team이 있으면 모두 일치해야 한다. 잘못된 match/context scope를 조용히 버리고 나머지를 반환하지 않고 **그 페이지 전체를 실패**시킨다. 다른 content types, 잘못된 ts/순서/permalink도 실패한다.
 7. 반환 bot actors/원문은 비신뢰 데이터이며 인증/승인 역할로 승격하지 않는다. SDK/도구 errors는 sanitized status/한국어 안내만 반환한다. handler는 Slack tool args/results/cursors를 debug 및 DB tool-call 로그에서 redacted 처리하고 해당 응답 preview도 INFO에 남기지 않는다. 기존 일반 conversation 저장/답변 정책은 유지한다.
 
+표시 이름(선택): 자동 스레드 및 명시적 channel/thread/search 읽기는 동일 bot credential의 `users.info`로 display_name → real_name → name만 사용합니다. user 없는 bot 작성자에만 `bots.info`를 사용합니다. `users:read`는 기존 설치 scope에 수동 병합 후 재설치해야 적용됩니다 ([기존 manifest 조각](./slack-event-attendance-manifest.yml)); 이 변경은 실제 설치/배포를 수행하지 않습니다. missing_scope·조회 실패·750ms 예산 초과는 참여자/봇/이 봇으로 표시하며 허용된 읽기를 거부하지 않습니다. 호출당 최대 20개 lookup, 동시 1개, 요청 로컬 중복 제거만 사용하며 사용자 OAuth/global profile cache는 없습니다. 채널명은 검증된 ID의 conversations.info에서만 가져옵니다. 이름은 비신뢰 표시 전용이며 도구 주소·권한·멘션 근거가 아닙니다. 일반 요약은 요청 내용/작성자/의견 차이에 집중하고 raw ID/ts/진단 덤프/봇 진행·오류 대화록을 생략합니다. 명시적 진단은 필요한 ID를 포함할 수 있습니다.
+
 최소 read scope: 현재 public에는 `channels:history` + `channels:read`, private 읽기에는 `groups:history` + `groups:read`, bot DM 읽기에는 `im:history` + `im:read`. 읽기 scope가 검색 private/DM 지원을 부여하지 않는다. 파일 scope/metadata/download는 이 모듈의 도구 범위가 아니다.
 
 ## 입력 / 출력 / pagination

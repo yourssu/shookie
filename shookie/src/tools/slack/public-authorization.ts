@@ -37,8 +37,8 @@ export async function verifyPublicSlackChannel(client: SlackReadClient, origin: 
 /** Conservative bot-native full-thread policy, separate from native RTS search permission.
  * Live bounded requester membership on EVERY page; no snippets/capabilities/auto-join fallback.
  */
-export async function authorizePublicSlackThread(client: SlackReadClient, origin: CurrentSlackAccess, id: string): Promise<void> {
-  await verifyPublicSlackChannel(client, origin, id);
+export async function authorizePublicSlackThread(client: SlackReadClient, origin: CurrentSlackAccess, id: string): Promise<{ name?: string }> {
+  const metadata = await verifyPublicSlackChannel(client, origin, id);
   try {
     let cursor: string | undefined;
     const seen = new Set<string>();
@@ -48,7 +48,7 @@ export async function authorizePublicSlackThread(client: SlackReadClient, origin
       if (!Array.isArray(members.members) || members.members.length > 200 ||
           members.members.some(member => !/^[UW][A-Z0-9]{1,63}$/.test(member)) ||
           members.response_metadata?.warnings?.length || (members as { warning?: string }).warning) unavailable();
-      if (members.members.includes(origin.identity.userId)) return;
+      if (members.members.includes(origin.identity.userId)) return metadata;
       const next = members.response_metadata?.next_cursor?.trim();
       if (!next || seen.has(next)) deny();
       seen.add(next); cursor = next;

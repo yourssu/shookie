@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { SlackDisplayNames } from "./display-names.js";
 import type { SlackReadClient } from "./client.js";
 import { authorizeCurrentSlackChannel, requireSlackReadIdentity } from "./authorization.js";
 import { getSlackSearchActionToken } from "./context.js";
@@ -289,6 +290,7 @@ export class SlackSearcher {
         projected.set(key, message); // primary wins; context keeps its first representative relation
       }
       const messages = [...projected.values()];
+      await new SlackDisplayNames(this.client, actionToken).enrich(messages);
       const next = data.response_metadata?.next_cursor?.trim() || data.next_cursor?.trim();
       if (data.response_metadata?.next_cursor && data.next_cursor && data.response_metadata.next_cursor !== data.next_cursor) unavailable();
       if (next && (next === previous?.cursor || previous?.used.includes(next))) unavailable();
