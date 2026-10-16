@@ -1,16 +1,12 @@
 import { executionSignal } from "../../cancellation/execution-context.js";
 import { MAX_LIMIT, queryEventsSchema, type PostHogResult } from "./schemas.js";
+import { fetchPostHogRegistry, posthogRegistryConfig, PostHogRegistryError, selectProject, type PostHogRegistryConfig, type RegisteredPostHogProject } from "./registry.js";
 
 const API = "https://app.posthog.com/api";
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 export const MAX_RESULT_BYTES = 24 * 1024;
 const MAX_DATA_BYTES = 12 * 1024;
 type Page = { limit?: number; continuation?: string };
-export interface PostHogClientEntry {
-  name: string;
-  projectId: string;
-  description: string;
-}
 class ResponseFailure extends Error {
   constructor(public code: string) { super(code); }
 }
@@ -218,21 +214,29 @@ function mask(value: unknown, depth = 0, credential?: string): unknown {
   }
   return value;
 }
+/**
+ * Registry-backed authorization. There is intentionally no synchronous/static getClient:
+ * every action fetches the current Radar catalog and binds the request to the registered
+ * numeric project ID before any PostHog request is made. Clients are never cached.
+ */
 export class PostHogClientManager {
-  private clients = new Map<string, PostHogClient>();
-  constructor(apiKey: string, private entries: PostHogClientEntry[]) {
-    if (!entries.length) throw new Error("PostHogClientManager는 최소 1개의 entries가 필요합니다");
-    for (const e of entries) {
-      if (!e.name || e.name.length > 100) throw new Error("잘못된 PostHog 프로젝트 이름");
-      this.clients.set(e.name, new PostHogClient(apiKey, e.projectId, e.name));
-    }
+  constructor(private apiKey: string, private registry: PostHogRegistryConfig, private registryFetcher?: typeof fetch) {
+    if (!apiKey) throw new Error("PostHog API key required");
+    if (!registry || !posthogRegistryConfig(registry.apiUrl, registry.apiKey)) throw new Error("PostHog registry required");
   }
-  getClient(projectName?: string): PostHogClient {
-    const client = this.clients.get(projectName ?? this.getDefaultName());
-    if (!client) throw new Error("알 수 없는 PostHog 프로젝트");
-    return client;
+  /** Fresh current catalog (no positive cache); throws PostHogRegistryError on any failure. */
+  listProjects(signal?: AbortSignal) {
+    return fetchPostHogRegistry(this.registry, { signal, fetcher: this.registryFetcher, secrets: [this.apiKey] });
   }
-  getProjectNames() { return this.entries.map(p => p.name); }
-  getProjectCatalog() { return this.entries.map(p => `- **${p.name}**: ${p.description}`).join("\n"); }
-  getDefaultName() { return this.entries[0].name; }
+  async authorize(projectName: string | undefined, signal?: AbortSignal): Promise<
+    { status: "selected"; client: PostHogClient; project: RegisteredPostHogProject; implicit: boolean } |
+    { status: "error"; code: string; message: string; retryable: boolean }> {
+    let catalog: RegisteredPostHogProject[];
+    try { catalog = await this.listProjects(signal); }
+    catch (e) { return { status: "error", code: "registry_unavailable", message: e instanceof PostHogRegistryError ? e.message : new PostHogRegistryError().message, retryable: true }; }
+    const selection = selectProject(catalog, projectName);
+    if (selection.status === "error") return { ...selection, retryable: false };
+    return { status: "selected", project: selection.project, implicit: selection.implicit,
+      client: new PostHogClient(this.apiKey, selection.project.projectId, selection.project.name) };
+  }
 }
