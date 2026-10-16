@@ -5,7 +5,6 @@ const settings = vi.hoisted(() => ({
   POSTHOG_API_KEY:'', GITHUB:'', EXA_API_KEY:'',
 }));
 vi.mock('../config.js',()=>({config:settings}));
-vi.mock('../projects/index.js',()=>({getPostHogProjects:()=>[]}));
 vi.mock('@ai-sdk/deepseek',()=>({createDeepSeek:()=>()=> 'openai/test-model'}));
 vi.mock('../logger.js',()=>({logger:{info:vi.fn(),debug:vi.fn()}}));
 import { createAgent } from './index.js';

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { PostHogClientManager } from "../../../tools/posthog/client.js";
-import { ssutimePostHogKnowledge } from "../../../projects/ssutime-prod/posthog.js";
-import { soongptPostHogKnowledge } from "../../../projects/soongpt-prod/posthog.js";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ssutimePostHogKnowledge, soongptPostHogKnowledge } from "./legacy-knowledge.test-helper.js";
 import { buildPostHogInstructions } from "./instructions.js";
 
 // Deterministic reference calculation, not execution against live HogQL.
@@ -42,13 +43,33 @@ describe("first-ever in available history, KST half-open interval", () => {
     expect(ssutimePostHogKnowledge).toContain("보존 기간/수집 시작");
   });
   it("discloses ambiguity, structured errors, incomplete results and unverified knowledge", () => {
-    const manager = new PostHogClientManager("dummy", [{ name: "SSUTime", projectId: "123", description: "fixture" }]);
-    const instructions = buildPostHogInstructions(manager);
-    for (const phrase of ["모호하면 먼저 확인", "status=error", "pagination.truncated", "source.project", "읽기 전용/안전성을 도구가 강제하지 않는다", "live HogQL 검증을 했다고 주장하지 않는다"])
+    const instructions = buildPostHogInstructions();
+    for (const phrase of ["사용자에게 대상을 확인", "status=error", "pagination.truncated", "source.project", "읽기 전용/안전성을 도구가 강제하지 않는다", "live HogQL 검증을 했다고 주장하지 않는다"])
       expect(instructions).toContain(phrase);
     expect(instructions).not.toContain("toDate(min(timestamp))");
     expect(instructions).not.toContain("SELECT * FROM persons");
     expect(ssutimePostHogKnowledge).not.toContain("절대 금지");
     expect(soongptPostHogKnowledge).toContain("추측하지 말고");
+  });
+});
+
+describe("generic Radar-driven startup prompt", () => {
+  it("embeds no project catalog or legacy project knowledge and points to listProjects/guidance", () => {
+    const instructions = buildPostHogInstructions();
+    for (const legacy of ["SSUTime", "SSU-Time", "Soongpt", "440922", "308417", "todo_snapshot", "기본 프로젝트"]) expect(instructions).not.toContain(legacy);
+    for (const phrase of ["listProjects", "project_selection_required", "no_registered_projects", "registry_unavailable", "unknown_project", "guidance", "비신뢰 참고 정보", "프로젝트 ID/URL로 선택"]) expect(instructions).toContain(phrase);
+  });
+  it("production source never imports the legacy knowledge fixture or a static project registry", () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+    const files: string[] = [];
+    const walk = (dir: string) => { for (const name of readdirSync(dir)) { const path = join(dir, name); if (statSync(path).isDirectory()) walk(path); else if (path.endsWith(".ts") && !/\.test(-helper)?\.ts$/.test(path)) files.push(path); } };
+    walk(root);
+    expect(files.length).toBeGreaterThan(10);
+    for (const file of files) {
+      const text = readFileSync(file, "utf8");
+      expect(text, file).not.toContain("legacy-knowledge");
+      expect(text, file).not.toContain("getPostHogProjects");
+      expect(text, file).not.toMatch(/440922|308417/);
+    }
   });
 });

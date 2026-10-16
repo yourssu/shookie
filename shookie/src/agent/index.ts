@@ -4,7 +4,7 @@ import { createMainShookieAgent } from "./agents/main-shookie/index.js";
 import { createPostHogAgent } from "./agents/posthog/index.js";
 import { createCodeExplorerAgent } from "./agents/code-explorer/index.js";
 import { PostHogClientManager } from "../tools/posthog/client.js";
-import { getPostHogProjects } from "../projects/index.js";
+import { posthogRegistryConfig } from "../tools/posthog/registry.js";
 import { registryConfig } from "../tools/code-explorer/registry.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -27,18 +27,14 @@ export function createAgent(options: { slackClient?: SlackReadClient & Partial<P
 
   const subAgents: { posthog?: Agent; codeExplorer?: Agent } = {};
 
-  const phProjects = getPostHogProjects();
-  if (phProjects.length > 0 && config.POSTHOG_API_KEY) {
-    const entries = phProjects.map((p) => ({
-      name: p.displayName,
-      projectId: p.posthog.projectId,
-      description: p.description,
-    }));
-    const phManager = new PostHogClientManager(config.POSTHOG_API_KEY, entries);
+  // Startup only validates configuration; it never fetches the project catalog/guidance.
+  const posthogRegistry = posthogRegistryConfig(config.RADAR_POSTHOG_REGISTRY_API_URL ?? "", config.SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY ?? "");
+  if (config.POSTHOG_API_KEY && posthogRegistry) {
+    const phManager = new PostHogClientManager(config.POSTHOG_API_KEY, posthogRegistry);
     subAgents.posthog = createPostHogAgent(phManager, model);
-    logger.info(`PostHog 서브 에이전트 등록 완료 (프로젝트: ${phManager.getProjectNames().join(", ")})`);
+    logger.info("PostHog 서브 에이전트 등록 완료 (프로젝트는 Radar 등록 정보를 매 동작 조회)");
   } else {
-    logger.info("PostHog 설정이 없어 서브 에이전트를 등록하지 않습니다");
+    logger.info("PostHog API 키 또는 Radar PostHog 프로젝트 등록 API 설정이 없어 PostHog 서브 에이전트를 비활성화합니다");
   }
 
   const githubRegistry = registryConfig(config.RADAR_GITHUB_REGISTRY_API_URL ?? "", config.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY ?? "");
