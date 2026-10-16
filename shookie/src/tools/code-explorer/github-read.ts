@@ -140,7 +140,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
   const url = buildReadUrl(config, input);
   const token = config.readOnlyToken || config.gitHubToken;
   if (!token) throw new Error("credential required");
-  for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
+  for (const secret of [config.gitHubToken, config.readOnlyToken, config.registry?.apiKey].filter(Boolean) as string[]) {
     if (url.toString().includes(secret) || url.toString().includes(encodeURIComponent(secret))) throw new Error("secret in source");
   }
   const controller = new AbortController();

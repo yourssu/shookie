@@ -58,6 +58,7 @@ describe("fail-closed Radar registry", () => {
     const cfg = { owner: "YOURSSU", gitHubToken: "github-secret", registry: config };
     for (const operation of ["repository", "tree", "file", "history", "pull_requests", "pull_request", "issues", "issue"]) await expect(readGithub(cfg, { operation, repo: "unknown", ref: "main" })).rejects.toThrow();
     expect(fetcher.mock.calls.every(c => c[0] === config.apiUrl)).toBe(true);
+    await expect(readGithub(cfg, { operation: "file", repo: "allowed", path: config.apiKey })).rejects.toThrow("secret in source");
     const first = await readGithub(cfg, { operation: "repository", repo: "ALLOWED" });
     expect(first.repositoryGuidance?.repository.instructions).toBe(repo.instructions);
     repositories = [{ ...repo, instructions: `updated ${config.apiKey} github-secret` }];
