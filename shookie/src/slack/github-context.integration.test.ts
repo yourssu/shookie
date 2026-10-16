@@ -39,8 +39,11 @@ function harness(options: { spoofToolIdentity?: boolean; dropDelegatedActor?: bo
   const fetcher = vi.fn(async (_url: Parameters<typeof fetch>[0], _init?: RequestInit) => new Response(JSON.stringify({
     name: "allowed", full_name: "yourssu/allowed", owner: { login: "yourssu" },
   })));
+  const registry = { apiUrl: "https://radar.test/internal/v1/shookie/github/repositories", apiKey: "dedicated-test-registry-key" };
+  const original = fetcher.getMockImplementation()!;
+  fetcher.mockImplementation(async (url, init) => String(url) === registry.apiUrl ? new Response(JSON.stringify({ repositories: [{ id: "12345678-1234-4234-8234-123456789abc", owner: "yourssu", name: "allowed", instructions: "", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }] })) : original(url, init));
   vi.stubGlobal("fetch", fetcher);
-  const read = createCodeExplorerTools({ owner: "yourssu", repositories: ["allowed"], gitHubToken: "dummy-integration-token",
+  const read = createCodeExplorerTools({ owner: "yourssu", registry, gitHubToken: "dummy-integration-token",
     workspaceBasePath: fixture.workspace, workspaceMaxGb: 1 }).github_read;
   let toolResult: unknown;
   const seenContexts: RequestContext[] = [];
@@ -75,7 +78,9 @@ describe("registered Slack handler → main delegation → real github_read", ()
     const h = harness(); await h.deliver(team);
     expect(h.stream).toHaveBeenCalledTimes(1); expect(h.generate).toHaveBeenCalledTimes(1);
     expect(h.result()).toMatchObject({ repo: "allowed", complete: true });
-    expect(h.fetcher).toHaveBeenCalledExactlyOnceWith(expect.any(URL), expect.objectContaining({ method: "GET", redirect: "error" }));
+    expect(h.fetcher).toHaveBeenCalledTimes(2);
+    expect(h.fetcher).toHaveBeenNthCalledWith(1, "https://radar.test/internal/v1/shookie/github/repositories", expect.objectContaining({ headers: { "X-API-Key": "dedicated-test-registry-key", Accept: "application/json" } }));
+    expect(h.fetcher).toHaveBeenNthCalledWith(2, expect.any(URL), expect.objectContaining({ method: "GET", redirect: "error" }));
     expect(["channel", "threadTs", "userId", "teamId", "requestId"].map(k => h.seenContexts[0].get(k)))
       .toEqual(["C1", "123.456", "U1", team, "slack-event:github-integration"]);
     expect(h.repository.complete).toHaveBeenCalledTimes(1);

@@ -2,11 +2,12 @@ import { executionTools } from "../../../cancellation/execution-context.js";
 import { createGithubReadTool } from "../../../tools/code-explorer/github-read.js";
 import { createRepositoryTools } from "../../../tools/code-explorer/repository-tools.js";
 
+import type { RegistryConfig } from "../../../tools/code-explorer/registry.js";
 export interface CodeExplorerConfig {
+  registry: RegistryConfig;
   gitHubToken: string;
   readOnlyToken?: string;
   owner: string;
-  repositories?: string[];
   workspaceBasePath: string;
   workspaceMaxGb: number;
 }

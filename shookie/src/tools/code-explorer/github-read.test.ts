@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { buildReadUrl, readInput, readGithub, READ_TIMEOUT_MS, createGithubReadTool } from "./github-read.js";
+import { registryFixture, registryResponse } from "./registry-fixture.test-helper.js";
 const config = { owner: "yourssu", gitHubToken: "dummy-secret", repositories: ["allowed"] };
 const mock = (data: unknown, headers = {}) => vi.fn().mockResolvedValue(new Response(JSON.stringify(data), { headers }));
 const sha = "a".repeat(40);
@@ -31,7 +32,7 @@ describe("fixed-host read boundary", () => {
     { operation: "push" }, { operation: "api" }, { operation: "clone" }, { operation: "repository", repo: "other" },
     { operation: "file", repo: "allowed", path: "../secret" }, { operation: "file", repo: "allowed", path: "/etc/passwd" },
     { operation: "tree", repo: "allowed", ref: "-c" }, { operation: "tree", repo: "allowed", ref: "https://evil.test" },
-    { operation: "repository", repo: "allowed", args: ["-C", "/tmp"] }, { operation: "repositories", page: 101 },
+    { operation: "repository", repo: "allowed", args: ["-C", "/tmp"] }, { operation: "repositories", page: 1001 },
     { operation: "repository", repo: "allowed", url: "https://evil.test" }, { operation: "file", repo: "allowed", path: "a\\b" },
   ])("refuses unsupported/malicious input %#", async input => {
     const fetcher = mock({}); await expect(readGithub(config, input, fetcher)).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled();
@@ -63,11 +64,11 @@ describe("fixed-host read boundary", () => {
     expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
   });
   it("accepts the trusted shared context without caller identity arguments", async () => {
-    const fetcher = mock(repo); vi.stubGlobal("fetch", fetcher);
+    const fetcher = mock(repo).mockImplementationOnce(async () => registryResponse()); vi.stubGlobal("fetch", fetcher);
     const ids: Record<string, string> = { channel: "C1", threadTs: "123.456", userId: "U1", teamId: "T1", requestId: "req-1" };
     try {
-      const result = await createGithubReadTool(config).execute!({ operation: "repository", repo: "allowed", page: 1, perPage: 20 }, { requestContext: { get: (key: string) => ids[key] } } as never);
-      expect(result).toHaveProperty("repo", "allowed"); expect(fetcher).toHaveBeenCalledTimes(1);
+      const result = await createGithubReadTool({ ...config, registry: registryFixture }).execute!({ operation: "repository", repo: "allowed", page: 1, perPage: 20 }, { requestContext: { get: (key: string) => ids[key] } } as never);
+      expect(result).toHaveProperty("repo", "allowed"); expect(fetcher).toHaveBeenCalledTimes(2);
     } finally { vi.unstubAllGlobals(); }
   });
   it("applies the same deadline to response-body stalls", async () => {
@@ -112,7 +113,7 @@ describe("fixed-host read boundary", () => {
     const fetcher = mock({ ...file(), encoding: "none", content: "dummy-secret", size: 2000000 }); vi.stubGlobal("fetch", fetcher);
     const ids: Record<string, string> = { channel: "C1", threadTs: "123.456", userId: "U1", requestId: "req-1" };
     try {
-      const result = await createGithubReadTool(config).execute!({ operation: "file", repo: "allowed", path: "src/a b.ts", page: 1, perPage: 20 }, { requestContext: { get: (key: string) => ids[key] } } as never);
+      const result = await createGithubReadTool({ ...config, registry: registryFixture }).execute!({ operation: "file", repo: "allowed", path: "src/a b.ts", page: 1, perPage: 20 }, { requestContext: { get: (key: string) => ids[key] } } as never);
       expect(result).toHaveProperty("error"); expect(result).not.toHaveProperty("data");
       expect(JSON.stringify(result)).not.toContain("dummy-secret");
     } finally { vi.unstubAllGlobals(); }
@@ -120,7 +121,7 @@ describe("fixed-host read boundary", () => {
   it("fails closed with old/missing context before network", async () => {
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     try {
-      const tool = createGithubReadTool(config);
+      const tool = createGithubReadTool({ ...config, registry: registryFixture });
       const result = await tool.execute!({ operation: "repositories", page: 1, perPage: 20 }, {} as never);
       expect(result).toHaveProperty("error"); expect(fetcher).not.toHaveBeenCalled();
     } finally { vi.unstubAllGlobals(); }

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildCodeExplorerInstructions } from "./instructions.js";
 import { createCodeExplorerTools } from "./tools.js";
 import { createCodeExplorerAgent } from "./index.js";
-const config = { owner: "yourssu", gitHubToken: "dummy-token", workspaceBasePath: "/tmp/unused", workspaceMaxGb: 1 };
+import { registryFixture } from "../../../tools/code-explorer/registry-fixture.test-helper.js";
+const config = { registry: registryFixture, owner: "yourssu", gitHubToken: "dummy-token", workspaceBasePath: "/tmp/unused", workspaceMaxGb: 1 };
 describe("read-only capability wiring", () => {
   it("exposes API and controlled snapshot reads without automatic workspace", async () => {
     expect(Object.keys(createCodeExplorerTools(config))).toEqual(["github_read", "repo_clone", "repo_list_files", "repo_read_file", "repo_search"]);

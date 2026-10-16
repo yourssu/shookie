@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { RepositorySnapshots, SNAPSHOT_LIMITS, repositoryPath, repositoryRef, type CloneTransport } from "./repository-snapshots.js";
+import { registryFixture, registeredFixture } from "./registry-fixture.test-helper.js";
 import { isolatedGitEnv, runBoundedProcess } from "./git-process.js";
 
 const actor = { userId: "U1", channel: "C1", threadTs: "123.456", requestId: "req-1", teamId: "T1" };
@@ -41,9 +42,26 @@ beforeEach(async () => {
   await git(["-C", fixture, "update-index", "--add", "--cacheinfo", "160000", sha, "gitlink"]);
   await git(["-C", fixture, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "gitlink"]);
 });
-afterEach(async () => { await rm(base, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllGlobals(); await rm(base, { recursive: true, force: true }); });
 
 describe("real bare clone snapshots", () => {
+  it("revalidates live registry on clones and existing snapshot list/read/search, delivering updated guidance", async () => {
+    let repositories = [{ ...registeredFixture, owner: "example", name: "sample" }];
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ repositories })));
+    vi.stubGlobal("fetch", fetcher);
+    const m = new RepositorySnapshots({ owner: "example", registry: registryFixture, gitHubToken: "dummy-read-token", workspaceBasePath: workspace, workspaceMaxGb: 1 }, fixtureTransport);
+    await expect(m.clone({ repo: "other" }, context())).rejects.toThrow();
+    const s = await m.clone({ repo: "sample" }, context());
+    expect(s.repositoryGuidance?.repository.instructions).toBe("repo guidance");
+    repositories[0].instructions = "updated scoped guidance";
+    for (const result of [await m.list(s.snapshotId, context()), await m.read(s.snapshotId, context(), "code.ts"), await m.search(s.snapshotId, context(), "needle")]) {
+      expect(result.repositoryGuidance?.repository.instructions).toBe("updated scoped guidance");
+    }
+    repositories = [];
+    for (const action of [() => m.clone({ repo: "sample" }, context()), () => m.list(s.snapshotId, context()), () => m.read(s.snapshotId, context(), "code.ts"), () => m.search(s.snapshotId, context(), "needle")]) await expect(action()).rejects.toThrow();
+    fetcher.mockRejectedValue(new Error("dedicated-test-registry-key"));
+    await expect(m.list(s.snapshotId, context())).rejects.toThrow("등록 저장소");
+  });
   it("clones once, pins commit, lists and reads/searches with provenance and states", async () => {
     const m = manager(), s = await m.clone({ repo: "sample", ref: "main" }, context());
     expect(s.commitSha).toMatch(/^[a-f0-9]{40}$/); expect(s.owner).toBe("example"); expect(s.ref).toBe("main");
@@ -117,7 +135,7 @@ describe("real bare clone snapshots", () => {
     }
     expect(matches).toEqual(Array.from({ length: 205 }, (_, i) => i + 1));
     expect((await m.search(s.snapshotId, context(), "needle.*")).matches).toEqual([]);
-  });
+  }, 15_000);
   it("reserves capacity across concurrent clones, preserves snapshots and local edits", async () => {
     let release!: () => void, started!: () => void;
     const begun = new Promise<void>(r => { started = r; }); const pause = new Promise<void>(r => { release = r; });

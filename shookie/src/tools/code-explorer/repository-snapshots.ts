@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { trustedActor } from "./workspace-manager.js";
 import type { ReadConfig } from "./github-read.js";
+import { authorizeRepository, redactRegistry } from "./registry.js";
 import { diskBytes, isolatedGitEnv, runBoundedProcess } from "./git-process.js";
 
 export const repositoryName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/).refine(v => v !== "." && v !== "..");
@@ -22,7 +23,7 @@ type Context = Parameters<typeof trustedActor>[0];
 type Actor = ReturnType<typeof trustedActor>;
 type Entry = { path: string; mode: string; type: string; oid: string };
 type Snapshot = { snapshotId: string; owner: string; repo: string; ref: string | null; commitSha: string;
-  dir: string; actor: Actor; entries: Entry[]; created: number; busy: boolean };
+  dir: string; actor: Actor; entries: Entry[]; created: number; busy: boolean; repositoryGuidance?: Awaited<ReturnType<typeof authorizeRepository>> };
 export interface SnapshotConfig extends ReadConfig { workspaceBasePath: string; workspaceMaxGb: number }
 export interface CloneRequest { url: string; destination: string; ref?: string; env: NodeJS.ProcessEnv;
   signal?: AbortSignal; monitor: () => Promise<void> }
@@ -70,15 +71,19 @@ export class RepositorySnapshots {
       for (const value of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"),
         Buffer.from(`x-access-token:${secret}`).toString("base64")]) text = text.split(value).join("[REDACTED]");
     }
-    return text;
+    return this.config.registry ? redactRegistry(text, this.config.registry) : text;
   }
   private source(s: Snapshot, path?: string) {
-    return { snapshotId: s.snapshotId, owner: s.owner, repo: s.repo, ref: s.ref, commitSha: s.commitSha, ...(path ? { path } : {}) };
+    return { repositoryGuidance: s.repositoryGuidance ? JSON.parse(this.redact(JSON.stringify(s.repositoryGuidance))) as typeof s.repositoryGuidance : undefined, snapshotId: s.snapshotId, owner: s.owner, repo: s.repo, ref: s.ref, commitSha: s.commitSha, ...(path ? { path } : {}) };
   }
   async clone(raw: { repo: string; ref?: string }, context: Context, signal?: AbortSignal) {
+    // Explicit static scope is only for low-level tests; production factories require registry.
+    if (!this.config.registry && !this.config.repositories) throw new Error("GitHub registry required");
     const actor = trustedActor(context), repo = repositoryName.parse(raw.repo), ref = raw.ref === undefined ? undefined : repositoryRef.parse(raw.ref);
     const owner = repositoryName.parse(this.config.owner);
     if (this.config.repositories && !this.config.repositories.some(r => r.toLowerCase() === repo.toLowerCase())) throw new Error("repository scope");
+    const repositoryGuidance = this.config.registry ? await authorizeRepository(this.config.registry, owner, repo, signal) : undefined;
+    if (repositoryGuidance) repositoryGuidance.repository.instructions = this.redact(repositoryGuidance.repository.instructions);
     const token = this.config.readOnlyToken || this.config.gitHubToken;
     if (!token || /[\r\n\x00]/.test(token)) throw new Error("credential required");
     const url = `https://github.com/${owner}/${repo}.git`;
@@ -117,19 +122,23 @@ export class RepositorySnapshots {
         return { mode: match[1], type: match[2], oid: match[3], path };
       });
       const s: Snapshot = { snapshotId: randomUUID(), owner, repo, ref: ref ?? null, commitSha,
-        dir: staging, actor, entries, created: Date.now(), busy: false };
+        dir: staging, actor, entries, repositoryGuidance, created: Date.now(), busy: false };
       this.snapshots.set(s.snapshotId, s);
       return { ...this.source(s), complete: true, truncated: false, next: null };
     } catch { await rm(staging, { recursive: true, force: true }); throw new Error("controlled clone failed"); }
     finally { this.reserved -= SNAPSHOT_LIMITS.reservationBytes; this.cloning--; }
   }
-  private async use<T>(id: string, context: Context, work: (s: Snapshot) => Promise<T>) {
+  private async use<T>(id: string, context: Context, work: (s: Snapshot) => Promise<T>, signal?: AbortSignal) {
     const actor = trustedActor(context), s = this.snapshots.get(snapshotIdSchema.parse(id));
     if (!s || actorKey(s.actor) !== actorKey(actor) || Date.now() - s.created > SNAPSHOT_LIMITS.ttlMs || s.busy) throw new Error("snapshot unavailable");
     s.busy = true;
-    try { return await work(s); } finally { s.busy = false; }
+    try {
+      s.repositoryGuidance = this.config.registry ? await authorizeRepository(this.config.registry, s.owner, s.repo, signal) : undefined;
+      if (s.repositoryGuidance) s.repositoryGuidance.repository.instructions = this.redact(s.repositoryGuidance.repository.instructions);
+      return await work(s);
+    } finally { s.busy = false; }
   }
-  async list(id: string, context: Context, offset = 0) {
+  async list(id: string, context: Context, offset = 0, signal?: AbortSignal) {
     z.number().int().min(0).max(100_000).parse(offset);
     return this.use(id, context, async s => {
       const entries: Entry[] = []; let end = offset, bytes = 0;
@@ -140,7 +149,7 @@ export class RepositorySnapshots {
       }
       const truncated = end < s.entries.length;
       return { ...this.source(s), files: entries, complete: !truncated, truncated, next: truncated ? end : null };
-    });
+    }, signal);
   }
   private async blob(s: Snapshot, entry: Entry, signal?: AbortSignal): Promise<{ state: string; text?: string }> {
     if (entry.type !== "blob" || !["100644", "100755"].includes(entry.mode)) return { state: "unsupported_symlink_or_gitlink" };
@@ -173,7 +182,7 @@ export class RepositorySnapshots {
       return { ...this.source(s, path), state: truncated && !output.length ? "large_line" : "text",
         lines: output, startLine, endLine: output.length ? end : null, complete: !truncated, truncated,
         next: truncated && output.length ? end + 1 : null };
-    });
+    }, signal);
   }
   async search(id: string, context: Context, literal: string, cursor = { fileIndex: 0, line: 1 }, signal?: AbortSignal) {
     z.string().min(1).max(200).refine(v => !/[\x00-\x1f\x7f]/.test(v)).parse(literal);
@@ -214,6 +223,6 @@ export class RepositorySnapshots {
       const truncated = index < s.entries.length;
       return { ...this.source(s), matches, skipped, complete: !truncated && skipped.length === 0,
         truncated, next: truncated ? { fileIndex: index, line: 1 } : null };
-    });
+    }, signal);
   }
 }

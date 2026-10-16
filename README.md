@@ -62,18 +62,15 @@ PostHog 분석 데이터 조회를 담당해요. 여러 프로젝트를 동시�
 
 ### Code Explorer
 
-GitHub 리포지토리 코드 탐색, 수정, PR 생성을 담당해요. 스레드별 격리된 워크스페이스에서 안전하게 동작합니다.
+고정 `GITHUB_OWNER`(기본 `yourssu`) 중 **Radar에 현재 등록된 저장소만 읽기 전용**으로 탐색해요. 수정·임의 명령·push·PR 생성/병합/삭제는 지원하지 않아요.
 
 | 도구 | 설명 |
 |---|---|
-| `run_authenticated` | git/gh CLI 명령 실행 (GitHub PAT 인증) |
-| `ensure_thread_workspace` | 스레드 워크스페이스 준비 |
-| `finish_thread_workspace` | 스레드 워크스페이스 정리 |
-| Workspace 파일 도구 | `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, `search` 등 (Mastra Workspace 자동 제공) |
+| `github_read` | Radar 등록 목록(지침 포함), GitHub 정보·구조·파일·이력·PR·이슈 조회 |
+| `repo_clone` | 사용자/스레드 전용 bare shallow snapshot 생성 |
+| `repo_list_files`, `repo_read_file`, `repo_search` | commit 고정 snapshot 목록·파일·literal 검색 |
 
-**워크플로우**: 워크스페이스 준비 → git clone → 코드 탐색/수정 → git push → PR 생성 → 워크스페이스 정리
-
-**보안**: `git`/`gh` 명령어만 허용하고, 워크스페이스 외부 접근을 차단하며, 환경변수 노출을 최소화해요.
+매 동작에서 Radar 등록을 새로 확인해요. 등록 삭제는 기존 snapshot도 즉시 다음 동작부터 차단하며, 응답의 최신 저장소별 지침은 시스템/보안 규칙보다 낮은 비신뢰 참고 자료예요. 설정 없음·빈 목록·API 실패는 접근 거부이고 조직 전체 접근으로 돌아가지 않아요. [배포/롤아웃 설정](docs/deployment.md#radar-github-등록-저장소)도 확인하세요.
 
 ## 모노레포 구조
 
@@ -96,7 +93,7 @@ shookie/
 │   │   │   └── soongpt-prod/
 │   │   ├── tools/
 │   │   │   ├── posthog/             # PostHog API 클라이언트 + 9개 도구
-│   │   │   └── code-explorer/       # git/gh CLI 실행 + 워크스페이스 관리
+│   │   │   └── code-explorer/       # 등록 저장소 읽기 전용 API + snapshot 탐색
 │   │   ├── slack/
 │   │   │   ├── handlers.ts          # @멘션/DM 이벤트 핸들러
 │   │   │   ├── thread-context.ts    # 스레드 세션 관리
@@ -141,7 +138,7 @@ yarn install
 
 # .env 파일 설정 (레포 루트 /.env)
 # 필수: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, LLM_API_KEY
-# 선택: POSTHOG_API_KEY, GITHUB (PAT, repo 권한 필요)
+# 선택: POSTHOG_API_KEY; Code Explorer는 GITHUB(PAT) + Radar 등록 API URL/전용 키 필요
 
 # 빌드
 yarn workspace database build
