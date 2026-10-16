@@ -1,3 +1,4 @@
+import { registryConfig } from "./tools/code-explorer/registry.js";
 import { z } from "zod";
 import { config as dotenvConfig } from "dotenv";
 import { resolve } from "path";
@@ -94,6 +95,8 @@ const envSchema = z.object({
   // GitHub (optional) — PAT, code-explorer에서 GH_TOKEN으로 사용
   GITHUB: z.string().default(""),
   GITHUB_OWNER: z.string().default("yourssu"),
+  RADAR_GITHUB_REGISTRY_API_URL: z.string().default(""),
+  SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY: z.string().default(""),
 
   // Thread Workspace
   THREAD_WORKSPACE_BASE_PATH: z.string().default("/tmp/shookie-workspaces"),
@@ -110,6 +113,8 @@ const envSchema = z.object({
 });
 
 export const config = envSchema.parse(process.env);
+
+export const githubRegistry = registryConfig(config.RADAR_GITHUB_REGISTRY_API_URL, config.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY);
 
 export function getMeetingReminderConfig() {
   const apiUrl = config.RADAR_MEETING_REMINDER_API_URL.trim();

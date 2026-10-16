@@ -15,6 +15,7 @@ const fixture = vi.hoisted(() => ({ source: '', home: '', transport: undefined a
   networkCalls: [] as {url:string;headers:Record<string,string>;method:string;body?:string}[],
   settings: { LLM_API_KEY:'synthetic-llm', LLM_BASE_URL:'https://api.deepseek.com', LLM_MODEL:'deepseek-flash', POSTHOG_API_KEY:'',
     GITHUB:'synthetic-github', GITHUB_OWNER:'example', EXA_API_KEY:'synthetic-exa',
+    RADAR_GITHUB_REGISTRY_API_URL:'https://radar.test/internal/v1/shookie/github/repositories', SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY:'dedicated-test-registry-key',
     MAX_TOOL_ITERATIONS:8, THREAD_WORKSPACE_BASE_PATH:'', THREAD_WORKSPACE_MAX_GB:1 },
 }));
 vi.mock('../config.js',()=>({config:fixture.settings}));
@@ -51,9 +52,12 @@ import { registerHandlers } from '../slack/handlers.js';
 let base:string;
 const git=(args:string[])=>runBoundedProcess('/usr/bin/git',args,{env:{...isolatedGitEnv(fixture.home),GIT_ALLOW_PROTOCOL:'file'},timeoutMs:5000,maxOutputBytes:1024*1024});
 beforeEach(async()=>{
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ repositories: [{ id: '12345678-1234-4234-8234-123456789abc', owner: 'example', name: 'sample', instructions: 'scoped guidance', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }] }))));
   base=await mkdtemp(join(tmpdir(),'combined-web-clone-'));fixture.home=join(base,'home');fixture.source=join(base,'source');fixture.settings.THREAD_WORKSPACE_BASE_PATH=join(base,'workspace');
   await mkdir(fixture.home);await mkdir(fixture.source);await mkdir(fixture.settings.THREAD_WORKSPACE_BASE_PATH);
   fixture.settings.EXA_API_KEY='synthetic-exa';fixture.networkCalls=[];
+  fixture.settings.RADAR_GITHUB_REGISTRY_API_URL='https://radar.test/internal/v1/shookie/github/repositories';
+  fixture.settings.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY='dedicated-test-registry-key';
   await git(['init','--initial-branch=main','--',fixture.source]);
   await writeFile(join(fixture.source,'code.ts'),'hello combined needle\nsecond line\n');
   await git(['-C',fixture.source,'add','--all']);await git(['-C',fixture.source,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','local fixture']);
@@ -124,6 +128,16 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     expect(fixture.networkCalls[0].headers['x-api-key']).toBeUndefined();
     const fetched=await noKeyTools.web_fetch!.execute!({url:'https://public-source.org/read',maxChars:1000} as never,{} as never);
     expect(fetched).toMatchObject({ok:true,evidence:'fetched_text'});
+  });
+  it('disables explorer with token-only configuration rather than falling back to organization access',async()=>{
+    fixture.settings.RADAR_GITHUB_REGISTRY_API_URL='';
+    fixture.settings.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY='';
+    const tools=await createAgent().listTools();
+    expect(tools.code_explorer_agent).toBeUndefined();
+  });
+  it('rejects partial registry configuration at production factory',()=>{
+    fixture.settings.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY='';
+    expect(()=>createAgent()).toThrow();
   });
   it('forwards trusted Slack actor through real main delegate to clone/list/read/search while web is usable',async()=>{
     const h=await harness();await h.deliver();

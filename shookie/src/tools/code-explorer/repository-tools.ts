@@ -2,10 +2,12 @@ import { createTool } from "@mastra/core/tools";
 import { executionSignal } from "../../cancellation/execution-context.js";
 import { z } from "zod";
 import { RepositorySnapshots, repositoryName, repositoryRef, repositoryPath, snapshotIdSchema, type SnapshotConfig } from "./repository-snapshots.js";
+import type { RegistryConfig } from "./registry.js";
 const snapshot = z.object({ snapshotId: snapshotIdSchema });
 const cursor = z.object({ fileIndex: z.number().int().min(0).max(100_000), line: z.number().int().min(1).max(1_000_001) }).strict();
-const failure = { error: "신뢰된 요청 정보·저장소 범위·snapshot 소유권·입력·용량을 확인하세요. 읽기 전용 저장소 탐색에 실패했습니다. 기존 작업은 삭제하지 않았습니다." };
-export function createRepositoryTools(config: SnapshotConfig) {
+const failure = { error: "Radar 등록 저장소 설정·신뢰된 요청 정보·저장소 범위·snapshot 소유권·입력·용량을 확인하세요. 읽기 전용 저장소 탐색에 실패했습니다. 기존 작업은 삭제하지 않았습니다." };
+export function createRepositoryTools(config: SnapshotConfig & { registry: RegistryConfig }) {
+  if (!config.registry) throw new Error("GitHub registry required");
   const manager = new RepositorySnapshots(config);
   return {
     repo_clone: createTool({
@@ -19,7 +21,7 @@ export function createRepositoryTools(config: SnapshotConfig) {
       id: "repo-list-files", description: "현재 사용자/스레드 소유 snapshot의 commit 고정 파일 목록과 mode/blob SHA를 조회합니다. next offset으로 이어서 조회합니다. symlink/gitlink는 읽거나 따라가지 않습니다.",
       inputSchema: snapshot.extend({ offset: z.number().int().min(0).max(100_000).default(0) }).strict(),
       execute: async (input, context) => {
-        try { return await manager.list(input.snapshotId, context?.requestContext, input.offset); } catch { return failure; }
+        try { return await manager.list(input.snapshotId, context?.requestContext, input.offset, executionSignal(context?.abortSignal)); } catch { return failure; }
       },
     }),
     repo_read_file: createTool({

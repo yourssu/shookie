@@ -5,6 +5,7 @@ import { createPostHogAgent } from "./agents/posthog/index.js";
 import { createCodeExplorerAgent } from "./agents/code-explorer/index.js";
 import { PostHogClientManager } from "../tools/posthog/client.js";
 import { getPostHogProjects } from "../projects/index.js";
+import { registryConfig } from "../tools/code-explorer/registry.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import type { Agent } from "@mastra/core/agent";
@@ -40,8 +41,10 @@ export function createAgent(options: { slackClient?: SlackReadClient & Partial<P
     logger.info("PostHog 설정이 없어 서브 에이전트를 등록하지 않습니다");
   }
 
-  if (config.GITHUB) {
+  const githubRegistry = registryConfig(config.RADAR_GITHUB_REGISTRY_API_URL ?? "", config.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY ?? "");
+  if (config.GITHUB && githubRegistry) {
     subAgents.codeExplorer = createCodeExplorerAgent(model, {
+      registry: githubRegistry,
       gitHubToken: config.GITHUB,
       owner: config.GITHUB_OWNER,
       workspaceBasePath: config.THREAD_WORKSPACE_BASE_PATH,
@@ -49,7 +52,7 @@ export function createAgent(options: { slackClient?: SlackReadClient & Partial<P
     });
     logger.info("Code Explorer 서브 에이전트 등록 완료");
   } else {
-    logger.info("GitHub 토큰이 없어 Code Explorer 서브 에이전트를 등록하지 않습니다");
+    logger.info("GitHub 토큰 또는 Radar 등록 저장소 API 설정이 없어 Code Explorer를 비활성화합니다. 관리자에게 설정을 요청하세요");
   }
 
   // Dedicated bot-only read client: no user-OAuth lookup, SDK retries or long 429 waits.

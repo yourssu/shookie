@@ -1,6 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { executionSignal, trackExecution } from "../../cancellation/execution-context.js";
 import { z } from "zod";
+import { fetchRegistry, authorizeRepository, guidancePolicy, redactRegistry, type RegistryConfig } from "./registry.js";
 import { trustedActor } from "./workspace-manager.js";
 
 const name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/).refine(v => v !== "." && v !== "..");
@@ -10,11 +11,11 @@ export const readInput = z.object({
   operation: z.enum(["repositories", "repository", "tree", "file", "history", "pull_requests", "pull_request", "issues", "issue"]),
   repo: name.optional(), ref: ref.optional(), path: path.optional(),
   number: z.number().int().min(1).max(2147483647).optional(),
-  page: z.number().int().min(1).max(100).default(1),
+  page: z.number().int().min(1).max(1000).default(1),
   perPage: z.number().int().min(1).max(30).default(20),
 }).strict();
 export type ReadInput = z.infer<typeof readInput>;
-export interface ReadConfig { owner: string; gitHubToken: string; readOnlyToken?: string; repositories?: string[] }
+export interface ReadConfig { owner: string; gitHubToken: string; readOnlyToken?: string; repositories?: string[]; registry?: RegistryConfig }
 const MAX_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 32 * 1024;
 export const READ_TIMEOUT_MS = 10_000;
@@ -28,6 +29,7 @@ export function buildReadUrl(config: ReadConfig, input: ReadInput): URL {
     if (input.repo || input.ref || input.path || input.number) throw new Error("invalid options");
     url.pathname = `/orgs/${owner}/repos`;
   } else {
+    if (input.page > 100) throw new Error("GitHub page limit");
     const repo = name.parse(input.repo);
     if (config.repositories && !config.repositories.some(r => r.toLowerCase() === repo.toLowerCase())) throw new Error("scope");
     const base = `/repos/${owner}/${encodeURIComponent(repo)}`;
@@ -103,8 +105,38 @@ export function validateResponse(config: ReadConfig, input: ReadInput, raw: unkn
   }
 }
 
-export async function readGithub(config: ReadConfig, raw: unknown, fetcher: typeof fetch = fetch) {
+export async function readGithub(config: ReadConfig, raw: unknown, fetcher: typeof fetch = fetch, actionSignal = executionSignal()) {
+  // Explicit static scope is a low-level test seam only. Tool factories require the live registry.
+  if (!config.registry && !config.repositories) throw new Error("GitHub registry required");
   const input = readInput.parse(raw);
+  const redactGuidance = (text: string) => {
+    for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
+      for (const value of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) text = text.split(value).join("[REDACTED]");
+    }
+    return text;
+  };
+  let repositoryGuidance: Awaited<ReturnType<typeof authorizeRepository>> | undefined;
+  if (config.registry) {
+    if (input.operation === "repositories") {
+      if (input.repo || input.ref || input.path || input.number) throw new Error("invalid options");
+      const catalog = await fetchRegistry(config.registry, config.owner, actionSignal, fetcher);
+      for (const repo of catalog) repo.instructions = redactGuidance(repo.instructions);
+      const start = (input.page - 1) * input.perPage;
+      const page = catalog.slice(start, start + input.perPage).map(repo => {
+        // Keep catalog pages within the existing model-facing byte budget without dropping repos.
+        let instructions = Array.from(repo.instructions).slice(0, 200).join("");
+        while (Buffer.byteLength(JSON.stringify({ ...repo, instructions })) > 900 && instructions.length) instructions = instructions.slice(0, -1);
+        return { ...repo, instructions, instructionsTruncated: instructions.length < repo.instructions.length };
+      });
+      return { repositoryGuidance: undefined, data: redactGuidance(JSON.stringify(page)), source: config.registry.apiUrl, owner: config.owner, repo: null, ref: null, path: null, complete: true, truncated: false,
+        page: input.page,
+        hasNextPage: start + input.perPage < catalog.length, total: catalog.length, policy: guidancePolicy,
+        message: catalog.length ? "Radar 등록 저장소 목록입니다." : "Radar에 등록된 저장소가 없습니다. 관리자에게 등록을 요청하세요." };
+    }
+    repositoryGuidance = await authorizeRepository(config.registry, config.owner, name.parse(input.repo), actionSignal);
+    repositoryGuidance = JSON.parse(redactGuidance(JSON.stringify(repositoryGuidance))) as Awaited<ReturnType<typeof authorizeRepository>>;
+    config = { ...config, repositories: [repositoryGuidance.repository.name] };
+  }
   const url = buildReadUrl(config, input);
   const token = config.readOnlyToken || config.gitHubToken;
   if (!token) throw new Error("credential required");
@@ -112,7 +144,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     if (url.toString().includes(secret) || url.toString().includes(encodeURIComponent(secret))) throw new Error("secret in source");
   }
   const controller = new AbortController();
-  const shared = executionSignal();
+  const shared = actionSignal;
   const signal = shared ? AbortSignal.any([shared, controller.signal]) : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
@@ -144,12 +176,13 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
       for (const representation of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) text = text.split(representation).join("[REDACTED]");
     }
+    if (config.registry) text = redactRegistry(text, config.registry);
     const outputTruncated = Buffer.byteLength(text) > MAX_OUTPUT_BYTES;
     const truncated = outputTruncated || data.truncated === true;
     // Preserve valid JSON, even when the model-facing budget requires a preview.
     if (outputTruncated) text = JSON.stringify({ incomplete: true, reason: "model_output_byte_limit", preview: text.slice(0, 4096) });
     return {
-      data: text, truncated, complete: !truncated,
+      data: text, repositoryGuidance, truncated, complete: !truncated,
       source: url.toString(), owner: config.owner, repo: input.repo ?? null,
       ref: input.ref ?? null, path: input.path ?? null, page: input.page,
       // Advisory only: we never parse/follow Link URLs with credentials.
@@ -161,14 +194,15 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
   finally { clearTimeout(timer); controller.abort(); }
 }
 
-export function createGithubReadTool(config: ReadConfig) {
+export function createGithubReadTool(config: ReadConfig & { registry: RegistryConfig }) {
+  if (!config.registry) throw new Error("GitHub registry required");
   return createTool({
     id: "github-read",
-    description: "설정된 조직/저장소의 목록·구조(tree)·파일·커밋 이력·PR·이슈를 읽기 전용으로 조회합니다. 이 API 도구는 명령 실행, 클론, 파일 수정, push, PR 생성/병합/삭제를 수행하지 않습니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. tree는 ref(브랜치 또는 commit SHA)가 필요합니다.",
+    description: "Radar에 현재 등록된 조직/저장소의 목록·구조(tree)·파일·커밋 이력·PR·이슈를 읽기 전용으로 조회합니다. 이 API 도구는 명령 실행, 클론, 파일 수정, push, PR 생성/병합/삭제를 수행하지 않습니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. tree는 ref(브랜치 또는 commit SHA)가 필요합니다.",
     inputSchema: readInput,
     execute: async (input, context) => {
-      try { trustedActor(context?.requestContext); return await readGithub(config, input); }
-      catch { return { error: "신뢰된 요청 정보·저장소 범위·입력을 확인하거나 잠시 후 다시 시도하세요. 읽기 전용 조회에 실패했습니다. 원격 쓰기는 지원하지 않습니다." }; }
+      try { trustedActor(context?.requestContext); return await readGithub(config, input, fetch, executionSignal(context?.abortSignal)); }
+      catch { return { error: "Radar 등록 저장소 설정·신뢰된 요청 정보·저장소 범위·입력을 확인하거나 잠시 후 다시 시도하세요. 읽기 전용 조회에 실패했습니다. 원격 쓰기는 지원하지 않습니다." }; }
     },
   });
 }
