@@ -1,5 +1,18 @@
 # 배포 (GitHub Actions 이미지 빌드 → GHCR → EC2 pull)
 
+## Radar GitHub 등록 저장소
+
+- 병합/롤아웃 순서: Radar backend → frontend → Shookie. Radar가 설정의 유일한 원본이며 Shookie는 Radar DB에 직접 접근하지 않는다.
+- GitHub Actions variable `RADAR_GITHUB_REGISTRY_API_URL`: 절대 전체 endpoint `https://<Radar host>/internal/v1/shookie/github/repositories`. 정확한 path만 허용하고 사용자 정보·query·fragment·끝 slash는 금지한다. HTTP는 localhost/127.0.0.1 개발 환경만 허용한다.
+- Secret `SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY`: 이 API만을 위한 공유 키(16–512자, 공백 없음)를 담당자가 **외부에서** Radar/Shookie 양쪽에 provision한다. 기존 내부 API 키/GitHub PAT를 재사용하거나 값을 임의로 만들지 않는다. 키는 `X-API-Key` 헤더에만 전달한다. 운영 Secrets 수정/SSH는 이 변경의 범위가 아니다.
+- Variable `GITHUB_OWNER`: 기본 `yourssu`. Radar `SHOOKIE_GITHUB_OWNER`와 동일해야 한다. 다른 owner 레코드가 하나라도 있으면 전체 catalog를 거부한다.
+- URL/키가 모두 비어 있으면 Code Explorer를 비활성화한다. 일부만 설정하거나 잘못된 URL/키는 부팅 검증 실패다. **기존 조직 전체 접근으로 fallback하지 않는다.**
+- API 계약: `GET` → `{repositories:[{id:UUID,owner,name,instructions,createdAt:ISO,updatedAt:ISO}]}`. 최대 1000건, 지침 10000자, 중복 ID/이름(대소문자 무시)·잘못된 레코드는 전체 거부한다. Radar는 빈 상태로 시작하며 자동 seed하지 않는다. 운영 담당자가 허용 저장소를 명시적으로 등록해야 탐색할 수 있다.
+- 목록은 Radar catalog만 page/perPage로 페이지 조회하며 GitHub 조직 전체를 스캔하지 않는다. 목록 지침은 최대 200자/항목 900-byte 예산 내 preview(`instructionsTruncated` 표시)로, 30개 목록도 기존 32KiB 내용 예산을 유지한다. 저장소 선택 후 각 scoped 동작 결과에는 최신 전체 지침이 포함된다. 매 API/clone/snapshot 목록·읽기·검색 동작마다 catalog를 새로 가져온다(양성 캐시 없음). 빈 catalog/응답 오류/시간 초과는 거부하며 삭제된 저장소는 기존 snapshot도 다음 동작에서 차단한다.
+- HTTP는 10초 timeout·취소 전파·64MiB body 상한·redirect 차단·schema 검증을 적용한다. 토큰/키와 원본 오류를 사용자에게 노출하지 않는다. 저장소 지침은 각 결과에 최신 repo-scoped 비신뢰 metadata로 포함되며 시스템/보안 규칙이나 접근 권한을 변경할 수 없다.
+- 기존 신뢰된 Slack actor/스레드 소유권 검사와 bounded read-only Git sandbox를 유지한다. 정적 `repositories`는 low-level 회귀 테스트 seam일 뿐이며 production 도구 factory는 live registry 없이는 생성되지 않는다.
+
+
 운영 EC2(t4g.small, ARM64)에서는 이미지를 빌드하지 않는다. GitHub Actions가 `linux/arm64` bot 이미지를 빌드해
 GHCR에 푸시하고, EC2는 **pull + bot 컨테이너만 `docker compose up -d --no-build --no-deps bot`으로 교체**한다.
 Radar에서 운영 검증된 방식과 같은 구조이며, Shookie 고유 사항(공유 PostgreSQL, Socket Mode bot)을 반영했다.
@@ -135,7 +148,7 @@ workflow는 `docker compose -f docker-compose.db.yml ps -q db` / `exec -T db pg_
 
 ## 필요한 설정
 
-신규 필수 secret/variable은 없다. 레지스트리는 GHCR이며 기존 `GITHUB_TOKEN`을 쓴다.
+이미지 레지스트리는 GHCR이며 기존 `GITHUB_TOKEN`을 쓴다. Code Explorer의 Radar 저장소 등록 API용 설정은 아래 별도 항목을 따른다.
 
 - `GITHUB_TOKEN` 권한은 workflow의 `permissions`로만 선언한다(workflow 기본 `contents: read`; build job `packages: write`;
   deploy job `packages: read`). 저장소 기본 workflow 권한 변경은 필요 없다. `GITHUB_TOKEN`은 git fetch(`contents: read`),
