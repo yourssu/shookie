@@ -13,6 +13,17 @@
 - 기존 신뢰된 Slack actor/스레드 소유권 검사와 bounded read-only Git sandbox를 유지한다. 정적 `repositories`는 low-level 회귀 테스트 seam일 뿐이며 production 도구 factory는 live registry 없이는 생성되지 않는다.
 
 
+## Radar PostHog 프로젝트 등록
+
+- 병합/롤아웃 순서: Radar backend(마이그레이션이 기존 SSUTime-Prod `440922`, Soongpt-Prod `308417` 지식을 정확히 1회 seed) → frontend → Shookie. Shookie는 seed 로직이나 자동 등록을 갖지 않으며 PostHog API에서 보이는 프로젝트를 자동 등록하지 않는다.
+- GitHub Actions variable `RADAR_POSTHOG_REGISTRY_API_URL`: 절대 전체 endpoint `https://<Radar host>/internal/v1/shookie/posthog/projects`. 정확한 path만 허용하고 사용자 정보·query·fragment·끝 slash는 금지한다. HTTP는 localhost/127.0.0.1 개발 환경만 허용한다.
+- Secret `SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY`: 이 API 전용 공유 키(16–512자, 공백 없음)를 담당자가 **외부에서** Radar/Shookie 양쪽에 provision한다. GitHub 등록 키·다른 내부 키·`POSTHOG_API_KEY`를 재사용하지 않는다. `X-API-Key` 헤더에만 전달한다. 기존 `POSTHOG_API_KEY`(PostHog 계정 키)는 Shookie에만 둔다. 운영 Secrets 수정/SSH는 이 변경의 범위가 아니다.
+- URL/키가 모두 비어 있으면 PostHog 서브 에이전트를 비활성화한다(`POSTHOG_API_KEY`만 있어도 비활성). 일부만 설정하거나 잘못된 값은 부팅 검증 실패다. **코드 화이트리스트/정적 지식 fallback은 없다.** `shookie/src/projects/`의 정적 프로젝트·지식 파일은 제거되었고 원문은 테스트 fixture(`agents/posthog/legacy-knowledge.test-helper.ts`)에 legacy 참고용으로만 남아 있다.
+- API 계약: `GET` → `{projects:[{id:UUID,projectId:양의 10진수 1–16자리 문자열,name:1–100자,organizationId,description:≤1000자,instructions:≤20000자,createdAt:ISO,updatedAt:ISO}]}`. 최대 1000건, 중복 projectId/ID·이름(대소문자 무시)·추가 필드·잘못된 레코드는 전체 거부한다. 식별 필드에 키가 포함되면 거부하고, 설명/지침의 키 표현은 `[REDACTED]` 처리한다.
+- 시작 시에는 설정만 검증하고 catalog를 조회하지 않는다. `listProjects` 및 9개 PostHog 동작은 매 호출 catalog를 새로 조회하고(양성 캐시 없음) 등록 이름(대소문자 무시)을 등록 projectId로 바인딩한 뒤에만 PostHog를 호출한다. continuation도 다음 호출에서 재승인되므로 삭제/이름 변경된 프로젝트는 즉시 거부된다. 등록·지침 변경은 재시작 없이 다음 동작에 반영된다.
+- HTTP는 10초 timeout·취소 전파·64MiB body 상한·redirect 차단·strict schema 검증을 적용하고 원본 오류/키를 노출하지 않는다.
+
+
 운영 EC2(t4g.small, ARM64)에서는 이미지를 빌드하지 않는다. GitHub Actions가 `linux/arm64` bot 이미지를 빌드해
 GHCR에 푸시하고, EC2는 **pull + bot 컨테이너만 `docker compose up -d --no-build --no-deps bot`으로 교체**한다.
 Radar에서 운영 검증된 방식과 같은 구조이며, Shookie 고유 사항(공유 PostgreSQL, Socket Mode bot)을 반영했다.
