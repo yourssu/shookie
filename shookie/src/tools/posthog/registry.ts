@@ -105,7 +105,7 @@ export type ProjectSelection =
 /** Pure selection against an already fetched, current catalog. Names only; IDs/URLs never select. */
 export function selectProject(catalog: RegisteredPostHogProject[], requested?: string): ProjectSelection {
   if (!catalog.length) return { status: "error", code: "no_registered_projects", message: "Radar에 등록된 PostHog 프로젝트가 없습니다. 관리자에게 Radar에서 프로젝트 등록을 요청하세요." };
-  if (requested === undefined || !requested.trim()) {
+  if (requested === undefined) {
     if (catalog.length === 1) return { status: "selected", project: catalog[0], implicit: true };
     return { status: "error", code: "project_selection_required", message: "등록된 PostHog 프로젝트가 여러 개입니다. listProjects로 목록을 확인하고 사용자에게 대상 프로젝트를 확인한 뒤 project에 이름을 지정하세요." };
   }

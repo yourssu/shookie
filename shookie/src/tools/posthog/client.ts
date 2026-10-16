@@ -45,7 +45,7 @@ export class PostHogClient {
     };
   }
   queryEvents(params: { event?: string; after?: string; before?: string } & Page) {
-    if (!queryEventsSchema.safeParse(params).success) return Promise.resolve(this.error(this.source("events"), "invalid_input"));
+    if (!queryEventsSchema.safeParse({ ...params, continuation: undefined }).success) return Promise.resolve(this.error(this.source("events"), "invalid_input"));
     return this.list("events", params, { event: params.event, after: params.after, before: params.before });
   }
   queryInsights(id?: string, page: Page = {}) { return id ? this.detail("insights", id) : this.list("insights", page); }

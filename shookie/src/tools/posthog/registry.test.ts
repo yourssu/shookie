@@ -185,22 +185,47 @@ describe("every PostHog tool authorizes against the live registry before PostHog
     h.fetcher.mockImplementationOnce(async () => json({ projects: h.state.catalog }))
       .mockImplementationOnce(async (url: unknown) => json({ results: [{ id: 1 }], next: `${String(url)}&offset=5` }));
     const first = await exec(h.tools, "queryEvents", { limit: 5 });
-    expect(first.pagination.continuation).toBe("offset:5");
+    const token = first.pagination.continuation;
+    expect(token).toMatch(/^phc:/);
+    expect(await exec(h.tools, "queryEvents", { limit: 5, continuation: token })).toMatchObject({ status: "success", source: { projectId: "1001" } });
     // Dynamic registration on the same tool instance.
     h.state.catalog = [project(1), project(9, { name: "New-Project", projectId: "9999" })];
     expect(await exec(h.tools, "listCohorts", { project: "new-project", limit: 5 })).toMatchObject({ status: "success", source: { projectId: "9999" } });
     // Changing the registered ID rebinds the same name to the new ID.
     h.state.catalog = [project(1, { projectId: "4242" })];
-    expect(await exec(h.tools, "queryEvents", { limit: 5, continuation: "offset:5" })).toMatchObject({ status: "success", source: { projectId: "4242" } });
-    // Rename: the old alias is gone.
+    const beforeRebind = h.posthogCalls.length;
+    expect(await exec(h.tools, "queryEvents", { limit: 5, continuation: token })).toMatchObject({ status: "error", error: { code: "invalid_continuation" } });
+    expect(h.posthogCalls).toHaveLength(beforeRebind);
+    // Rename preserving ID permits the token with the new name; old alias is gone.
     h.state.catalog = [project(1, { name: "Renamed" })];
-    expect(await exec(h.tools, "queryEvents", { project: "Project-1", limit: 5, continuation: "offset:5" })).toMatchObject({ error: { code: "unknown_project" } });
+    expect(await exec(h.tools, "queryEvents", { project: "Renamed", limit: 5, continuation: token })).toMatchObject({ status: "success" });
+    expect(await exec(h.tools, "queryEvents", { project: "Project-1", limit: 5, continuation: token })).toMatchObject({ error: { code: "unknown_project" } });
     // Revocation: continuations and previously working calls are denied.
     const before = h.posthogCalls.length;
     h.state.catalog = [];
-    for (const [name, input] of operations) expect(await exec(h.tools, name, { ...input, ...(name !== "getDashboard" && name !== "queryHogQL" ? { continuation: "offset:5" } : {}) })).toMatchObject({ status: "error", error: { code: "no_registered_projects" } });
+    for (const [name, input] of operations) expect(await exec(h.tools, name, { ...input, ...(name !== "getDashboard" && name !== "queryHogQL" ? { continuation: token } : {}) })).toMatchObject({ status: "error", error: { code: "no_registered_projects" } });
     h.state.catalog = [project(2)];
-    expect(await exec(h.tools, "queryEvents", { project: "Renamed", limit: 5, continuation: "offset:5" })).toMatchObject({ error: { code: "unknown_project" } });
+    expect(await exec(h.tools, "queryEvents", { project: "Renamed", limit: 5, continuation: token })).toMatchObject({ error: { code: "unknown_project" } });
+    expect(h.posthogCalls).toHaveLength(before);
+  });
+
+  it("rejects raw offsets, changed filters/tool scope, expired tokens and whitespace-only names", async () => {
+    const h = harness([project(1)]);
+    // Explicit whitespace is never equivalent to omission (also checked by input schema).
+    expect(await new PostHogClientManager(POSTHOG_KEY, registry).authorize("   ")).toMatchObject({ status: "error", code: "unknown_project" });
+    expect(await exec(h.tools, "queryEvents", { project: "   ", limit: 5 })).not.toMatchObject({ status: "success" });
+    expect(await exec(h.tools, "queryEvents", { limit: 5, continuation: "offset:5" })).not.toMatchObject({ status: "success" });
+    expect(h.posthogCalls).toHaveLength(0);
+    h.fetcher.mockImplementationOnce(async () => json({ projects: [project(1)] }))
+      .mockImplementationOnce(async (url: unknown) => json({ results: [], next: `${String(url)}&offset=5` }));
+    const first = await exec(h.tools, "queryEvents", { limit: 5 });
+    const token = first.pagination.continuation;
+    const before = h.posthogCalls.length;
+    for (const [name, input] of [["queryEvents", { limit: 6 }], ["queryEvents", { limit: 5, event: "different" }], ["listCohorts", { limit: 5 }]] as const) {
+      expect(await exec(h.tools, name, { ...input, continuation: token })).toMatchObject({ error: { code: "invalid_continuation" } });
+    }
+    vi.useFakeTimers(); vi.setSystemTime(Date.now() + 31 * 60_000);
+    expect(await exec(h.tools, "queryEvents", { limit: 5, continuation: token })).toMatchObject({ error: { code: "invalid_continuation" } });
     expect(h.posthogCalls).toHaveLength(before);
   });
 

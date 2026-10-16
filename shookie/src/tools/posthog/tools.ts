@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createTool } from "@mastra/core/tools";
 import { executionSignal, executionTools } from "../../cancellation/execution-context.js";
 import { PostHogClientManager, type PostHogClient } from "./client.js";
@@ -29,8 +30,11 @@ function preview(text: string, chars: number) {
 export function createPostHogTools(manager: PostHogClientManager) {
   // Production tools only accept the live registry-backed manager; no static project list.
   if (!(manager instanceof PostHogClientManager)) throw new Error("PostHog registry manager required");
+  // Opaque tokens are scoped to this tool instance, authorized project ID and exact action inputs.
+  // Provider offsets never cross the production tool boundary.
+  const continuations = new Map<string, { projectId: string; scope: string; offset: string; expires: number }>();
   type Context = { abortSignal?: AbortSignal } | undefined;
-  async function run(project: string | undefined, context: Context, action: (client: PostHogClient) => Promise<PostHogResult>): Promise<PostHogResult> {
+  async function run(project: string | undefined, context: Context, operation: string, input: Record<string, unknown>, action: (client: PostHogClient, continuation?: string) => Promise<PostHogResult>): Promise<PostHogResult> {
     // Re-authorize against the current Radar catalog before every PostHog request,
     // including continuation pages. Revoked/renamed projects fail here without a PostHog call.
     const auth = await manager.authorize(project, executionSignal(context?.abortSignal));
@@ -39,7 +43,26 @@ export function createPostHogTools(manager: PostHogClientManager) {
         source: { project: project ?? "", projectId: "", resource: "project", fetchedAt: new Date().toISOString() },
         error: { code: auth.code, message: auth.message, retryable: auth.retryable } };
     }
-    const result = await action(auth.client);
+    const { project: _project, continuation: token, ...filters } = input;
+    const scope = JSON.stringify([operation, Object.entries(filters).sort(([a], [b]) => a.localeCompare(b))]);
+    let offset: string | undefined;
+    if (token !== undefined) {
+      const saved = typeof token === "string" ? continuations.get(token) : undefined;
+      if (!saved || saved.expires <= Date.now() || saved.projectId !== auth.project.projectId || saved.scope !== scope) {
+        return { status: "error", data: null,
+          source: { project: auth.project.name, projectId: auth.project.projectId, resource: operation, fetchedAt: new Date().toISOString() },
+          error: { code: "invalid_continuation", message: "이전 페이지 토큰의 프로젝트 또는 조회 조건이 달라졌거나 만료되었습니다. 첫 페이지부터 다시 조회하세요.", retryable: false } };
+      }
+      offset = saved.offset;
+    }
+    const result = await action(auth.client, offset);
+    if (result.status === "success" && result.pagination.continuation) {
+      for (const [key, value] of continuations) if (value.expires <= Date.now()) continuations.delete(key);
+      while (continuations.size >= 1000) continuations.delete(continuations.keys().next().value!);
+      const next = `phc:${randomUUID()}`;
+      continuations.set(next, { projectId: auth.project.projectId, scope, offset: result.pagination.continuation, expires: Date.now() + 30 * 60_000 });
+      result.pagination.continuation = next;
+    }
     return { ...result, guidance: {
       project: auth.project.name, projectId: auth.project.projectId, description: auth.project.description,
       instructions: auth.project.instructions, updatedAt: auth.project.updatedAt,
@@ -83,64 +106,64 @@ export function createPostHogTools(manager: PostHogClientManager) {
       description: "PostHog 이벤트 목록을 조회합니다.",
       inputSchema: queryEventsSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.queryEvents(input)),
+      execute: async (input, context) => run(input.project, context, "queryEvents", input, (client, continuation) => client.queryEvents({ ...input, continuation })),
     }),
     queryInsights: createTool({
       id: "query-insights",
       description: "PostHog 인사이트(분석 리포트)를 조회합니다.",
       inputSchema: queryInsightsSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.queryInsights(input.insight_id, input)),
+      execute: async (input, context) => run(input.project, context, "queryInsights", input, (client, continuation) => client.queryInsights(input.insight_id, { ...input, continuation })),
     }),
     listFeatureFlags: createTool({
       id: "list-feature-flags",
       description: "PostHog 기능 플래그 목록을 조회합니다.",
       inputSchema: noInputSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.listFeatureFlags(input)),
+      execute: async (input, context) => run(input.project, context, "listFeatureFlags", input, (client, continuation) => client.listFeatureFlags({ ...input, continuation })),
     }),
     listDashboards: createTool({
       id: "list-dashboards",
       description: "PostHog 대시보드 목록을 조회합니다.",
       inputSchema: noInputSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.listDashboards(input)),
+      execute: async (input, context) => run(input.project, context, "listDashboards", input, (client, continuation) => client.listDashboards({ ...input, continuation })),
     }),
     getDashboard: createTool({
       id: "get-dashboard",
       description: "특정 PostHog 대시보드의 상세 정보와 포함된 인사이트를 조회합니다.",
       inputSchema: getDashboardSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.getDashboard(input.dashboard_id)),
+      execute: async (input, context) => run(input.project, context, "getDashboard", input, (client, continuation) => client.getDashboard(input.dashboard_id)),
     }),
     queryHogQL: createTool({
       id: "query-hogql",
       description: "HogQL 쿼리를 실행합니다. 도구는 쿼리의 읽기 전용 여부를 강제하지 않습니다.",
       inputSchema: queryHogQLSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.queryHogQL(input.query)),
+      execute: async (input, context) => run(input.project, context, "queryHogQL", input, (client, continuation) => client.queryHogQL(input.query)),
     }),
     listPersons: createTool({
       id: "list-persons",
       description: "PostHog 사용자를 조회합니다.",
       inputSchema: listPersonsSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client =>
-        client.listPersons({ distinctId: input.distinct_id, email: input.email, limit: input.limit, continuation: input.continuation })),
+      execute: async (input, context) => run(input.project, context, "listPersons", input, (client, continuation) =>
+        client.listPersons({ distinctId: input.distinct_id, email: input.email, limit: input.limit, continuation })),
     }),
     listCohorts: createTool({
       id: "list-cohorts",
       description: "PostHog 코호트(사용자 그룹) 목록을 조회합니다.",
       inputSchema: simpleLimitSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.listCohorts(input.limit, input.continuation)),
+      execute: async (input, context) => run(input.project, context, "listCohorts", input, (client, continuation) => client.listCohorts(input.limit, continuation)),
     }),
     listExperiments: createTool({
       id: "list-experiments",
       description: "PostHog 실험(A/B 테스트) 목록을 조회합니다.",
       inputSchema: simpleLimitSchema,
       outputSchema: resultSchema,
-      execute: async (input, context) => run(input.project, context, client => client.listExperiments(input.limit, input.continuation)),
+      execute: async (input, context) => run(input.project, context, "listExperiments", input, (client, continuation) => client.listExperiments(input.limit, continuation)),
     }),
   });
 }

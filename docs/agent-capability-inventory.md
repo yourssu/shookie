@@ -33,6 +33,7 @@
 | `listCohorts`, `listExperiments` | 코호트/실험 목록 | 선택 필드 |
 
 - 프로젝트 선택: `project`는 등록 이름(대소문자 무시). 등록 1개면 생략 가능, 여러 개면 생략 시 `project_selection_required`(임의 기본값 없음), 없으면 `no_registered_projects`, 미등록/삭제/ID·URL 입력은 `unknown_project`, 레지스트리 실패는 `registry_unavailable`. 권한 바인딩은 등록된 숫자 projectId로 한다.
+- 페이지 토큰은 불투명 값으로 프로젝트 ID·도구·필터·limit에 바인딩되고 매번 live 등록 승인 후 검증한다. 같은 이름의 ID 변경 시 이전 토큰은 거부한다. ID 유지 이름 변경은 새 이름으로 계속 가능하다. 30분 만료/재시작/메모리 퇴출 시 첫 페이지부터 다시 조회한다. 원시 offset은 모델 입력으로 허용하지 않는다.
 - 고정 PostHog 인스턴스(`https://app.posthog.com/api`)와 Shookie의 `POSTHOG_API_KEY`만 사용한다. LLM이 인스턴스/토큰을 지정할 수 없다.
 - 각 대상 동작 결과의 `guidance`에 최신 전체 프로젝트 지침이 포함된다. 비신뢰·하위 우선순위 메타데이터이며 접근 확대나 안전장치 변경을 허용하지 않는다.
 - 결과 계약·예산·마스킹은 `docs/agent-posthog-contract.md` 참고.
