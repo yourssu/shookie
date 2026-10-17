@@ -2,7 +2,16 @@
 
 ## Scope and compatibility
 
-All nine tool purposes remain: events, insights, feature flags, dashboards, dashboard detail (including selected tile/insight summaries), HogQL, persons, cohorts, experiments. `createPostHogAgent(manager, model)` is unchanged. Tool output intentionally changes from `{ result: string }` to the envelope below; the PostHog agent instructions consume this contract. No main-agent/runtime/config/database changes are needed.
+All nine tool purposes remain: events, insights, feature flags, dashboards, dashboard detail (including selected tile/insight summaries), HogQL, persons, cohorts, experiments. A tenth subagent-only tool, `listProjects`, lists Radar-registered projects. Tool output uses the envelope below; the PostHog agent instructions consume this contract.
+
+## Project authorization (Radar registry)
+
+Radar's PostHog project registry (`RADAR_POSTHOG_REGISTRY_API_URL` + dedicated `SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY`) is the sole authority; see `docs/deployment.md`. `PostHogClientManager(apiKey, registry)` has no synchronous/static `getClient`: every tool call (including continuation pages) fetches the current catalog (no positive cache), selects the project, and constructs a client bound to the registered numeric `projectId` before any PostHog request. Startup never fetches the catalog and the system prompt contains no project names or knowledge.
+
+- `project` is a registered name, matched case-insensitively after trimming. IDs/URLs never select a project. Explicit whitespace-only names are rejected (not omission). One registered project → used when `project` is omitted (`guidance.selectedImplicitly: true`). Several → omission returns `project_selection_required` (no implicit default). Empty catalog → `no_registered_projects`. Unregistered/removed/renamed → `unknown_project`. Registry failure/timeout/abort/invalid schema → `registry_unavailable` (retryable). None of these errors make a PostHog request.
+- Successful authorization adds `guidance: { project, projectId, description, instructions, updatedAt, selectedImplicitly, policy }` with the latest full Radar instructions (both success and PostHog error envelopes). It is declared in `resultSchema` so output validation does not strip it. Guidance is untrusted, lower-priority project metadata and cannot expand access or override safeguards. Registry/PostHog keys reflected in description/instructions are redacted. Guidance is outside the 24 KiB data envelope check and is bounded by the registry contract (≤1000/≤20000 characters).
+- `listProjects` (`page` 1–1000, `perPage` 1–30) returns name, projectId, description (300 characters) and instruction previews (200 characters, ≤1200 bytes per entry) with `total`/`hasNextPage`; it never calls PostHog.
+- The PostHog instance (`https://app.posthog.com/api`) and `POSTHOG_API_KEY` are fixed configuration; the model cannot supply an instance or token.
 
 ```json
 {
@@ -36,7 +45,9 @@ Errors use `status: "error", data: null, source, error: { code, message, retryab
 
 The client never requests API-returned URLs. It only extracts a strictly increasing bounded offset from a next link whose origin (including protocol), exact project/resource path, limit and filters match the original request. Credentials/userinfo, fragments, duplicate parameters, extra parameters and altered filters are rejected. Relative links must meet the same constraints. Unsupported cursor pagination is explicitly reported rather than guessed.
 
-`continuation: "offset:N"` accepts at most seven decimal digits. The next tool call reconstructs the fixed configured API resource using that offset and the validated original inputs. Callers must reuse the same project/tool/filters/limit. Tokens are not cryptographically bound to those inputs, but cannot expand network authority: there is no URL, host or path in a token. Each subsequent page is an explicit bounded call, never an automatic pagination loop. Concurrent list mutations may cause duplicate/missing entries; these are not snapshot exports. HogQL is not automatically paginated.
+Production tools expose opaque `phc:<UUID>` continuation tokens, not provider offsets. Tokens are stored in a bounded in-memory map (at most 1000, 30-minute lifetime) scoped to the tool instance, authorized projectId, operation and exact filters/limit. Every continuation call first re-fetches and authorizes the live Radar catalog, then validates the token binding before any PostHog request. A name rebound to a different projectId cannot reuse the old token (`invalid_continuation`); revocation is denied by authorization first. A rename preserving the projectId can continue when the new registered name is supplied. Raw legacy `offset:N` is not accepted by production input schemas. Expiration, process restart or eviction requires restarting from the first page. Only the low-level provider client accepts/returns `offset:N` internally.
+
+Each subsequent page is an explicit bounded call, never an automatic pagination loop. Concurrent list mutations may cause duplicate/missing entries; these are not snapshot exports. HogQL is not automatically paginated.
 
 ## Personal data and authorization limits
 
@@ -46,12 +57,14 @@ This is **partial minimization, not a complete PII policy**: arbitrary SQL can r
 
 ## Analytics definitions and knowledge provenance
 
+Legacy project knowledge (SSUTime-Prod/Soongpt-Prod) is no longer a startup or runtime source; the Radar backend migration seeds it once and Radar guidance is authoritative thereafter. The original text remains only as a test fixture (`agents/posthog/legacy-knowledge.test-helper.ts`). The following describes that seeded SSUTime definition.
+
 SSUTime `new_users` means a person whose earliest event **in all available history** falls within the requested KST interval. Compute `min(timestamp)` grouped by person first, then filter first_seen in an outer query and group its KST date. Filtering event timestamps to the requested range before min incorrectly counts returning users. Midnight KST is 15:00 UTC on the previous day; intervals are start-inclusive, end-exclusive. The first event of any type is used by this definition; changing event filters changes the metric.
 
 Collection start, retention/deletion and identity merges affect first-seen; this is not a guaranteed lifetime signup/install count. Active users/DAU is a separate period-local metric; SSUTime's registered event specification excludes automated `todo_snapshot` activity for DAU/retention. Existing app/event descriptions are repository-supplied domain specifications, not newly verified production facts. Person property semantics and persons aggregation support must be checked against actual settings/version rather than asserting blanket GROUP BY prohibitions. Widget-heavy-user and Kakao-new-user associations are hypotheses to validate. Soongpt knowledge remains explicitly unregistered; no missing facts have been invented.
 
 ## Local validation only
 
-`shookie/src/tools/posthog/client.test.ts` uses dummy credentials and mocked fetch responses for success/empty/errors, malformed/non-JSON bodies, timeout/network/HTTP classification, streaming cancellation, record budgets, row/column mapping, selected fields, and next-link authority controls. `shookie/src/agent/agents/posthog/instructions.test.ts` uses deterministic historical fixtures (returning user, truly new user, repeat events, before/start/end KST boundaries) plus template structural checks.
+`shookie/src/tools/posthog/client.test.ts` uses dummy credentials and mocked fetch responses for success/empty/errors, malformed/non-JSON bodies, timeout/network/HTTP classification, streaming cancellation, record budgets, row/column mapping, selected fields, and next-link authority controls. `shookie/src/tools/posthog/registry.test.ts` covers registry config, strict schema, redaction, timeout/abort, and for all nine operations plus `listProjects`: registry failure, empty/ambiguous/unknown/ID-bypass denial before PostHog, implicit single selection, case-insensitive binding, fresh guidance, dynamic registration, rename/ID change, revocation of continuations. `shookie/src/agent/agents/posthog/instructions.test.ts` uses deterministic historical fixtures (returning user, truly new user, repeat events, before/start/end KST boundaries) plus template structural checks.
 
 These checks do **not** execute HogQL against a live PostHog project. Query function support and live performance remain unverified; no operational DB/Slack/PostHog data is accessed.

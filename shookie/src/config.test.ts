@@ -202,3 +202,26 @@ describe("Radar Slack message relay config", () => {
     expect(loaded.getSlackMessageRelayConfig()).not.toBeNull();
   });
 });
+
+describe("Radar PostHog project registry config", () => {
+  const url = "https://radar.test/internal/v1/shookie/posthog/projects";
+  const key = "dedicated-posthog-registry-key";
+  it("disables the PostHog subagent when both values are blank (no static fallback)", async () => {
+    vi.stubEnv("RADAR_POSTHOG_REGISTRY_API_URL", undefined);
+    vi.stubEnv("SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY", undefined);
+    expect((await loadConfig()).posthogRegistry).toBeNull();
+    expect((await loadConfig({ RADAR_POSTHOG_REGISTRY_API_URL: "", SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: "" })).posthogRegistry).toBeNull();
+  });
+  it("accepts the exact endpoint with a dedicated key", async () => {
+    expect((await loadConfig({ RADAR_POSTHOG_REGISTRY_API_URL: url, SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: key })).posthogRegistry).toEqual({ apiUrl: url, apiKey: key });
+  });
+  it.each([
+    { RADAR_POSTHOG_REGISTRY_API_URL: url, SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: "" },
+    { RADAR_POSTHOG_REGISTRY_API_URL: "", SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: key },
+    { RADAR_POSTHOG_REGISTRY_API_URL: "http://radar.test/internal/v1/shookie/posthog/projects", SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: key },
+    { RADAR_POSTHOG_REGISTRY_API_URL: `${url}?x=1`, SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: key },
+    { RADAR_POSTHOG_REGISTRY_API_URL: url, SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: "short" },
+  ])("fails startup on partial or malformed configuration %#", async overrides => {
+    await expect(loadConfig(overrides)).rejects.toThrow(/PostHog registry/);
+  });
+});

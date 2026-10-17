@@ -135,7 +135,8 @@ export function createMainShookieTools(subAgents: {
       id: "posthog-agent",
       description:
         "PostHog 분석 데이터 조회를 담당하는 서브 에이전트에게 작업을 위임합니다. " +
-        "이벤트, 인사이트, 대시보드, 기능 플래그, 사용자, 코호트, 실험, HogQL 쿼리 관련 질문에 사용합니다.",
+        "Radar에 현재 등록된 PostHog 프로젝트 목록·지침 확인과 이벤트, 인사이트, 대시보드, 기능 플래그, 사용자, 코호트, 실험, HogQL 쿼리 관련 질문에 사용합니다. " +
+        "등록되지 않은 프로젝트는 조회할 수 없고 프로젝트가 여러 개면 대상 확인이 필요합니다.",
       inputSchema: z.object({
         task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),
       }),

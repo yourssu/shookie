@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RESPONSE_BYTES, MAX_RESULT_BYTES, PostHogClient, PostHogClientManager } from "./client.js";
-import { createPostHogTools } from "./tools.js";
+import { MAX_RESPONSE_BYTES, MAX_RESULT_BYTES, PostHogClient } from "./client.js";
 import { getDashboardSchema, listPersonsSchema, queryEventsSchema, queryHogQLSchema, resultSchema, simpleLimitSchema } from "./schemas.js";
 
 const client = () => new PostHogClient("dummy-only-token", "123", "fixture");
@@ -135,14 +134,7 @@ describe("PostHog structured contracts (mock network only)", () => {
     respond({ id: 4, name: "insight", result: [3] });
     expect(await client().queryInsights("4")).toMatchObject({ status: "success", data: { records: [{ id: 4, name: "insight", result: [3] }] } });
   });
-  it("preserves all nine tool purposes and structured schemas", async () => {
-    const manager = new PostHogClientManager("dummy-only-token", [{ name: "fixture", projectId: "123", description: "local" }]);
-    const tools = createPostHogTools(manager);
-    expect(Object.keys(tools)).toHaveLength(9);
-    respond({ results: [] });
-    const result = await tools.queryEvents.execute!({ project: "missing", limit: 1 }, {} as never);
-    expect(result).toMatchObject({ status: "error", error: { code: "unknown_project" } });
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  it("selects dashboard tiles and insight summaries", async () => {
     respond({ id: 3, name: "dashboard", tiles: [{ id: 1, insight: { id: 2, name: "trend", result: [2] } }] });
     expect(await client().getDashboard("3")).toMatchObject({ status: "success", data: { records: [{ id: 3, tiles: [{ id: 1, insight: { id: 2, result: [2] } }] }] } });
   });

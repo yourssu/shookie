@@ -52,14 +52,16 @@ describe("main-shookie agent instructions", () => {
     expect(instructions).toContain("Code Explorer");
   });
 
-  it("routes domain knowledge updates to sequential PostHog → Code Explorer delegation", () => {
+  it("routes PostHog knowledge updates to Radar guidance proposals, never code edits or writes", () => {
     expect(instructions).toContain("도메인 지식 업데이트");
-    expect(instructions).toContain("순차 위임");
-    expect(instructions).toContain("7.1 도메인 지식 업데이트 워크플로우");
-    // 핵심 트리거 키워드 포함 확인
+    expect(instructions).toContain("7.1 PostHog 도메인 지침 업데이트 제안 워크플로우");
     expect(instructions).toMatch(/기억해줘|저장해줘/);
-    expect(instructions).toContain("변경 제안");
-    expect(instructions).toContain("실제 저장/적용은 수행하지 않았음");
+    expect(instructions).toContain("Radar 프로젝트 지침에 추가/수정할 문구 제안");
+    expect(instructions).toContain("실제로 저장/적용하지 않았음");
+    expect(instructions).toContain("권한을 자동 부여하지 않는다");
+    expect(instructions).not.toContain("posthog.ts");
+    expect(instructions).not.toContain("shookie/src/projects");
+    expect(instructions).not.toMatch(/ssutime-prod|soongpt-prod/);
     expect(instructions).not.toContain("업데이트하고 PR 생성해줘");
     expect(instructions).not.toContain("반환한 PR URL");
   });

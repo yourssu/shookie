@@ -44,21 +44,22 @@ Slack 스레드에 답글 + 호출 기록 DB 저장
 
 ### PostHog Analyst
 
-PostHog 분석 데이터 조회를 담당해요. 여러 프로젝트를 동시에 지원합니다.
+PostHog 분석 데이터 조회를 담당해요. **Radar에 현재 등록된 PostHog 프로젝트만** 조회해요.
 
 | 도구 | 설명 |
 |---|---|
+| `listProjects` | Radar 등록 프로젝트 목록·지침 미리보기 (서브 에이전트 내부 전용) |
 | `queryEvents` | 이벤트 목록 조회 |
 | `queryInsights` | 인사이트(분석 리포트) 조회 |
 | `listFeatureFlags` | 기능 플래그 목록 |
 | `listDashboards` | 대시보드 목록 |
 | `getDashboard` | 대시보드 상세 (포함된 인사이트) |
-| `queryHogQL` | HogQL 쿼리 실행 |
+| `queryHogQL` | HogQL 쿼리 실행 (읽기 전용 여부는 도구가 강제하지 않음) |
 | `listPersons` | 사용자 조회 |
 | `listCohorts` | 코호트(사용자 그룹) 목록 |
 | `listExperiments` | 실험(A/B 테스트) 목록 |
 
-**지원 프로젝트**: `shookie/src/projects/` 레지스트리에 등록된 프로젝트를 자동으로 로딩해요 (PostHog 프로젝트 ID + 표시명 + 설명). 현재 SSUTime-Prod, soongpt-prod가 등록되어 있고, 사용자가 명시하지 않으면 질문 컨텍스트로 프로젝트를 자동 판단해요.
+**지원 프로젝트**: Radar PostHog 프로젝트 등록 API가 유일한 기준이에요. 매 도구 호출마다 최신 등록을 다시 확인하므로 등록·삭제·이름·지침 변경이 재시작 없이 반영돼요. 등록이 1개면 자동 선택하고, 여러 개면 대상을 확인해요. 프로젝트별 도메인 지침은 각 결과의 `guidance`로 전달되며 비신뢰 참고 자료예요. 설정 없음·빈 목록·API 실패는 접근 거부이고 코드 화이트리스트로 돌아가지 않아요. [배포/롤아웃 설정](docs/deployment.md#radar-posthog-프로젝트-등록), [도구 인벤토리](docs/agent-capability-inventory.md)
 
 ### Code Explorer
 
@@ -86,13 +87,8 @@ shookie/
 │   │   │   ├── processors/          # 응답 후처리 (Slack 변환 등)
 │   │   │   ├── log-system-prompt.ts # LLM 시스템 프롬프트 로깅 미들웨어
 │   │   │   └── index.ts             # 에이전트 팩토리
-│   │   ├── projects/                # PostHog 프로젝트 레지스트리
-│   │   │   ├── registry.ts          # getPostHogProjects()
-│   │   │   ├── types.ts             # 프로젝트 메타데이터 스키마
-│   │   │   ├── ssutime-prod/        # 프로젝트별 지식
-│   │   │   └── soongpt-prod/
 │   │   ├── tools/
-│   │   │   ├── posthog/             # PostHog API 클라이언트 + 9개 도구
+│   │   │   ├── posthog/             # Radar 등록 기반 PostHog 클라이언트 + listProjects + 9개 도구
 │   │   │   └── code-explorer/       # 등록 저장소 읽기 전용 API + snapshot 탐색
 │   │   ├── slack/
 │   │   │   ├── handlers.ts          # @멘션/DM 이벤트 핸들러
@@ -138,7 +134,8 @@ yarn install
 
 # .env 파일 설정 (레포 루트 /.env)
 # 필수: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, LLM_API_KEY
-# 선택: POSTHOG_API_KEY; Code Explorer는 GITHUB(PAT) + Radar 등록 API URL/전용 키 필요
+# 선택: PostHog는 POSTHOG_API_KEY + Radar PostHog 프로젝트 등록 API URL/전용 키 필요; Code Explorer는 GITHUB(PAT) + Radar 등록 API URL/전용 키 필요
+# 실제 등록 도구 목록: docs/agent-capability-inventory.md
 
 # 빌드
 yarn workspace database build
@@ -167,6 +164,7 @@ yarn workspace shookie test
 | `LLM_API_KEY` | LLM API 키 |
 | `LLM_BASE_URL` | LLM API 엔드포인트 (기본: DeepSeek) |
 | `POSTHOG_API_KEY` | PostHog Personal API Key |
+| `SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY` | Radar PostHog 프로젝트 등록 API 전용 키 (variable `RADAR_POSTHOG_REGISTRY_API_URL`과 함께 설정, `docs/deployment.md`) |
 | `GITHUB` | GitHub Personal Access Token |
 | `POSTGRES_PASSWORD` | PostgreSQL 비밀번호 |
 | `SHOOKIE_MENTION_GROUPS_WRITE_API_KEY` | `/group` 생성 전용 Radar 내부 API 키 (읽기용 키와 분리) |

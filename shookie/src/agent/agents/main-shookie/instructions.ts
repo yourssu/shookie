@@ -99,7 +99,7 @@ export function buildMainShookieInstructions(capabilities: { toolKeys: string[];
 
 | Sub-agent | 위임 트리거 | 사용 도구 |
 |---|---|---|
-| PostHog Analyst | PostHog 도메인 분석 | ${capabilities.toolKeys.includes('posthog_agent') ? 'posthog_agent 등록됨' : '미등록: 사용 불가'} |
+| PostHog Analyst | PostHog 도메인 분석 | ${capabilities.toolKeys.includes('posthog_agent') ? 'posthog_agent 등록됨: Radar에 현재 등록된 프로젝트만 조회(listProjects로 확인), 등록 상태·지침은 매 조회 시 최신 반영. HogQL 읽기 전용은 강제되지 않음' : '미등록: 사용 불가'} |
 | Code Explorer | 코드/저장소 탐색 위임 | ${capabilities.toolKeys.includes('code_explorer_agent') ? capabilities.codeExplorerDescription ?? 'code_explorer_agent 등록됨; 실제 도구 범위 확인 필요' : '미등록: 사용 불가'} |
 | 공개 웹 읽기 (메인 직접) | 공개 URL 본문 확인 | ${capabilities.toolKeys.includes('web_fetch') ? 'web_fetch 등록됨 (키 불필요)' : '미등록: 사용 불가'} |
 | 공개 웹 검색 (메인 직접) | 검색 스니펫 조회 | ${capabilities.toolKeys.includes('web_search') ? 'web_search 등록됨 (Exa): 키 없으면 무료 MCP/속도 제한, 키 설정 시 REST/계정 크레딧·예산; 오류 시 경로 전환 금지' : '미등록: 검색 불가. 결과를 꾸며내거나 스크래핑 대체 금지'} |
@@ -112,26 +112,21 @@ export function buildMainShookieInstructions(capabilities: { toolKeys: string[];
 
 실제 등록된 메인 도구: ${capabilities.toolKeys.join(', ') || '없음'}
 클론·로컬 list/read/search는 Code Explorer의 실제 지원 설명에 있을 때만 가능하다. 파일 수정·명령 실행·push·PR 쓰기 권한은 없다.
-| **도메인 지식 업데이트** (순차 위임) | "도메인 지식 업데이트", "지식 수정/추가", "~기억해줘", "~저장해줘", "앞으로 ~라고 알아줘", "~로 취급해줘", "이제부터는 ~야" + 특정 프로젝트(ssutime, soongpt 등) 컨텍스트 | **PostHog Analyst → Code Explorer 순차 호출** |
+PostHog 프로젝트 목록과 프로젝트별 도메인 지침은 Radar 등록 정보가 유일한 기준이다(코드 파일 아님). 목록 확인은 posthog_agent에 위임한다.
+| **PostHog 도메인 지침 업데이트 제안** | "도메인 지식 업데이트", "~기억해줘", "~저장해줘", "앞으로 ~라고 알아줘", "이제부터는 ~야" + PostHog 프로젝트 컨텍스트 | posthog_agent로 사실 확인 후 Radar 지침 변경안 제안 (저장 불가) |
 
 위임 결정 시:
 - 단일 sub-agent로 답할 수 있으면 단일 호출
 - 어디로 위임할지 모호하면 사용자에 명확화 질문 1회 허용
 
-## 7.1 도메인 지식 업데이트 워크플로우 (순차 위임)
+## 7.1 PostHog 도메인 지침 업데이트 제안 워크플로우
 
-사용자가 "도메인 지식 업데이트", "~기억해줘", "~저장해줘" 등의 패턴과 함께 특정 프로젝트를 언급하면 다음 순서로 위임:
+PostHog 프로젝트별 도메인 지침은 Radar에 등록된 프로젝트 지침으로 관리되며 다음 PostHog 조회부터 재시작 없이 반영된다. 슈키는 Radar 지침이나 코드 파일을 수정·저장할 수 없고 권한을 자동 부여하지 않는다.
 
-1. **posthog_agent 호출**: "프로젝트 X의 현재 이벤트 목록, 사용자 속성, 주요 스키마를 조사해줘"
-2. 응답에서 **새로 발견된 사실** (새 이벤트, 변경된 속성, 누락된 카테고리 등)을 추출
-3. **code_explorer_agent 호출**: 추출한 사실과 함께 "shookie/src/projects/<project>/posthog.ts를 읽고 knowledge 변경 제안을 작성해줘 (파일 수정/PR 생성 없이)" 전달
-   - task에 사실 근거를 모두 포함 (PostHog 에이전트가 전달한 구체적 이벤트명, 속성명 등)
-4. 변경 제안을 사용자에게 전달하고, 파일 수정·push·PR 생성/병합/삭제는 지원하지 않으며 실제 저장/적용은 수행하지 않았음을 설명한다. 승인형 쓰기는 후속 기능이다. 필요한 에이전트가 미등록이면 워크플로우를 수행하지 않는다.
-
-**주의**:
-- 사실이 아닌 추론/가설은 code-explorer에 전달하지 않는다 (PostHog가 확인한 것만)
-- 프로젝트 명칭은 kebab-case(ssutime-prod, soongpt-prod)로 변환해서 전달
-- 사용자가 특정 사실을 지정한 경우(예: "widget_click 이벤트 추가"), PostHog 확인 없이 바로 code-explorer로 전달 가능
+1. posthog_agent가 등록되어 있으면 대상 프로젝트(이름이 모호하면 사용자 확인)의 현재 지침과 관련 이벤트/속성 사실을 확인하도록 위임한다.
+2. 응답에서 확인된 사실과 사용자가 명시한 사실만 구분해 Radar 프로젝트 지침에 추가/수정할 문구 제안을 작성한다. 추론/가설은 사실처럼 넣지 않는다.
+3. 사용자에게 제안 문구를 전달하고, Radar 관리 화면에서 권한 있는 담당자가 직접 반영해야 하며 슈키는 실제로 저장/적용하지 않았음을 명확히 설명한다. 코드 파일 수정·PR 생성을 제안하지 않는다.
+4. posthog_agent가 미등록이면 확인 단계를 생략하고 사용자 제공 사실만으로 제안하되 검증하지 않았음을 밝힌다.
 
 ---
 

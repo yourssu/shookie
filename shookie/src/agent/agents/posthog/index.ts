@@ -11,7 +11,7 @@ export function createPostHogAgent(manager: PostHogClientManager, model: any) {
   return new Agent({
     id: "posthog",
     name: "PostHog Analyst",
-    instructions: buildPostHogInstructions(manager),
+    instructions: buildPostHogInstructions(),
     description: posthogDescription,
     model: withSystemPromptLogging(model, "posthog"),
     tools,

@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 export const MAX_LIMIT = 100;
-export const projectSchema = z.string().min(1).max(100).optional()
-  .describe("PostHog 프로젝트 이름; 모호하면 먼저 확인");
+export const projectSchema = z.string().min(1).max(100).refine(v => v.trim().length > 0, "공백 이름 대신 project를 생략하세요").optional()
+  .describe("Radar에 등록된 PostHog 프로젝트 이름(대소문자 무시). 등록 프로젝트가 1개일 때만 생략 가능. 여러 개면 listProjects로 확인하고 사용자에게 대상을 확인한 뒤 지정. 프로젝트 ID/URL은 선택 수단이 아님");
 export const limitSchema = z.number().int().min(1).max(MAX_LIMIT).default(100);
-export const continuationSchema = z.string().regex(/^offset:[0-9]{1,7}$/).optional()
-  .describe("같은 도구/프로젝트/필터에만 사용하는 continuation");
+export const continuationSchema = z.string().regex(/^phc:[0-9a-f-]{36}$/).optional()
+  .describe("반환된 불투명 continuation을 그대로 복사. 동일 프로젝트 ID/도구/필터/limit 전용, 30분 만료. ID 변경·재시작 시 첫 페이지부터 재조회");
 const idSchema = z.string().regex(/^[1-9][0-9]{0,15}$/);
 const dateSchema = z.string().datetime({ offset: true }).optional();
 const paging = { project: projectSchema, limit: limitSchema, continuation: continuationSchema };
@@ -41,6 +41,17 @@ export const sourceSchema = z.object({
   query: z.string().optional(),
   fetchedAt: z.string(),
 });
+// Latest Radar project-scoped guidance attached to each authorized action result. Declared in the
+// output schema so structured-output validation does not silently strip it.
+export const guidanceSchema = z.object({
+  project: z.string(),
+  projectId: z.string(),
+  description: z.string(),
+  instructions: z.string(),
+  updatedAt: z.string(),
+  selectedImplicitly: z.boolean(),
+  policy: z.string(),
+});
 export const resultSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("success"),
@@ -57,6 +68,7 @@ export const resultSchema = z.discriminatedUnion("status", [
       omittedRecords: z.number(),
       reason: z.string().optional(),
     }),
+    guidance: guidanceSchema.optional(),
   }),
   z.object({
     status: z.literal("error"),
@@ -68,6 +80,39 @@ export const resultSchema = z.discriminatedUnion("status", [
       retryable: z.boolean(),
       httpStatus: z.number().optional(),
     }),
+    guidance: guidanceSchema.optional(),
   }),
 ]);
 export type PostHogResult = z.infer<typeof resultSchema>;
+
+export const listProjectsSchema = z.object({
+  page: z.number().int().min(1).max(1000).default(1),
+  perPage: z.number().int().min(1).max(30).default(20),
+}).strict();
+export const listProjectsResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("success"),
+    projects: z.array(z.object({
+      name: z.string(),
+      projectId: z.string(),
+      description: z.string(),
+      descriptionTruncated: z.boolean(),
+      instructionsPreview: z.string(),
+      instructionsTruncated: z.boolean(),
+      updatedAt: z.string(),
+    })),
+    page: z.number(),
+    perPage: z.number(),
+    total: z.number(),
+    hasNextPage: z.boolean(),
+    policy: z.string(),
+    message: z.string(),
+    fetchedAt: z.string(),
+  }),
+  z.object({
+    status: z.literal("error"),
+    error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }),
+    fetchedAt: z.string(),
+  }),
+]);
+export type ListProjectsResult = z.infer<typeof listProjectsResultSchema>;

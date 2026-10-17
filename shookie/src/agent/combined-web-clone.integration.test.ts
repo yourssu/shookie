@@ -19,7 +19,6 @@ const fixture = vi.hoisted(() => ({ source: '', home: '', transport: undefined a
     MAX_TOOL_ITERATIONS:8, THREAD_WORKSPACE_BASE_PATH:'', THREAD_WORKSPACE_MAX_GB:1 },
 }));
 vi.mock('../config.js',()=>({config:fixture.settings}));
-vi.mock('../projects/index.js',()=>({getPostHogProjects:()=>[]}));
 vi.mock('@ai-sdk/deepseek',()=>({createDeepSeek:()=>()=> 'openai/test-model'}));
 vi.mock('database',()=>({conversationRepository:{},startAgentCall:vi.fn(async()=>null),startInvocation:vi.fn(),completeAgentCall:vi.fn(),completeInvocation:vi.fn(),logToolCall:vi.fn(),logAgentCall:vi.fn()}));
 // Inject only the Git transport boundary; clone validation, snapshots, tool schemas,

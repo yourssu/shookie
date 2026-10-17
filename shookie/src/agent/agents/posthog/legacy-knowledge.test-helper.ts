@@ -1,3 +1,7 @@
+// LEGACY REFERENCE / TEST FIXTURE ONLY. Not imported by production code.
+// These are the exact pre-Radar knowledge strings for SSUTime-Prod (440922) and Soongpt-Prod (308417).
+// Radar backend migration seeds them once; Shookie never loads or falls back to them at runtime.
+
 export const ssutimePostHogProjectId = "440922";
 
 export const ssutimePostHogKnowledge = `
@@ -91,4 +95,27 @@ LIMIT 100
 - 사용자 수 카운트: \`uniqExact(person_id)\` (정확) 또는 \`countDistinct(person_id)\`.
 - 시간대 변환: \`toTimeZone(timestamp, 'Asia/Seoul')\` 후 \`toDate()\`.
 - **DAU/유저 리텐션 계산 시 주의**: \`todo_snapshot\` 이벤트는 크롤링으로 자동 발생하는 이벤트이므로, DAU(Daily Active Users)나 유저 리텐션(User Retention) 지표에서 반드시 제외해야 함. 예: \`WHERE event != 'todo_snapshot'\`.
+`.trim();
+
+export const soongptPostHogProjectId = "308417";
+
+export const soongptPostHogKnowledge = `
+## Soongpt (숭피티) 프로젝트 지식
+
+현재 서비스/이벤트/지표에 대한 검증된 도메인 명세가 등록되어 있지 않다. 다른 프로젝트의 정의를 적용하거나 누락된 지식을 추측하지 말고 사용자에게 확인한다.
+
+### 서비스 개요
+<!-- 서비스 설명을 작성하세요 -->
+
+### 핵심 지표
+<!-- DAU, MAU, 리텐션 등 핵심 지표 정의를 작성하세요 -->
+
+### 주요 이벤트
+<!-- 주요 이벤트명과 설명을 작성하세요 -->
+
+### 비즈니스 컨텍스트
+<!-- 트래픽 패턴, 시즌성, 비즈니스 규칙 등을 작성하세요 -->
+
+### HogQL 쿼리 참고사항
+<!-- 쿼리 작성 시 참고할 사항을 작성하세요 -->
 `.trim();

@@ -20,7 +20,6 @@ const fixture = vi.hoisted(() => ({
   client: { auth: { test: vi.fn() }, conversations: { info: vi.fn(), members: vi.fn(), history: vi.fn(), replies: vi.fn() }, files: { info: vi.fn() }, apiCall: vi.fn() },
 }));
 vi.mock('../config.js', () => ({ config: fixture.settings }));
-vi.mock('../projects/index.js', () => ({ getPostHogProjects: () => [] }));
 vi.mock('@ai-sdk/deepseek', () => ({ createDeepSeek: () => () => 'openai/test-model' }));
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../tools/code-explorer/workspace-manager.js', () => ({ ensureThreadCapacity: vi.fn() }));
