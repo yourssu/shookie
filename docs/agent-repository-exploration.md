@@ -1,7 +1,5 @@
 # Code Explorer: 통제된 clone / 로컬 읽기 전용 탐색
 
-현재 중앙 등록은 메인/선택적 전문가가 동일 도구 인스턴스를 공유한다. 모든 API/clone/snapshot 동작은 live Radar 등록을 재검증하고 지침 내용/preview는 소비하지 않는다. 프로젝트별 지침 관리는 보류이며 임의 repo AGENTS ingestion은 없다. 아래 snapshot/OS 보안 경계는 유지한다. [현재 하네스](agent-harness.md)
-
 ## 제공 범위
 
 기존 `github_read`(GitHub API GET: 저장소, tree, 파일, 이력, PR, 이슈)는 유지한다. Code Explorer에 아래 네 도구를 추가한다. `createCodeExplorerAgent(model, config)` 및 기존 `ensureThreadCapacity` 등 handler용 export는 변경하지 않는다. 중앙 등록/config/deploy는 이 변경의 범위가 아니다.
@@ -21,7 +19,7 @@
 
 각 도구의 **모든 호출**에 `requestContext`의 channel/threadTs/userId/requestId와 선택적 teamId를 검증한다. 모델이 주장한 identity는 사용하지 않는다. snapshot 소유권은 `(teamId 또는 없음, userId, channel, threadTs)`에 묶이며 이후 requestId는 달라도 된다. 다른 사용자/팀/채널/스레드, 없는/만료된 snapshot, 요청 context 누락, 동시에 사용 중인 snapshot은 실패한다. snapshot ID는 UUID이며 파일 경로가 아니다.
 
-운영에서는 설정된 `owner`와 매 동작 live Radar 등록의 교집합만 허용하며(선택적 constructor `repositories`는 더 좁히는 용도), upstream은 `https://github.com/<owner>/<repo>.git`로 고정한다. 기존 `readOnlyToken` hook을 우선 사용하고 없으면 기존 `gitHubToken`으로 fallback한다. **봇 토큰의 GitHub 권한이 Slack 요청자의 개별 저장소 권한임을 보증하지 않는다.** 운영자는 읽기 전용 최소 권한 token과 allowlist 및 bot 사용 정책으로 범위를 통제해야 한다. 사용자별 GitHub ACL 검증은 이 기능에 포함되지 않는다.
+설정된 `owner`와 선택적 `repositories` allowlist만 허용하며 upstream은 `https://github.com/<owner>/<repo>.git`로 고정한다. 기존 `readOnlyToken` hook을 우선 사용하고 없으면 기존 `gitHubToken`으로 fallback한다. **봇 토큰의 GitHub 권한이 Slack 요청자의 개별 저장소 권한임을 보증하지 않는다.** 운영자는 읽기 전용 최소 권한 token과 allowlist 및 bot 사용 정책으로 범위를 통제해야 한다. 사용자별 GitHub ACL 검증은 이 기능에 포함되지 않는다.
 
 HTTPS Basic authorization의 `x-access-token:<token>`은 Git의 환경 기반 config(`GIT_CONFIG_COUNT`, host-scoped extraHeader)에만 전달한다. URL/argv/remote/on-disk Git config에 token을 넣지 않는다. stdout은 제한하고 stderr는 바이트 수만 세며 저장/로그/오류 응답에 포함하지 않는다. 결과 본문의 설정 token 및 주요 인코딩 표현은 redact한다. 알려지지 않은 별도 repository secret을 탐지/제거하는 DLP 기능은 아니다.
 

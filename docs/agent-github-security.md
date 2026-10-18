@@ -1,7 +1,5 @@
 # Code Explorer: Wave1 GitHub 읽기 전용 경계
 
-이 문서의 Wave1 기능 설명보다 [현재 repository 탐색](agent-repository-exploration.md)과 [하네스](agent-harness.md)가 우선한다. 현재는 live Radar 등록 ∩ GitHub credential 권한을 매 동작 확인하며 조직 전체 fallback은 없다. 메인/선택적 전문가가 동일 github_read/통제된 snapshot 도구를 공유한다. Radar 지침 내용/preview 소비는 HTTP 경계에서 비활성화하며 프로젝트별 지침 관리는 보류다. 임의 명령/편집/원격 쓰기 권한은 추가하지 않는다.
-
 ## 적용된 기능과 미지원 기능
 
 Code Explorer는 고정 `https://api.github.com`의 typed GET 조회만 제공한다:

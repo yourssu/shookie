@@ -2,13 +2,13 @@
 
 ## 정책 / 실제 배선
 
-**실제 실행 시작부터 전체 180초 + 요청자 전용 Slack 취소 버튼**만 추가한다. 큐 대기는 제외한다. 새 전체 호출량 cap, 비용 기록/경고/강제 상한, 모델 변경, 운영 설정 또는 DB 변경은 없다. 기존 `maxSteps`와 내부 호출 로그는 유지하지만 사용자 진단 footer는 제거했다. [현재 하네스](agent-harness.md) 참고.
+**실제 실행 시작부터 전체 180초 + 요청자 전용 Slack 취소 버튼**만 추가한다. 큐 대기는 제외한다. 새 전체 호출량 cap, 비용 기록/경고/강제 상한, 모델 변경, 운영 설정 또는 DB 변경은 없다. 기존 `maxSteps`, 호출 로그 및 진단 footer를 유지한다.
 
 통합 기준은 main `e2b3298e5e5a2d1c6644995051fa91ad5c0631e1` (Slack read/search/authorization PR #91, 첨부 PR #92, web 포함)이다.
 
 - `ConversationRuntime.acquire()` 직후 `ExecutionScope`를 만든다. DB claim → 초기 control message → source fetch/summary → main → subagent/tool → 성공 persist 시작 전 체크까지 하나의 절대 `deadlineAt`과 signal을 공유한다. 단계별로 180초를 갱신하지 않는다.
 - 기존 event dedupe / thread 직렬화 / admission concurrency / cache / DB 성공 turn 정책을 유지한다. queue에는 타이머/UI/registry가 없으며 claim 중복은 UI도 만들지 않는다.
-- `handlers.ts`는 Slack source 조회/요약 **전** 짧은 control message를 스레드에 게시한다. 생성 중 plan/raw tool 진행 전송은 제거했다. 버튼은 status message에만 두며 최종 답변 전달 성공을 확인한 뒤 해당 control을 삭제한다. 저장 성공만으로 완료를 표시하지 않는다.
+- `handlers.ts`는 plan stream을 열기 **전**, Slack source 조회/요약 **전** 짧은 control message를 스레드에 게시한다. 별도 plan stream은 기존대로 유지해 progress UX를 보존한다. 버튼은 status message에만 두고 plan에는 중복하지 않는다.
 - 취소/시간초과 안내는 execution abort와 별개인 bounded delivery scope로 즉시 시작한다. 실제 underlying 작업이 정리 중이라는 사실을 명시한다. 완료/오류/취소/시간초과에서는 버튼을 제거하고 열린 stream도 정리한다. cleanup 실패로 남은 버튼도 registry/state 검증으로 사용할 수 없다.
 
 ## 신뢰 / 취소 권한
@@ -49,7 +49,7 @@ active registry는 기존 runtime admission bound만 사용한다. 중단됐지�
 
 final 성공 전달은 persist 뒤, 부가 DB logging 앞에 한다. 후속 logging 실패가 답변을 숨기지 않으며, final delivery 실패/timeout도 로컬 catch로 처리해 기존 tool/token/invocation/agent-call 성공 기록을 계속 시도한다. 전송 실패를 성공 전송 로그로 표시하지 않는다. runtime/handler 모두 committed 상태를 확인하여 성공 뒤 `repository.fail()`/오류 invocation 재기록/오류 안내를 하지 않는다. 취소/timeout turn은 다음 history에 넣지 않는다.
 
-`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. 저장 후 final-only buffered stream을 전송한다(생성 중 실시간 토큰 스트리밍 아님). 명시적 미지원/권한 start 거절만 한 번 postMessage fallback한다. start/append/stop의 불확실 전송은 재게시하지 않는다. 본문 중복 방지와 호출 수 한계는 [하네스](agent-harness.md) 참고. 전달 미확인은 control에 표시하며 성공 control 삭제를 하지 않는다. status cleanup과 action ephemeral도 별도 bounded delivery다. 이미 시작한 transport의 실제 종료를 기다리는 정책이지 취소 불가능 API를 race만으로 끝났다고 주장하는 방식이 아니다.
+`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. final stopStream 실패 시 기존 postMessage fallback을 유지하되, delivery signal이 이미 abort된 경우 늦은 fallback을 시작하지 않는다. plan 생성에서 Slack이 성공 session/ts를 반환하면 execution post-checkpoint **이전**에 저장한다. 바로 그때 deadline이 지나도 모델/commit은 차단하되 알려진 stream ts로 bounded cleanup을 할 수 있다. status cleanup과 action ephemeral도 별도 bounded delivery다. Slack이 요청을 받아들인 뒤 연결이 끊기는 ambiguous 전송은 exactly-once가 아니며 fallback 중복 가능성은 기존처럼 남는다. 이미 시작한 transport의 실제 종료를 기다리는 정책이지 취소 불가능 API를 race만으로 끝났다고 주장하는 방식이 아니다.
 
 ## Slack read/search/attachment 보안 보존
 
@@ -73,7 +73,7 @@ HTTP/LLM에는 반환 signal을 actual transport의 `signal`/`abortSignal`로 �
 ## 검증과 남은 한계
 
 - fake timer/registry: 정확히 180초, 여러 단계 합산/queue exclusion, requester 성공과 다른 user/team/channel/message/thread/위조 payload/repeated/expired/completed/committing 거절, cancellation shared signal/late answer suppression.
-- 실제 runtime/handler 통합: source fetch 이전 버튼, 즉시 action ack, fetch/summary/main 취소, 180초 즉시 안내와 잔여 slot/thread 유지, late tool drain, failed dedupe/다음 요청 회복, commit 시작 전/중/후 경주, committed logging/delivery failure 보존, 전달 성공 후 버튼 삭제 및 명시적 fallback/불확실 전송 no-replay 회귀.
+- 실제 runtime/handler 통합: source fetch 이전 버튼, 즉시 action ack, fetch/summary/main 취소, 180초 즉시 안내와 잔여 slot/thread 유지, late tool drain, failed dedupe/다음 요청 회복, commit 시작 전/중/후 경주, committed logging/delivery failure 보존, 버튼 정리 및 기존 streaming fallback 회귀.
 - 실제 로컬 transport/SDK: Slack/Web/첨부 HTTP socket close, pre-aborted socket 미생성, 15초 HTTP timeout close, 429 무재시도, SDK no-op secret log, TLS/agent/proxy 설정 전달; 실제 AI SDK DeepSeek 요약 HTTP 취소; 실제 Mastra stream/generate provider 및 tool signal; 실제 parser child SIGKILL/close/다음 parse 회복.
 - TLS 설정 전달 테스트는 실제 TLS handshake/인증서 E2E가 아니다. **실제 운영 Slack/실제 LLM E2E는 미실행**이며 bot scope/Real-time Search 및 action_token 수신 성공을 로컬 테스트로 보증하지 않는다.
 - 실행 큐/registry/ALS는 single-process다. replica 간 서로 다른 event의 thread 직렬화나 process 재시작 뒤 살아 있는 버튼 회수는 보장하지 않는다. 재시작 후 registry에 없는 버튼은 동일 unavailable 응답이다.
