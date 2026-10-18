@@ -200,19 +200,21 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each([true, false])("deletes controls only after actual final stream stop is confirmed: %s", async confirmed => {
+  it.each(["success", "chat.appendStream", "chat.stopStream"])("deletes controls only after the actual final stream is confirmed: %s", async outcome => {
     const h = harness();
+    h.stream.mockResolvedValueOnce({ ...answer(), text: Promise.resolve("safe answer " + "x".repeat(13_000)) });
     h.client.apiCall.mockImplementation(async method => {
       if (method === "chat.startStream") return {ok:true,ts:"3.000001"};
-      if (!confirmed) throw new Error("ambiguous stop transport");
+      if (method === outcome) throw new Error("ambiguous final stream transport");
       return {ok:true};
     });
-    await h.deliver(`stream-${confirmed}`);
+    await h.deliver(`stream-${outcome}`);
     expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage).toHaveBeenCalledOnce(); // control only, no answer replay
     expect(h.client.apiCall.mock.calls[0][0]).toBe("chat.startStream");
     expect(vi.mocked(h.repository.complete).mock.invocationCallOrder[0]).toBeLessThan(h.client.apiCall.mock.invocationCallOrder[0]);
-    if (confirmed) {
+    expect(h.client.apiCall.mock.calls.some(([method]) => method === "chat.appendStream")).toBe(true);
+    if (outcome === "success") {
       expect(h.client.chat.delete).toHaveBeenCalledExactlyOnceWith({channel:"C1",ts:"2.000001"});
       expect(h.client.apiCall.mock.invocationCallOrder.at(-1)).toBeLessThan(h.client.chat.delete.mock.invocationCallOrder[0]);
     } else {

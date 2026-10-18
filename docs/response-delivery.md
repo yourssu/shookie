@@ -18,7 +18,7 @@ Mastra, 모델/provider 설정, main prompt, 서비스 도구 등록/위임, Rad
 
 공식 https://docs.slack.dev/reference/methods/chat.stopStream/ 계약은 stop의 `blocks`를 streamed markdown **아래에 추가**한다. 따라서 stop에는 feedback `context_actions`만 붙이고 본문 blocks는 다시 보내지 않는다. incremental markdown/코드펜스는 Slack native renderer가 완성한다. 기존 final blocks fallback도 feedback을 유지하고 빈 debug context block을 만들지 않는다. 실제 Slack UI 렌더링은 미검증이다.
 
-Fallback은 start의 명시적 `unknown_method`/`method_not_supported`/`not_allowed_token_type`/`missing_scope` 거절에만 허용한다. SDK 예외는 구조화된 platform error code만 검사한다. transport timeout/끊김/internal_error/append/stop 실패는 재게시하지 않는다. 알려진 session은 본문 없이 best-effort stop만 한다. exactly-once 보장이 아니며 부분 전달/미전달 또는 정리되지 않은 stream이 남을 수 있다.
+Fallback은 start의 명시적 `unknown_method`/`method_not_supported`/`not_allowed_token_type`/`missing_scope` 거절에만 허용한다. SDK 예외는 구조화된 platform error code만 검사한다. transport timeout/끊김/internal_error/append/stop 실패는 재게시하지 않는다. 알려진 session은 본문 없이 best-effort stop만 한다. exactly-once 보장이 아니며 부분 전달/미전달 또는 정리되지 않은 stream이 남을 수 있다. 특히 start 성공 뒤 append/stop 실패는 첫 청크나 본문 전체가 이미 보였을 수 있지만 최종 완료/feedback은 확인되지 않은 상태다. 이때 두 번째 final post를 만들거나 성공 control을 삭제하지 않는다.
 
 기존 인증 RequestContext, 실행 180초 취소/timeout, committing 중 취소 거절, 독립 전체 15초 delivery scope, retry 0을 유지한다. 생성 중 요청자 취소와 실패/저장/전달 상태는 기존 execution/runtime 경계를 따른다.
 
@@ -28,10 +28,11 @@ Fallback은 start의 명시적 `unknown_method`/`method_not_supported`/`not_allo
 
 축소 후 새 검증:
 - database/shookie TypeScript build 통과.
-- `yarn workspace shookie test src/slack/handlers.test.ts src/slack/final-delivery.test.ts src/slack/markdown-to-blocks.test.ts src/slack/slack-thread-source.test.ts src/slack/github-context.integration.test.ts src/slack/conversation-runtime.test.ts src/slack/thread-summarizer.test.ts src/cancellation src/agent --maxWorkers=2 --minWorkers=1 --reporter=dot`: 25 files / 339 tests 통과.
+- `yarn workspace shookie test src/slack/handlers.test.ts src/slack/final-delivery.test.ts src/slack/markdown-to-blocks.test.ts src/slack/slack-thread-source.test.ts src/slack/github-context.integration.test.ts src/slack/conversation-runtime.test.ts src/slack/thread-summarizer.test.ts src/cancellation src/agent --maxWorkers=2 --minWorkers=1 --reporter=dot`: 25 files / 340 tests 통과. start 성공 후 append 실패/stop 실패 각각 handler 통합에서 final post 재생성 없음, 성공 control 삭제 없음, 전달 미확인 안내를 확인한다.
 - `yarn workspace shookie test src/tools/code-explorer/registry.test.ts src/tools/code-explorer/github-read.test.ts src/tools/posthog/registry.test.ts src/tools/posthog/client.test.ts --maxWorkers=2 --minWorkers=1 --reporter=dot`: 4 files / 173 tests 통과. Radar guidance 소비/인가가 base 계약으로 복원되었음을 원래 테스트로 확인했다.
 - base `6a12031093af970582deefa1970fb6c449db3ec9`와 비교해 agent production 코드/main prompt/등록, tools 전체, execution-context.ts, AGENTS/README/manifest/lock diff 없음을 확인했다. agent의 유일한 잔여 변경은 이미지 tool progress 미전송 테스트다.
-- 이전 전체 범위 검증의 git snapshot 간헐 clone 실패와 deploy-script command 60초 timeout은 새 P0 검증 통과로 간주하지 않는다. 해당 운영 코드 변경은 없으며 이번 축소 후 전체 deploy-script/live 환경은 재실행하지 않았다.
+- 이전 deploy-script command 60초 timeout은 regression 증거로 단정하지 않았다. 배포 scripts/tests에 base 대비 diff 없음을 확인하고 `yarn workspace shookie test src/deployment/deploy-script.test.ts -t 'image retention' --maxWorkers=1 --minWorkers=1 --reporter=dot` (10/36 통과, 15.31초), `-t '^(?!.*image retention).*'` (나머지 26/36 통과, 34.37초)로 분할하여 전체 36개를 완료했다. 선택 제외 skip은 두 분할의 합집합으로 모두 커버된다. 실제 배포는 아니다.
+- snapshot fixture 추가 단독 반복: 첫 실행 14 pass/1 fail (`awaits refreshed async credentials...` 첫 clone의 `controlled clone failed`), 다음 실행 15/15 pass로 간헐 재현했다. code-explorer 소스·fixture/테스트 전체, execution-context/config/logger, manifest/lock/tsconfig가 base와 동일함을 diff 검사로 확인했다. 즉 base와 동일한 snapshot 코드/의존성에서도 발생하는 증거이나 별도 base checkout 실행과 동일하다고 주장하지 않는다. sanitized clone 경계가 원인을 숨기므로 subprocess/monitor/timeout 중 근본 원인은 미확정이다. 무관한 broad fix나 보안 assertion 완화는 하지 않았다. 실제 Slack start/append/stop 및 feedback UI 렌더링은 여전히 미실행이다.
 
 ## 분리 이력 / 후속 main 인계
 
