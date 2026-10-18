@@ -2,7 +2,7 @@ import type { App } from "@slack/bolt";
 import { CancellationRegistry } from "../cancellation/request-registry.js";
 import { registerCancellationAction, SlackRequestControls, STOP_TEXT } from "../cancellation/slack-controls.js";
 import { scopedSlackClient, slackDelivery } from "../cancellation/slack-transport.js";
-import { executionCheckpoint, executionSignal, executionOperation, type ExecutionScope } from "../cancellation/execution-context.js";
+import { executionCheckpoint, executionSignal, type ExecutionScope } from "../cancellation/execution-context.js";
 import { ConversationStoppedError } from "../cancellation/conversation-control.js";
 import type { KnownBlock } from "@slack/types";
 import type { Agent } from "@mastra/core/agent";
@@ -11,12 +11,8 @@ import { createHash } from "node:crypto";
 import type { Message } from "../services/memory/in-memory.js";
 import { ConversationRuntime, ConversationBusyError, ConversationInputError } from "./conversation-runtime.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
-import {
-  startPlanStream,
-  appendTaskUpdate,
-  stopStreamWithBlocks,
-  type StreamSession,
-} from "./streaming.js";
+import { deliverFinalAnswer } from "./final-delivery.js";
+
 import { getCurrentChannel } from "./assistant.js";
 import type { ShookieBlock } from "../types/block.js";
 import { config } from "../config.js";
@@ -39,16 +35,6 @@ import { budgetSlackThread, readSlackThread, SlackThreadContextError, THREAD_CON
 import { summarizeThread } from "./thread-summarizer.js";
 import { bindSlackReadContext } from "../tools/slack/context.js";
 import { projectEventAttachments, type AttachmentCandidates } from "../tools/attachments/event-metadata.js";
-
-const TOOL_PROGRESS_MESSAGES: Record<string, string> = {
-  posthog_agent: "🔍 PostHog 데이터 분석 중...",
-  code_explorer_agent: "🔬 코드 탐색 중...",
-  slack_read_thread: "💬 현재 채널 스레드 읽는 중...",
-  slack_read_channel: "💬 현재 채널 기록 읽는 중...",
-  slack_search: "💬 Slack 검색 지원 확인 중...",
-  slack_read_attachment: "📎 Slack 첨부 텍스트 읽는 중...",
-  slack_analyze_image: "🖼️ Slack 이미지 분석 중...",
-};
 
 // Do not persist/debug-log Slack read arguments, opaque cursors or fetched participant text.
 const isSlackReadTool = (toolName: string) => ["slack_search", "slack_read_thread", "slack_read_channel", "slack_read_attachment", "slack_analyze_image"].includes(toolName);
@@ -124,11 +110,12 @@ export function registerHandlers(
           const greeting = "네, 무엇을 도와드릴까요?";
           await commit(greeting);
           await postToThread(app, identity.channel, threadTs, greeting);
+          controls.markDelivered();
           return;
         }
         // Keep the original event-only selection and its single read; never supply a fallback.
         const actionToken = event.action_token;
-        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments);
+        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, () => controls.markDelivered());
       }, slackContext, scope => controls.start(scope));
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
@@ -159,11 +146,10 @@ async function handleConversation(
   scope: ExecutionScope,
   actionToken?: unknown,
   attachments?: AttachmentCandidates,
+  onDelivered: () => void = () => {},
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
-  let streamSession: StreamSession | null = null;
-  const client = scopedSlackClient(app, scope.control.signal);
 
   try {
     logger.info(`📩 메시지 수신: "${userText.slice(0, 100)}"`);
@@ -182,25 +168,8 @@ async function handleConversation(
         })
       : null;
 
-    // Slack plan 스트림 열기 (실패 시 폴백: 이후 도구/최종 응답은 chat.postMessage로)
-    try {
-      logger.info(`[streaming] startPlanStream 호출: channel=${channel} threadTs=${threadTs} teamId=${teamId ?? "(없음)"} userId=${userId}`);
-      const openedSession = await executionOperation(async () => {
-        const session = await startPlanStream(client, channel, threadTs, teamId, userId);
-        // Retain a known successful creation before the post-operation deadline check.
-        // Even a late result must be stopped using its actual Slack timestamp.
-        streamSession = session;
-        return session;
-      });
-      logger.info(`[streaming] plan 스트림 열림: ts=${openedSession.messageTs}`);
-    } catch (err) {
-      executionCheckpoint(); // Stopped execution goes to bounded cleanup, not model/fallback work.
-      logger.warn(
-        "[streaming] startPlanStream 실패, postMessage 폴백 모드:",
-        err instanceof Error ? err.message : String(err),
-      );
-      // Keep any session already returned by Slack; null only means creation never succeeded.
-    }
+    // During generation only the request-owned cancellation control is visible.
+    // No speculative text, raw tool arguments/results or plan stream is sent.
 
     const runConversation = async () => {
       executionCheckpoint();
@@ -224,7 +193,11 @@ async function handleConversation(
       const withAttachments = attachments?.files.length
         ? [...modelMessages, { role: "user" as const, content: JSON.stringify(attachments) }]
         : modelMessages;
-      const streamResult = await agent.stream(withAttachments, {
+      const requestTime = new Date().toLocaleString("sv", { timeZone: "Asia/Seoul" });
+      const streamResult = await agent.stream([...withAttachments, {
+        role: "system" as const,
+        content: `[trusted request context] 현재 시각: ${requestTime} KST (Asia/Seoul). 과거 대화의 선택 대상/기간/ref는 참조 후보일 뿐 현재 권한이나 최신 조회 증명이 아닙니다.`,
+      }], {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         requestContext,
         abortSignal: scope.control.signal,
@@ -246,80 +219,11 @@ async function handleConversation(
               payload: { toolName: string; id?: string; toolCallId?: string; args?: unknown };
             }).payload;
             const toolName = payload.toolName;
-            // tool-call과 tool-result가 같은 taskId로 매핑되려면 안정적 ID 필수.
-            // Date.now() fallback은 두 이벤트가 다른 ID를 만들어 plan 블록이 깨짐.
-            const taskId = payload.id ?? payload.toolCallId;
             if (!toolNamesSeen.includes(toolName)) {
               toolNamesSeen.push(toolName);
             }
 
-            if (streamSession && taskId) {
-              const argsSummary = payload.args
-                ? JSON.stringify(safeToolLog(toolName, payload.args)).slice(0, 200)
-                : undefined;
-              try {
-                await appendTaskUpdate(streamSession, client, {
-                  id: taskId,
-                  title: TOOL_PROGRESS_MESSAGES[toolName] ?? toolName,
-                  status: "in_progress",
-                  details: argsSummary,
-                });
-              } catch (err) {
-                logger.warn(
-                  `[streaming] appendTaskUpdate(in_progress) 실패 (${toolName}):`,
-                  err instanceof Error ? err.message : String(err),
-                );
-              }
-            } else if (streamSession && !taskId) {
-              logger.warn(
-                `[streaming] tool-call 이벤트에 id/toolCallId 없음 — task_update 스킵 (${toolName})`,
-              );
-            }
-          } else if (value.type === "tool-result") {
-            const payload = (value as {
-              payload: {
-                toolName: string;
-                id?: string;
-                toolCallId?: string;
-                result?: unknown;
-              };
-            }).payload;
-            const toolName = payload.toolName;
-            const taskId = payload.id ?? payload.toolCallId;
 
-            if (streamSession && taskId) {
-              // output 필드로 긴 결과 본문 전송 (rich_text, ~3000자).
-              // 도구 결과가 JSON/문자열 혼합이라 문자열로 정규화 후 슬라이스.
-              const rawResult = payload.result;
-              const resultStr = toolName === "slack_analyze_image"
-                ? "이미지 분석 결과를 확인했습니다. 파생 해석의 출처·불확실성·한계는 최종 답변에 반영합니다."
-                : toolName === "slack_read_attachment"
-                ? "첨부 읽기 결과를 확인했습니다. 출처·지원 여부·잘림은 최종 답변에 반영합니다."
-                : rawResult
-                ? (typeof rawResult === "string"
-                    ? rawResult
-                    : JSON.stringify(rawResult)
-                  ).slice(0, 2000)
-                : undefined;
-
-              try {
-                await appendTaskUpdate(streamSession, client, {
-                  id: taskId,
-                  title: TOOL_PROGRESS_MESSAGES[toolName] ?? toolName,
-                  status: "complete",
-                  ...(resultStr ? { output: resultStr } : {}),
-                });
-              } catch (err) {
-                logger.warn(
-                  `[streaming] appendTaskUpdate(complete) 실패 (${toolName}):`,
-                  err instanceof Error ? err.message : String(err),
-                );
-              }
-            } else if (streamSession && !taskId) {
-              logger.warn(
-                `[streaming] tool-result 이벤트에 id/toolCallId 없음 — task_update 스킵 (${toolName})`,
-              );
-            }
           }
         }
       } finally {
@@ -353,25 +257,15 @@ async function handleConversation(
     await commit(responseText);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
-    const debugFooter = [
-      `🔧 사용 도구: ${toolNamesSeen.length > 0 ? [...new Set(toolNamesSeen)].join(", ") : "없음"}`,
-      `💰 토큰: 입력 ${inputTokens.toLocaleString()} / 출력 ${outputTokens.toLocaleString()}`,
-      `💵 비용: $${((inputTokens * 0.435 + outputTokens * 0.87) / 1_000_000).toFixed(4)}`,
-    ].join("\n"); // Existing diagnostics only; no new cost policy.
-    const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, debugFooter, { withFeedback: true });
+    const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, "", { withFeedback: true });
     // Deliver before ancillary DB logging, but delivery failure must not skip success logging.
     let delivered = false;
     try {
-      await slackDelivery(app, async (deliveryClient, signal) => {
-        if (streamSession) {
-          try { await stopStreamWithBlocks(streamSession, deliveryClient, fallbackText, blocks); }
-          catch {
-            signal.throwIfAborted(); // No late fallback after delivery deadline.
-            await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
-          }
-        } else await deliveryClient.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
-      });
+      await slackDelivery(app, (deliveryClient, signal) => deliverFinalAnswer(deliveryClient, {
+        channel, threadTs, teamId, userId, markdown: responseText, fallbackText, blocks,
+      }, signal));
       delivered = true;
+      onDelivered();
     } catch {
       logger.warn("성공 대화 저장 이후 최종 응답 전송 실패", { requestId });
       // No misleading failure reply or state reversal; persist-success logging continues below.
@@ -474,9 +368,7 @@ async function handleConversation(
         finishReason: "error",
       });
     }
-    if (streamSession) {
-      try { await slackDelivery(app, deliveryClient => stopStreamWithBlocks(streamSession!, deliveryClient, "요청을 완료하지 못했습니다.", [])); } catch { /* outer handler posts friendly error */ }
-    }
+
     throw error;
   }
 }

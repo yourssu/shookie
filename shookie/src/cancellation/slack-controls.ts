@@ -35,6 +35,8 @@ export class SlackRequestControls {
   private scope?: ExecutionScope;
   private notification?: Promise<void>;
   private notified = false;
+  private delivered = false;
+  markDelivered(): void { this.delivered = true; }
   constructor(private readonly app: App, private readonly registry: CancellationRegistry,
     private readonly event: ConversationEvent) {}
   get stopNotified(): boolean { return this.notified; }
@@ -45,6 +47,7 @@ export class SlackRequestControls {
     const client = scopedSlackClient(this.app, scope.control.signal);
     const posted = await client.chat.postMessage({ channel: this.event.channel, thread_ts: this.event.threadTs,
       text: "요청을 확인하고 있어요. 실행은 최대 3분이며 요청자만 취소할 수 있습니다.",
+      metadata: { event_type: "shookie_request_control", event_payload: {} },
       blocks: this.event.teamId ? [{ type: "actions", elements: [{ type: "button", action_id: CANCEL_ACTION_ID,
         text: { type: "plain_text", text: "요청 취소" }, value: this.event.requestId }] }] : [] });
     if (!posted.ts) throw new Error("Missing control message linkage");
@@ -70,8 +73,13 @@ export class SlackRequestControls {
     this.registry.remove(this.event.requestId, scope.control);
     if (this.notification) await this.notification;
     if (this.messageTs && !this.notified) {
-      try { await slackDelivery(this.app, client => client.chat.update({ channel: this.event.channel,
-        ts: this.messageTs!, text: scope.control.isCommitted ? "요청을 완료했습니다." : "요청을 종료했습니다.", blocks: [] })); } catch { /* expired button still denied by registry */ }
+      try {
+        await slackDelivery(this.app, async client => {
+          if (this.delivered) await client.chat.delete({ channel: this.event.channel, ts: this.messageTs! });
+          else await client.chat.update({ channel: this.event.channel, ts: this.messageTs!,
+            text: scope.control.isCommitted ? "답변을 저장했지만 전달을 확인하지 못했습니다. 자동 재전송하지 않습니다." : "요청을 종료했습니다.", blocks: [] });
+        });
+      } catch { /* expired button still denied by registry */ }
     }
   }
 }

@@ -11,7 +11,7 @@ export const messageBytes = (messages: Message[]) => messages.reduce((sum, m) =>
 export type ThreadSummarizer = (messages: Message[], maxBytes: number) => Promise<string>;
 export const summaryInput = (messages: Message[], maxBytes: number) => JSON.stringify({ dialogue: messages, maxUtf8Bytes: maxBytes });
 type SlackMessage = { ts?: string; thread_ts?: string; text?: string; user?: string; bot_id?: string;
-  subtype?: string; reply_count?: number };
+  subtype?: string; reply_count?: number; metadata?: { event_type?: string } };
 export type ThreadMention = { channel: string; threadTs: string; currentTs: string; userId: string;
   botUserId?: string; botId?: string };
 const validTs = (ts: unknown): ts is string => typeof ts === "string" && /^\d+\.\d{1,6}$/u.test(ts);
@@ -39,7 +39,8 @@ export async function readSlackThread(
         // Project text/identity only: do not retain files, images, blocks or unrelated Slack metadata.
         const raw = message as SlackMessage;
         const m: SlackMessage = { ts: raw.ts, thread_ts: raw.thread_ts, text: raw.text,
-          user: raw.user, bot_id: raw.bot_id, subtype: raw.subtype, reply_count: raw.reply_count };
+          user: raw.user, bot_id: raw.bot_id, subtype: raw.subtype, reply_count: raw.reply_count,
+          metadata: raw.metadata?.event_type === "shookie_request_control" ? { event_type: "shookie_request_control" } : undefined };
         if (!validTs(m.ts) || typeof m.text !== "string" ||
             (m.thread_ts && m.thread_ts !== mention.threadTs)) fail();
         const previous = collected.get(m.ts);
@@ -69,6 +70,11 @@ export async function readSlackThread(
     executionCheckpoint();
     const messages = [...collected.values()]
       .filter(m => timestamp(m.ts!) <= timestamp(mention.currentTs))
+      .filter(m => {
+        const own = m.user === mention.botUserId || (!m.user && !!mention.botId && m.bot_id === mention.botId);
+        return !(own && (m.metadata?.event_type === "shookie_request_control" ||
+          ["요청을 완료했습니다.", "요청을 종료했습니다.", "요청을 확인하고 있어요. 실행은 최대 3분이며 요청자만 취소할 수 있습니다."].includes(m.text ?? "")));
+      })
       .sort((a, b) => timestamp(a.ts!) < timestamp(b.ts!) ? -1 : 1)
       .map<Message>(m => {
         const own = m.user === mention.botUserId || (!m.user && !!mention.botId && m.bot_id === mention.botId);

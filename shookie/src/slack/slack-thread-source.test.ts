@@ -19,6 +19,14 @@ function client(...pages: unknown[]) {
 const page = (items: unknown[] = messages) => ({ ok: true, messages: items, has_more: false });
 
 describe("authoritative Slack thread reader", () => {
+  it("omits own request controls after full completeness checks, but preserves identical participant text", async () => {
+    const items = messages.map((m, i) => i === 2 ? { ...m, text: "internal control", metadata: { event_type: "shookie_request_control" } }
+      : i === 1 ? { ...m, text: "internal control", metadata: { event_type: "shookie_request_control" } } : m);
+    const result = await readSlackThread(client(page(items)).api, mention);
+    expect(result).toHaveLength(4);
+    expect(result.filter(m => JSON.parse(m.content).text === "internal control")).toHaveLength(1);
+    expect(result.every(m => m.role === "user")).toBe(true);
+  });
   it("reads all cursor pages, dedupes repeated root, orders chronologically and distinguishes own/other bots", async () => {
     const h = client({ ...page([messages[0], messages[2], messages[1]]), has_more: true,
       response_metadata: { next_cursor: "cursor1" } }, page([messages[0], messages[4], messages[3]]));
