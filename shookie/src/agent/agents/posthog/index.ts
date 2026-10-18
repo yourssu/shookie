@@ -6,7 +6,8 @@ import { withSystemPromptLogging } from "../../log-system-prompt.js";
 import type { PostHogClientManager } from "../../../tools/posthog/client.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createPostHogAgent(manager: PostHogClientManager, model: any, tools = createPostHogAgentTools(manager)) {
+export function createPostHogAgent(manager: PostHogClientManager, model: any) {
+  const tools = createPostHogAgentTools(manager);
   return new Agent({
     id: "posthog",
     name: "PostHog Analyst",

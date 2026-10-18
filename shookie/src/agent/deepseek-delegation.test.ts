@@ -49,13 +49,13 @@ it.each([['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], 
   const wires: any[] = [];
   const reads: string[] = [];
   const githubScript = [
-    completion('', 'code_explorer_agent', { task: 'List registered repositories', context: 'optional research fixture', outputScope: 'list' }),
+    completion('', 'code_explorer_agent', { task: 'List registered repositories' }),
     completion('', 'github_read', { operation: 'repositories' }),
     completion('synthetic-repository-summary: example/sample'),
     completion('synthetic-final: example/sample'),
   ];
   const posthogScript = [
-    completion('', 'posthog_agent', { task: 'List registered projects', context: 'optional research fixture', outputScope: 'list' }),
+    completion('', 'posthog_agent', { task: 'List registered projects' }),
     completion('', 'listProjects', {}),
     completion('synthetic-project-summary: Synthetic project'),
     completion('synthetic-final: Synthetic project'),

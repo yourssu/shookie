@@ -59,7 +59,7 @@ function harness(options: { spoofToolIdentity?: boolean; dropDelegatedActor?: bo
   const delegate = createMainShookieTools({ codeExplorer: { generate } as unknown as Agent }).code_explorer_agent;
   const stream = vi.fn(async (messages: { content: string }[], opts: { requestContext: RequestContext }) => {
     if (options.dropDelegatedActor) opts.requestContext.delete("userId");
-    const delegated = await delegate.execute!({ task: messages.at(-1)!.content, context: "bounded test", outputScope: "read only", userId: "ADMIN", teamId: "EVIL", requestId: "fake" } as never,
+    const delegated = await delegate.execute!({ task: messages.at(-1)!.content, userId: "ADMIN", teamId: "EVIL", requestId: "fake" } as never,
       { requestContext: opts.requestContext } as never);
     return { fullStream: new ReadableStream({ start(controller) { controller.close(); } }),
       text: Promise.resolve(JSON.stringify(delegated)), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), steps: Promise.resolve([]), finishReason: Promise.resolve("stop") };
