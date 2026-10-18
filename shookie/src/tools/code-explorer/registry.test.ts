@@ -40,7 +40,7 @@ describe("fail-closed Radar registry", () => {
     const fetcher = vi.fn(async () => response(repositories));
     const cfg = { owner: "yourssu", gitHubToken: "github-secret", registry: config };
     const last = await readGithub(cfg, { operation: "repositories", page: 1000, perPage: 1 }, fetcher);
-    expect(JSON.parse(last.data)[0]).toMatchObject({ name: "repo-999", instructions: "", instructionsTruncated: false });
+    expect(JSON.parse(last.data)[0]).toMatchObject({ name: "repo-999", instructionsTruncated: true });
     expect(last.hasNextPage).toBe(false);
     const page = await readGithub(cfg, { operation: "repositories", perPage: 30 }, fetcher);
     expect(JSON.parse(page.data)).toHaveLength(30);
@@ -60,13 +60,10 @@ describe("fail-closed Radar registry", () => {
     expect(fetcher.mock.calls.every(c => c[0] === config.apiUrl)).toBe(true);
     await expect(readGithub(cfg, { operation: "file", repo: "allowed", path: config.apiKey })).rejects.toThrow("secret in source");
     const first = await readGithub(cfg, { operation: "repository", repo: "ALLOWED" });
-    expect(first.repositoryGuidance?.repository.instructions).toBe("");
-    expect(JSON.stringify(first)).not.toContain(repo.instructions);
+    expect(first.repositoryGuidance?.repository.instructions).toBe(repo.instructions);
     repositories = [{ ...repo, instructions: `updated ${config.apiKey} github-secret` }];
     const second = await readGithub(cfg, { operation: "repository", repo: "allowed" });
-    expect(second.repositoryGuidance?.repository.instructions).toBe("");
-    expect(JSON.stringify(second)).not.toContain("updated [REDACTED]");
-    expect(JSON.stringify(second)).not.toContain(`updated ${config.apiKey}`);
+    expect(second.repositoryGuidance?.repository.instructions).toBe("updated [REDACTED] [REDACTED]");
     repositories = [];
     await expect(readGithub(cfg, { operation: "repository", repo: "allowed" })).rejects.toThrow();
     expect(JSON.parse((await readGithub(cfg, { operation: "repositories" })).data)).toEqual([]);
@@ -76,7 +73,7 @@ describe("fail-closed Radar registry", () => {
   it("uses only a dedicated header, disallows redirects and redacts registry instructions", async () => {
     const fetcher = vi.fn(async () => response([{ ...repo, instructions: config.apiKey }]));
     const result = await fetchRegistry(config, "yourssu", undefined, fetcher);
-    expect(result[0].instructions).toBe("");
+    expect(result[0].instructions).toBe("[REDACTED]");
     expect(fetcher).toHaveBeenCalledWith(config.apiUrl, expect.objectContaining({ redirect: "error", headers: { "X-API-Key": config.apiKey, Accept: "application/json" } }));
     for (const status of [302, 401, 500]) await expect(fetchRegistry(config, "yourssu", undefined, vi.fn(async () => new Response("secret", { status })))).rejects.toThrow("등록 저장소");
   });

@@ -108,7 +108,7 @@ describe("strict catalog schema", () => {
     catalog[0] = project(0, { instructions: `a ${registry.apiKey} b ${POSTHOG_KEY} c ${encodeURIComponent(registry.apiKey)}`, description: `d ${POSTHOG_KEY}` });
     const result = await fetchPostHogRegistry(registry, { fetcher: vi.fn(async () => json({ projects: catalog })), secrets: [POSTHOG_KEY] });
     expect(result).toHaveLength(1000);
-    expect(result[0].instructions).toBe("");
+    expect(result[0].instructions).toBe("a [REDACTED] b [REDACTED] c [REDACTED]");
     expect(result[0].description).toBe("d [REDACTED]");
   });
   it("uses only the dedicated header, refuses redirects and rejects non-OK/non-JSON/oversized bodies", async () => {
@@ -168,15 +168,14 @@ describe("every PostHog tool authorizes against the live registry before PostHog
     const h = harness([project(1, { instructions: "v1" })]);
     const implicit = await exec(h.tools, name, input);
     expect(implicit).toMatchObject({ status: "success", source: { project: "Project-1", projectId: "1001", resource },
-      guidance: { project: "Project-1", projectId: "1001", instructions: "", selectedImplicitly: true } });
-    expect(resultSchema.parse(implicit).guidance?.instructions).toBe("");
-    expect(JSON.stringify(implicit)).not.toContain("v1");
+      guidance: { project: "Project-1", projectId: "1001", instructions: "v1", selectedImplicitly: true } });
+    expect(resultSchema.parse(implicit).guidance?.instructions).toBe("v1");
     expect(h.posthogCalls.at(-1)!.url).toContain("https://app.posthog.com/api/projects/1001/");
     expect(new Headers(h.posthogCalls.at(-1)!.init?.headers).get("Authorization")).toBe(`Bearer ${POSTHOG_KEY}`);
     expect(JSON.stringify(h.posthogCalls)).not.toContain(registry.apiKey);
     h.state.catalog = [project(1, { instructions: `v2 ${POSTHOG_KEY}`, updatedAt: "2026-02-01T00:00:00Z" }), project(2)];
     const named = await exec(h.tools, name, { ...input, project: "project-1" });
-    expect(named).toMatchObject({ status: "success", guidance: { instructions: "", updatedAt: "2026-02-01T00:00:00Z", selectedImplicitly: false } });
+    expect(named).toMatchObject({ status: "success", guidance: { instructions: "v2 [REDACTED]", updatedAt: "2026-02-01T00:00:00Z", selectedImplicitly: false } });
     expect(JSON.stringify(named)).not.toContain(POSTHOG_KEY);
     expect(h.registryCalls).toHaveLength(2);
   });
@@ -250,9 +249,7 @@ describe("listProjects (PostHog subagent only)", () => {
       expect(listProjectsResultSchema.parse(result)).toEqual(result);
       expect(result).toMatchObject({ status: "success", total: 61, hasNextPage: page < 4 });
       for (const entry of result.projects) {
-        expect(entry.instructionsTruncated).toBe(false);
-        expect(entry.instructionsPreview).toBe("");
-        expect(JSON.stringify(entry)).not.toContain("😀");
+        expect(entry.instructionsTruncated).toBe(true);
         expect(entry.descriptionTruncated).toBe(true);
         expect(Buffer.byteLength(JSON.stringify(entry))).toBeLessThanOrEqual(1200);
       }
