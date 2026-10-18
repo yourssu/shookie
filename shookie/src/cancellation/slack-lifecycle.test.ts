@@ -18,7 +18,7 @@ import { executionSignal } from "./execution-context.js";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
 async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
-function answer() { return { fullStream: new ReadableStream({ start(c) { c.close(); } }), text: Promise.resolve("safe answer"), usage: Promise.resolve({}), steps: Promise.resolve([]), finishReason: Promise.resolve("stop") }; }
+function answer() { return { fullStream: new ReadableStream({ start(c) { c.close(); } }), text: Promise.resolve("safe answer"), usage: Promise.resolve({}), steps: Promise.resolve([{ text: "safe answer", toolCalls: [] }]), finishReason: Promise.resolve("stop") }; }
 function harness(summary = vi.fn(async () => "summary")) {
   const events = new Map<string, (args: any) => Promise<void>>(); const actions = new Map<string, (args: any) => Promise<void>>();
   const client = { apiCall: vi.fn(async (_method?: string, _args?: unknown): Promise<{ok: boolean; error?: string; ts?: string}> => ({ ok: false, error: "unknown_method" })), chat: { delete: vi.fn(async () => ({ ok: true })), postMessage: vi.fn(async (_args: any) => ({ ok: true, ts: "2.000001" })),
@@ -54,6 +54,52 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("registered Slack cancel UI/action + actual runtime wiring", () => {
+  it("known cooldown takes precedence over immediate cancellation/control cleanup while registry still rejects expired buttons", async () => {
+    const h = harness(); let controller!: ReadableStreamDefaultController;
+    h.stream.mockImplementation(async (_messages, opts) => ({ ...answer(), fullStream: new ReadableStream({ start(c) {
+      controller = c; c.enqueue({ type: "text-delta", from: "AGENT", runId: (opts as unknown as { runId: string }).runId, payload: { text: "public" } });
+    } }) }));
+    const run = h.deliver("cooldown-cancel"); await flush();
+    h.client.chat.update.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter: 30 });
+    controller.enqueue({ type: "text-delta", from: "AGENT", runId: "slack-event:cooldown-cancel", payload: { text: "second" } });
+    await vi.advanceTimersByTimeAsync(1500);
+    await h.click({}, "slack-event:cooldown-cancel"); controller.close(); await run;
+    expect(h.repository.complete).not.toHaveBeenCalled(); expect(h.client.chat.update).toHaveBeenCalledTimes(1);
+    await h.click({}, "slack-event:cooldown-cancel");
+    expect(h.client.chat.postEphemeral).toHaveBeenLastCalledWith(expect.objectContaining({ text: CANCEL_UNAVAILABLE_TEXT }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a structured delete 429 also blocks immediate fallback control update without replay", async () => {
+    const h = harness(); h.client.chat.delete.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter: 30 });
+    await h.deliver("cooldown-delete");
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.client.chat.delete).toHaveBeenCalledOnce();
+    expect(h.client.chat.update).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    await h.click({}, "slack-event:cooldown-delete");
+    expect(h.client.chat.postEphemeral).toHaveBeenLastCalledWith(expect.objectContaining({ text: CANCEL_UNAVAILABLE_TEXT }));
+  });
+
+  it.each(["cancelled", "timed_out"])("%s wins a race with late length completion after visible public preview", async reason => {
+    const h = harness(); const gate = deferred<void>();
+    h.stream.mockImplementation(async (_messages, opts) => ({ ...answer(),
+      fullStream: new ReadableStream({ async start(c) {
+        c.enqueue({ type: "text-delta", from: "AGENT", runId: (opts as unknown as { runId: string }).runId, payload: { text: "visible public" } });
+        await gate.promise;
+        c.enqueue({ type: "text-delta", from: "AGENT", runId: (opts as unknown as { runId: string }).runId, payload: { text: "LATE_TEXT" } }); c.close();
+      } }),
+      finishReason: Promise.resolve("length"),
+    }));
+    const run = h.deliver("race"); await flush();
+    expect(h.client.chat.postMessage).toHaveBeenCalledTimes(2);
+    if (reason === "cancelled") await h.click({}, "slack-event:race");
+    else await vi.advanceTimersByTimeAsync(180_000);
+    expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining(reason === "cancelled" ? "취소" : "3분") }));
+    gate.resolve(); await run;
+    expect(h.repository.complete).not.toHaveBeenCalled(); expect(h.repository.fail).toHaveBeenCalledOnce();
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
+    expect(JSON.stringify(h.client.chat.update.mock.calls)).not.toMatch(/shookie_response_committed|LATE_TEXT|생성 한도/);
+  });
+
   it("posts a bound control button before thread fetch/summary/plan and acknowledges requester cancellation first", async () => {
     const h = harness(); const fetch = deferred<any>(); h.client.conversations.replies.mockReturnValue(fetch.promise);
     const run = h.deliver("fetch", true); await flush();
@@ -155,7 +201,7 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     const usage = { inputTokens: 101, outputTokens: 23, cachedInputTokens: 7, reasoningTokens: 3 };
     const steps = [{ toolCalls: [{ payload: { toolName: "slack_read_thread", id: "tool-1", args: { private: "hidden" } } }],
       toolResults: [{ payload: { toolName: "slack_read_thread", id: "tool-1", result: { participantText: "hidden" } } }] }];
-    h.stream.mockResolvedValueOnce({ ...answer(), usage: Promise.resolve(usage), steps: Promise.resolve(steps),
+    h.stream.mockResolvedValueOnce({ ...answer(), usage: Promise.resolve(usage), steps: Promise.resolve([...steps, { text: "safe answer", toolCalls: [] }]),
       fullStream: new ReadableStream({ start(c) {
         c.enqueue({ type: "tool-call", payload: steps[0].toolCalls[0].payload }); c.close();
       } }) } as unknown as ReturnType<typeof answer>);
@@ -203,7 +249,7 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
 
   it.each(["success", "chat.appendStream", "chat.stopStream"])("deletes controls only after the actual final stream is confirmed: %s", async outcome => {
     const h = harness();
-    h.stream.mockResolvedValueOnce({ ...answer(), text: Promise.resolve("safe answer " + "x".repeat(13_000)) });
+    h.stream.mockResolvedValueOnce({ ...answer(), text: Promise.resolve("safe answer " + "x".repeat(13_000)), steps: Promise.resolve([{ text: "safe answer " + "x".repeat(13_000), toolCalls: [] }]) });
     h.client.apiCall.mockImplementation(async method => {
       if (method === "chat.startStream") return {ok:true,ts:"3.000001"};
       if (method === outcome) throw new Error("ambiguous final stream transport");

@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse, Agent } from "node:http";
 import type { Socket } from "node:net";
 import { WebClient, LogLevel, type WebClientOptions } from "@slack/web-api";
-import { createCancellationSlackClient, SLACK_TRANSPORT_TIMEOUT_MS, slackDelivery } from "./slack-transport.js";
+import { createCancellationSlackClient, SLACK_TRANSPORT_TIMEOUT_MS, slackDelivery, SlackCooldown } from "./slack-transport.js";
 import { ExecutionScope, executionStorage, executionCheckpoint } from "./execution-context.js";
 import type { App } from "@slack/bolt";
+import { LiveAnswer } from "../slack/live-answer.js";
+import { SlackRequestControls } from "./slack-controls.js";
+import { CancellationRegistry } from "./request-registry.js";
 
 type RequestConfig = Parameters<NonNullable<WebClientOptions["requestInterceptor"]>>[0];
 
@@ -34,6 +37,95 @@ function source(options: WebClientOptions) {
 }
 
 describe("dedicated Slack transport (real localhost HTTP, no Slack E2E)", () => {
+  it("uses only finite nonnegative structured Retry-After, saturates overflow, and retains maximum cooldown", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const signal = new AbortController().signal;
+    for (const error of [null, "retry after 30", { retryAfter: 30 }, { code: "model", retryAfter: 30 }, ...[-1, Infinity, NaN, "30"].map(retryAfter => ({ code: "slack_webapi_rate_limited_error", retryAfter }))]) {
+      const cooldown = new SlackCooldown(); cooldown.observe(error); await cooldown.wait(signal);
+    }
+    const zero = new SlackCooldown(); zero.observe({ code: "slack_webapi_rate_limited_error", retryAfter: 0 }); await zero.wait(signal);
+    const maximum = new SlackCooldown(); maximum.observe({ code: "slack_webapi_rate_limited_error", retryAfter: 30 }); maximum.observe({ code: "slack_webapi_rate_limited_error", retryAfter: 2 });
+    await expect(maximum.wait(signal)).rejects.toThrow("deadline");
+    const overflow = new SlackCooldown(); overflow.observe({ code: "slack_webapi_rate_limited_error", retryAfter: Number.MAX_VALUE });
+    await expect(overflow.wait(signal)).rejects.toThrow("deadline"); expect(vi.getTimerCount()).toBe(0);
+    const short = new SlackCooldown(); short.observe({ code: "slack_webapi_rate_limited_error", retryAfter: 2 });
+    const controller = new AbortController(); const wait = short.wait(controller.signal); controller.abort();
+    await expect(wait).rejects.toBeDefined(); expect(vi.getTimerCount()).toBe(0);
+    const extended = new SlackCooldown(); extended.observe({ code: "slack_webapi_rate_limited_error", retryAfter: 2 });
+    let ready = false; const waiting = extended.wait(signal).then(() => { ready = true; });
+    await vi.advanceTimersByTimeAsync(1000); extended.observe({ code: "slack_webapi_rate_limited_error", retryAfter: 5 });
+    await vi.advanceTimersByTimeAsync(1000); expect(ready).toBe(false);
+    await vi.advanceTimersByTimeAsync(4000); await waiting; expect(ready).toBe(true);
+  });
+  it("sends real preview metadata before a gated model finishes, then updates that exact message atomically", async () => {
+    const received = deferred(); const bodies: URLSearchParams[] = []; const paths: string[] = [];
+    const h = await fixture((req, res) => {
+      let body = ""; req.on("data", chunk => { body += chunk; }); req.on("end", () => {
+        paths.push(req.url!); bodies.push(new URLSearchParams(body));
+        res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true, ts: "known" })); received.resolve();
+      });
+    });
+    const live = new LiveAnswer(source(h.options) as App, { channel: "C1", threadTs: "1.1" }, new AbortController().signal);
+    const modelGate = deferred(); let modelFinished = false;
+    const model = (async () => {
+      live.event({ type: "text-delta", from: "AGENT", runId: "root", payload: { text: "first public text" } }, "root");
+      await modelGate.promise; modelFinished = true;
+    })();
+    await received.promise; expect(modelFinished).toBe(false);
+    expect(bodies[0].get("text")).toContain("first public text");
+    expect(JSON.parse(bodies[0].get("metadata")!)).toEqual({ event_type: "shookie_response_preview", event_payload: {} });
+    modelGate.resolve(); await model;
+    await live.finalize("canonical", []); await live.cleanup();
+    expect(paths).toEqual(["/api/chat.postMessage", "/api/chat.update"]);
+    expect(bodies[1].get("ts")).toBe("known"); expect(bodies[1].get("text")).toBe("canonical");
+    expect(JSON.parse(bodies[1].get("metadata")!).event_type).toBe("shookie_response_committed");
+    expect(bodies.every(body => !body.has("signal"))).toBe(true);
+  });
+
+  it("honors actual HTTP 429 Retry-After before a single distinct known-message final update", async () => {
+    const first = deferred(); const limited = deferred(); const paths: string[] = []; const times: number[] = [];
+    const h = await fixture((req, res) => {
+      req.resume(); paths.push(req.url!); times.push(Date.now());
+      if (paths.length === 2) {
+        res.writeHead(429, { "retry-after": "1", "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "ratelimited" })); limited.resolve();
+      } else {
+        res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true, ts: "known" })); first.resolve();
+      }
+    });
+    const live = new LiveAnswer(source(h.options) as App, { channel: "C1", threadTs: "1.1" }, new AbortController().signal);
+    const emit = (text: string) => live.event({ type: "text-delta", from: "AGENT", runId: "root", payload: { text } }, "root");
+    emit("first"); await first.promise;
+    await new Promise(resolve => setTimeout(resolve, 1500)); emit("second"); await limited.promise;
+    await live.seal(); live.markSaved(); expect(await live.finalize("canonical", [])).toBe(true); await live.cleanup();
+    expect(paths).toEqual(["/api/chat.postMessage", "/api/chat.update", "/api/chat.update"]);
+    expect(times[2] - times[1]).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("shares a new final HTTP 429 with controls: skips control mutation and removes registry without waiting 15 seconds", async () => {
+    const previewPosted = deferred(); const paths: string[] = [];
+    const h = await fixture((req, res) => {
+      req.resume(); paths.push(req.url!);
+      if (paths.length === 3) {
+        res.writeHead(429, { "retry-after": "30", "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "ratelimited" }));
+      } else {
+        res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true, ts: paths.length === 1 ? "control" : "preview" }));
+        if (paths.length === 2) previewPosted.resolve();
+      }
+    });
+    const app = source(h.options) as App; const registry = new CancellationRegistry(); const scope = new ExecutionScope();
+    const event = { requestId: "request", sessionId: "session", teamId: "T1", channel: "C1", threadTs: "1.1", userId: "U1" };
+    const controls = new SlackRequestControls(app, registry, event);
+    try {
+      await controls.start(scope);
+      const live = new LiveAnswer(app, { channel: "C1", threadTs: "1.1" }, scope.control.signal, controls.cooldown);
+      live.event({ type: "text-delta", from: "AGENT", runId: "root", payload: { text: "public" } }, "root");
+      await previewPosted.promise; await live.seal(); await scope.control.commit(async () => {}); live.markSaved();
+      await expect(live.finalize("canonical", [])).rejects.toBeDefined(); await live.cleanup(); await controls.finish();
+      expect(paths).toEqual(["/api/chat.postMessage", "/api/chat.postMessage", "/api/chat.update"]);
+      expect(registry.cancel({ requestId: "request", teamId: "T1", channel: "C1", threadTs: "1.1", userId: "U1", messageTs: "control" })).toBe("unavailable");
+    } finally { scope.control.finish(); }
+  });
+
   it("aborts the actual underlying socket on shared cancellation, without SDK retry", async () => {
     const received = deferred();
     const closed = deferred();

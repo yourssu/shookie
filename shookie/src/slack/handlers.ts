@@ -1,7 +1,7 @@
 import type { App } from "@slack/bolt";
 import { CancellationRegistry } from "../cancellation/request-registry.js";
 import { registerCancellationAction, SlackRequestControls, STOP_TEXT } from "../cancellation/slack-controls.js";
-import { scopedSlackClient, slackDelivery } from "../cancellation/slack-transport.js";
+import { scopedSlackClient, slackDelivery, SlackCooldown } from "../cancellation/slack-transport.js";
 import { executionCheckpoint, executionSignal, type ExecutionScope } from "../cancellation/execution-context.js";
 import { ConversationStoppedError } from "../cancellation/conversation-control.js";
 import type { KnownBlock } from "@slack/types";
@@ -13,6 +13,8 @@ import type { Message } from "../services/memory/in-memory.js";
 import { ConversationRuntime, ConversationBusyError, ConversationInputError } from "./conversation-runtime.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
 import { deliverFinalAnswer } from "./final-delivery.js";
+import { LiveAnswer } from "./live-answer.js";
+import { canonicalAnswer, IncompleteAnswerError } from "./canonical-answer.js";
 import { getCurrentChannel } from "./assistant.js";
 import type { ShookieBlock } from "../types/block.js";
 import { config } from "../config.js";
@@ -115,11 +117,13 @@ export function registerHandlers(
         }
         // Keep the original event-only selection and its single read; never supply a fallback.
         const actionToken = event.action_token;
-        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, () => controls.markDelivered());
+        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, () => controls.markDelivered(), stage => controls.markFailure(stage), controls.cooldown);
       }, slackContext, scope => controls.start(scope));
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
       const errorText = error instanceof ConversationStoppedError ? STOP_TEXT[error.reason]
+        : error instanceof IncompleteAnswerError && error.limited
+          ? "답변 생성 한도에 도달해 완료하지 못했어요. 질문 범위를 줄여 다시 요청해 주세요."
         : error instanceof SlackThreadContextError
         ? THREAD_CONTEXT_ERROR_TEXT
         : error instanceof ConversationBusyError
@@ -147,9 +151,13 @@ async function handleConversation(
   actionToken?: unknown,
   attachments?: AttachmentCandidates,
   onDelivered: () => void = () => {},
+  onFailure: (stage: "generation" | "save" | "limit") => void = () => {},
+  cooldown = new SlackCooldown(),
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
+  const preview = new LiveAnswer(app, { channel, threadTs }, scope.control.signal, cooldown);
+  let saving = false;
 
   try {
     logger.info(`📩 메시지 수신: "${userText.slice(0, 100)}"`);
@@ -168,8 +176,7 @@ async function handleConversation(
         })
       : null;
 
-    // During generation only the request-owned cancellation control is visible.
-    // No speculative text, raw tool arguments/results or plan stream is sent.
+    // Only root-run public assistant prose may appear as an explicitly provisional preview.
 
     const runConversation = async () => {
       executionCheckpoint();
@@ -196,6 +203,7 @@ async function handleConversation(
         : modelMessages;
       const streamResult = await agent.stream([...withAttachments, ...requestClockMessages(requestContext)], {
         maxSteps: config.MAX_TOOL_ITERATIONS,
+        runId: requestId,
         requestContext,
         abortSignal: scope.control.signal,
       });
@@ -210,7 +218,8 @@ async function handleConversation(
           executionCheckpoint();
           if (done) break;
 
-          if (value.type === "error") throw new Error("Agent stream failed");
+          preview.event(value, requestId);
+          if (value.type === "error" || value.type === "abort") throw new Error("Agent stream failed");
           if (value.type === "tool-call") {
             const payload = (value as {
               payload: { toolName: string; id?: string; toolCallId?: string; args?: unknown };
@@ -227,12 +236,11 @@ async function handleConversation(
 
       logger.info("🤖 응답 스트리밍 완료");
 
-      const responseText = await streamResult.text;
-      if (!responseText) throw new Error("Agent returned no answer");
       const usage = await streamResult.usage;
       const steps = await streamResult.steps;
       const finishReason = await streamResult.finishReason;
-      if (finishReason === "error") throw new Error("Agent run failed");
+      executionCheckpoint();
+      const responseText = canonicalAnswer(steps, finishReason);
 
       return { streamResult, responseText, usage, steps, finishReason, toolNamesSeen };
     };
@@ -249,14 +257,19 @@ async function handleConversation(
     executionCheckpoint();
     // Save the complete successful turn before ancillary logging or final Slack delivery.
     // Neither delivery nor logging failures may discard an already generated answer.
+    await preview.seal();
+    executionCheckpoint();
+    saving = true;
     await commit(responseText);
+    preview.markSaved();
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, "", { withFeedback: true });
     // Deliver before ancillary DB logging, but delivery failure must not skip success logging.
     let delivered = false;
     try {
-      await slackDelivery(app, (deliveryClient, signal) => deliverFinalAnswer(deliveryClient, {
+      const reconciled = await preview.finalize(fallbackText, blocks);
+      if (!reconciled) await slackDelivery(app, (deliveryClient, signal) => deliverFinalAnswer(deliveryClient, {
         channel, threadTs, teamId, userId, markdown: responseText, fallbackText, blocks,
       }, signal));
       delivered = true;
@@ -270,17 +283,11 @@ async function handleConversation(
       if (toolNamesSeen.some(isSlackReadTool)) logger.info("📤 Slack 조회 응답 전송", { textLen: responseText.length });
       else logger.info(`📤 응답 전송: "${responseText.slice(0, 150)}..."`);
     }
-    // 진단용 INFO 한 줄 — 잘림 원인 파악 (LOG_LEVEL=info에서도 보임)
-    // finishReason=length → LLM 토큰 한도, =steps → maxSteps 도달, =stop → 정상, =error → 예외
+    // Only normally stopped canonical answers reach success logging.
     const finishReasonLabel = typeof finishReason === "string" ? finishReason : String(finishReason ?? "?");
     logger.info(
       `[diagnostic] finishReason=${finishReasonLabel} steps=${steps.length} textLen=${responseText.length} inputTokens=${inputTokens} outputTokens=${outputTokens}`,
     );
-    if (finishReasonLabel === "length" || finishReasonLabel === "steps") {
-      logger.warn(
-        `[diagnostic] 응답이 ${finishReasonLabel === "length" ? "LLM 토큰 한도(length)" : "maxSteps 도달(steps)"}로 잘렸을 수 있음`,
-      );
-    }
 
     for (const [i, step] of steps.entries()) {
       logger.debug(`--- step[${i}] ---`);
@@ -355,6 +362,9 @@ async function handleConversation(
       logger.warn("성공 대화 저장 이후 부가 처리 실패", { requestId });
       return;
     }
+    const limited = error instanceof IncompleteAnswerError && error.limited;
+    if (limited) preview.markLimited();
+    onFailure(limited ? "limit" : saving ? "save" : "generation");
     logger.error("대화 실행 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
     if (mainInvocationId) {
       await completeInvocation(mainInvocationId, {
@@ -364,5 +374,7 @@ async function handleConversation(
       });
     }
     throw error;
+  } finally {
+    await preview.cleanup();
   }
 }

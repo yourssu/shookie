@@ -56,7 +56,7 @@ function harness(summarize?: ThreadSummarizer) {
   const stream = vi.fn(async (_messages?: unknown, _options?: { requestContext: object }) => ({
     fullStream: new ReadableStream({ start(controller) { controller.close(); } }),
     text: Promise.resolve("answer"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }),
-    steps: Promise.resolve([]), finishReason: Promise.resolve("stop"),
+    steps: Promise.resolve([{ text: "answer", toolCalls: [] }]), finishReason: Promise.resolve("stop"),
   }));
   registerHandlers(app, { stream } as unknown as Agent, repository, summarize);
   const replies = vi.fn();
@@ -73,6 +73,137 @@ function harness(summarize?: ThreadSummarizer) {
 }
 
 describe("actual Slack handler wiring", () => {
+  it.each([0, 1, 3])("delivers actual public text before model finishes (%i tools), then persists/reconciles once", async tools => {
+    const h = harness();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let modelFinished = false;
+    h.stream.mockImplementation(async (_messages, options) => {
+      const runId = (options as unknown as { runId: string }).runId;
+      return {
+        fullStream: new ReadableStream({ async start(controller) {
+          const emit = (type: string, text: string, source = runId) => controller.enqueue({ type, runId: source, from: "AGENT", payload: { text } });
+          emit("reasoning-delta", "REASONING_SECRET"); emit("text-delta", "NESTED_SECRET", "nested");
+          emit("text-delta", tools ? "pre-tool public" : "partial public");
+          await gate;
+          for (let i = 0; i < tools; i++) {
+            emit("tool-call", "RAW_TOOL_SECRET"); emit("step-start", "");
+          }
+          emit("text-delta", "final public"); modelFinished = true; controller.close();
+        } }),
+        text: gate.then(() => "canonical answer"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }),
+        steps: Promise.resolve([{ text: "canonical answer", toolCalls: [] }]), finishReason: Promise.resolve("stop"),
+      };
+    });
+    const delivery = h.deliver(`live-${tools}`);
+    await vi.waitFor(() => expect(h.postMessage).toHaveBeenCalled());
+    expect(modelFinished).toBe(false); expect(h.repository.complete).not.toHaveBeenCalled();
+    const first = h.postMessage.mock.calls[0][0] as { text: string; metadata: unknown };
+    expect(first.text).toContain("public"); expect(first.text).toContain("미확정");
+    expect(first.metadata).toMatchObject({ event_type: "shookie_response_preview" });
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
+    release(); await delivery;
+    expect(h.repository.complete).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.repository.complete).mock.calls[0][1].assistantContent).toBe("canonical answer");
+    const updates = vi.mocked(h.client.chat.update).mock.calls;
+    const final = updates.find(([args]) => args.metadata?.event_type === "shookie_response_committed");
+    expect(final?.[0]).toMatchObject({ ts: "reply", text: "canonical answer" });
+    expect((final?.[0] as { blocks?: { type: string }[] })?.blocks?.filter(b => b.type === "context_actions")).toHaveLength(1);
+    expect(h.postMessage).toHaveBeenCalledTimes(1); expect(h.client.apiCall).not.toHaveBeenCalled();
+    expect(h.client.chat.delete).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify([h.postMessage.mock.calls, updates])).not.toMatch(/REASONING_SECRET|NESTED_SECRET|RAW_TOOL_SECRET/);
+    await h.deliver(`followup-${tools}`);
+    expect(h.stream.mock.calls[1][0]).toEqual(expect.arrayContaining([{ role: "assistant", content: "canonical answer" }]));
+    expect(JSON.stringify(h.stream.mock.calls[1][0])).not.toContain("pre-tool public");
+  });
+
+  it.each([
+    { finish: "length", text: "partial", tools: false, limited: true },
+    { finish: "steps", text: "partial", tools: false, limited: true },
+    { finish: "stop", text: "pre-tool", tools: true, limited: false },
+    { finish: "stop", text: "", tools: true, limited: false },
+    { finish: "stop", text: "  ", tools: false, limited: false },
+    { finish: "unknown", text: "partial", tools: false, limited: false },
+    { finish: "error", text: "partial", tools: false, limited: false },
+    { finish: "abort", text: "partial", tools: false, limited: false },
+  ])("does not save/promote incomplete final step: $finish / $text / tools=$tools", async ({ finish, text, tools, limited }) => {
+    const h = harness();
+    h.stream.mockImplementation(async (_messages, options) => ({
+      fullStream: new ReadableStream({ start(controller) { controller.enqueue({ type: "text-delta", from: "AGENT", runId: (options as unknown as { runId: string }).runId, payload: { text: "public preview" } }); controller.close(); } }),
+      text: Promise.resolve("PREVIOUS_STEP_MUST_NOT_BE_USED"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }),
+      steps: Promise.resolve([{ text: "previous" }, { text, toolCalls: tools ? [{ payload: { toolName: "lookup" } }] : [] }]), finishReason: Promise.resolve(finish),
+    }) as never);
+    await h.deliver(`incomplete-${finish}-${tools}`);
+    expect(h.postMessage).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("public preview"), metadata: { event_type: "shookie_response_preview", event_payload: {} } }));
+    expect(h.repository.complete).not.toHaveBeenCalled(); expect(h.repository.fail).toHaveBeenCalled();
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(h.client.chat.update).mock.calls)).not.toContain("shookie_response_committed");
+    expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ ts: "reply", metadata: { event_type: "shookie_response_preview", event_payload: {} }, text: expect.stringContaining(limited ? "생성 한도" : "미완료") }));
+    if (limited) expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ ts: "control", text: expect.stringContaining("생성 한도") }));
+    expect(JSON.stringify(h.postMessage.mock.calls)).not.toContain("PREVIOUS_STEP_MUST_NOT_BE_USED");
+    h.stream.mockResolvedValueOnce({ fullStream: new ReadableStream({ start(c) { c.close(); } }), text: Promise.resolve("recovered"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }), steps: Promise.resolve([{ text: "recovered", toolCalls: [] }]), finishReason: Promise.resolve("stop") });
+    await h.deliver(`recovery-${finish}-${tools}`);
+    expect((h.stream.mock.calls[1][0] as { role: string }[]).some(m => m.role === "assistant")).toBe(false);
+    expect(h.repository.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["utf8-cap", "call-cap", "preview-ack-loss", "rate-2", "rate-30", "final-ack-loss", "final-rate-2", "final-rate-30", "no-ts"])("separates saved canonical delivery from preview freeze: %s", async mode => {
+    vi.useFakeTimers();
+    try {
+      const h = harness(); let controller!: ReadableStreamDefaultController;
+      const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
+      h.stream.mockImplementation(async (_messages, options) => ({
+        fullStream: new ReadableStream({ start(c) { controller = c; c.enqueue({ type: "text-delta", from: "AGENT", runId: (options as unknown as { runId: string }).runId, payload: { text: "public preview" } }); } }),
+        text: Promise.resolve("canonical"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }), steps: Promise.resolve([{ text: "canonical", toolCalls: [] }]), finishReason: Promise.resolve("stop"),
+      }));
+      const update = vi.mocked(h.client.chat.update);
+      if (mode === "no-ts") h.postMessage.mockRejectedValueOnce(new Error("initial post ACK lost"));
+      if (mode.startsWith("final-")) update.mockImplementation(async args => {
+        if (args.metadata?.event_type === "shookie_response_committed") throw mode === "final-ack-loss" ? new Error("final ACK lost") : { code: "slack_webapi_rate_limited_error", retryAfter: mode === "final-rate-2" ? 2 : 30 };
+        return { ok: true };
+      });
+      const run = h.deliver(`freeze-${mode}`); await flush();
+      const emit = (text: string) => controller.enqueue({ type: "text-delta", from: "AGENT", runId: `slack-event:freeze-${mode}`, payload: { text } });
+      if (mode === "preview-ack-loss" || mode.startsWith("rate-")) {
+        update.mockRejectedValueOnce(mode === "preview-ack-loss" ? new Error("preview ACK lost") : { code: "slack_webapi_rate_limited_error", retryAfter: mode === "rate-2" ? 2 : 30 });
+        emit("second"); await vi.advanceTimersByTimeAsync(1500);
+      }
+      if (mode === "utf8-cap") emit("한".repeat(22_000));
+      if (mode === "call-cap") for (let i = 0; i < 65; i++) { emit("x"); await vi.advanceTimersByTimeAsync(1500); }
+      controller.close(); await flush();
+      if (mode === "rate-2" || mode === "final-rate-2") {
+        expect(update.mock.calls.filter(([args]) => args.metadata?.event_type === "shookie_response_committed")).toHaveLength(mode === "rate-2" ? 0 : 1);
+        expect(update.mock.calls.filter(([args]) => args.ts === "control")).toHaveLength(0);
+        await vi.advanceTimersByTimeAsync(2000);
+      }
+      await run;
+      expect(h.repository.complete).toHaveBeenCalledTimes(1); expect(h.repository.fail).not.toHaveBeenCalled();
+      expect(vi.mocked(h.repository.complete).mock.calls[0][1].assistantContent).toBe("canonical");
+      expect(h.postMessage).toHaveBeenCalledTimes(1); // never recreate an attempted preview
+      const finals = update.mock.calls.filter(([args]) => args.metadata?.event_type === "shookie_response_committed");
+      const delivered = !["rate-30", "final-ack-loss", "final-rate-2", "final-rate-30", "no-ts"].includes(mode);
+      expect(finals).toHaveLength(mode === "rate-30" || mode === "no-ts" ? 0 : 1);
+      if (finals.length) expect(finals[0][0]).toMatchObject({ ts: "reply", text: "canonical" });
+      expect(JSON.stringify(update.mock.calls)).not.toContain("미완료 답변입니다");
+      expect(h.client.chat.delete).toHaveBeenCalledTimes(delivered ? 1 : 0);
+      if (mode === "rate-30" || mode === "final-rate-30") expect(update.mock.calls.filter(([args]) => args.ts === "control")).toHaveLength(0);
+      else if (!delivered) expect(update).toHaveBeenCalledWith(expect.objectContaining({ ts: "control", text: expect.stringContaining("전달 상태를 확인하지 못했어요") }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("save failure after visible preview retains incomplete marker and never delivers success", async () => {
+    const h = harness();
+    h.stream.mockImplementation(async (_messages, options) => ({
+      fullStream: new ReadableStream({ start(controller) { controller.enqueue({ type: "text-delta", from: "AGENT", runId: (options as unknown as { runId: string }).runId, payload: { text: "public preview" } }); controller.close(); } }),
+      text: Promise.resolve("canonical"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }), steps: Promise.resolve([{ text: "canonical", toolCalls: [] }]), finishReason: Promise.resolve("stop"),
+    }));
+    vi.mocked(h.repository.complete).mockRejectedValue(new Error("save failed"));
+    await h.deliver("save-fail-live");
+    expect(h.postMessage).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("public preview") }));
+    expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ ts: "reply", metadata: { event_type: "shookie_response_preview", event_payload: {} }, text: expect.stringContaining("미완료") }));
+    expect(JSON.stringify(vi.mocked(h.client.chat.update).mock.calls)).not.toContain("shookie_response_committed");
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
+  });
   it("appends a separate trusted KST clock after dialogue/attachments without persisting it", async () => {
     const h = harness();
     vi.useFakeTimers();

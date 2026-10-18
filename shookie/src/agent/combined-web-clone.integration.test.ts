@@ -105,7 +105,7 @@ async function harness(options:{dropActor?:boolean;direct?:boolean}={}) {
     const web=execute(tools.web_fetch,{url:'https://public-source.org/read',maxChars:1000},opts.requestContext);
     const search=tools.web_search?execute(tools.web_search,{query:'combined source',count:1},opts.requestContext):Promise.resolve(undefined);
     const combined=await Promise.all([delegate,web,search]);results.push({web:combined[1],search:combined[2]});
-    return {fullStream:new ReadableStream({start(controller){controller.close();}}),text:Promise.resolve(JSON.stringify(combined)),usage:Promise.resolve({inputTokens:1,outputTokens:1}),steps:Promise.resolve([]),finishReason:Promise.resolve('stop')} as any;
+    return {fullStream:new ReadableStream({start(controller){controller.close();}}),text:Promise.resolve(JSON.stringify(combined)),usage:Promise.resolve({inputTokens:1,outputTokens:1}),steps:Promise.resolve([{text:JSON.stringify(combined),toolCalls:[]}]),finishReason:Promise.resolve('stop')} as any;
   });
   registerHandlers(app,main,repository);
   const deliver=(user:string|null='U1',team='T1',channel='C1',thread='123.456')=>{
