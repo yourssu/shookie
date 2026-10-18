@@ -74,10 +74,12 @@ describe("real bare clone snapshots", () => {
     const m = new RepositorySnapshots({ owner: "example", registry: registryFixture, gitHubToken: "dummy-read-token", workspaceBasePath: workspace, workspaceMaxGb: 1 }, fixtureTransport);
     await expect(m.clone({ repo: "other" }, context())).rejects.toThrow();
     const s = await m.clone({ repo: "sample" }, context());
-    expect(s.repositoryGuidance?.repository.instructions).toBe("repo guidance");
+    expect(s.repositoryGuidance?.repository.instructions).toBe("");
+    expect(JSON.stringify(s)).not.toContain("repo guidance");
     repositories[0].instructions = "updated scoped guidance";
     for (const result of [await m.list(s.snapshotId, context()), await m.read(s.snapshotId, context(), "code.ts"), await m.search(s.snapshotId, context(), "needle")]) {
-      expect(result.repositoryGuidance?.repository.instructions).toBe("updated scoped guidance");
+      expect(result.repositoryGuidance?.repository.instructions).toBe("");
+      expect(JSON.stringify(result)).not.toContain("updated scoped guidance");
     }
     repositories = [];
     for (const action of [() => m.clone({ repo: "sample" }, context()), () => m.list(s.snapshotId, context()), () => m.read(s.snapshotId, context(), "code.ts"), () => m.search(s.snapshotId, context(), "needle")]) await expect(action()).rejects.toThrow();

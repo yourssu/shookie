@@ -75,7 +75,8 @@ export class RepositorySnapshots {
     return this.config.registry ? redactRegistry(text, this.config.registry) : text;
   }
   private source(s: Snapshot, path?: string) {
-    return { repositoryGuidance: s.repositoryGuidance ? JSON.parse(this.redact(JSON.stringify(s.repositoryGuidance))) as typeof s.repositoryGuidance : undefined, snapshotId: s.snapshotId, owner: s.owner, repo: s.repo, ref: s.ref, commitSha: s.commitSha, ...(path ? { path } : {}) };
+    const guidance = s.repositoryGuidance ? { ...s.repositoryGuidance, repository: { ...s.repositoryGuidance.repository, instructions: "" } } : undefined;
+    return { repositoryGuidance: guidance ? JSON.parse(this.redact(JSON.stringify(guidance))) as typeof guidance : undefined, snapshotId: s.snapshotId, owner: s.owner, repo: s.repo, ref: s.ref, commitSha: s.commitSha, ...(path ? { path } : {}) };
   }
   async clone(raw: { repo: string; ref?: string }, context: Context, signal?: AbortSignal) {
     // Explicit static scope is only for low-level tests; production factories require registry.
@@ -84,10 +85,10 @@ export class RepositorySnapshots {
     const owner = repositoryName.parse(this.config.owner);
     if (this.config.repositories && !this.config.repositories.some(r => r.toLowerCase() === repo.toLowerCase())) throw new Error("repository scope");
     const repositoryGuidance = this.config.registry ? await authorizeRepository(this.config.registry, owner, repo, signal) : undefined;
-    if (repositoryGuidance) repositoryGuidance.repository.instructions = this.redact(repositoryGuidance.repository.instructions);
+    if (repositoryGuidance) repositoryGuidance.repository.instructions = "";
     const token = this.config.tokenProvider ? await this.config.tokenProvider.getToken(signal) : this.config.readOnlyToken || this.config.gitHubToken;
     signal?.throwIfAborted();
-    if (repositoryGuidance) repositoryGuidance.repository.instructions = this.redact(repositoryGuidance.repository.instructions);
+    if (repositoryGuidance) repositoryGuidance.repository.instructions = "";
     if (!token || /[\r\n\x00]/.test(token)) throw new Error("credential required");
     const url = `https://github.com/${owner}/${repo}.git`;
     if (this.redact(url) !== url || (ref && this.redact(ref) !== ref)) throw new Error("secret in source");
@@ -137,7 +138,7 @@ export class RepositorySnapshots {
     s.busy = true;
     try {
       s.repositoryGuidance = this.config.registry ? await authorizeRepository(this.config.registry, s.owner, s.repo, signal) : undefined;
-      if (s.repositoryGuidance) s.repositoryGuidance.repository.instructions = this.redact(s.repositoryGuidance.repository.instructions);
+      if (s.repositoryGuidance) s.repositoryGuidance.repository.instructions = "";
       return await work(s);
     } finally { s.busy = false; }
   }
