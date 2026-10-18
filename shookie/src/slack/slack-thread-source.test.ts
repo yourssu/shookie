@@ -27,6 +27,20 @@ describe("authoritative Slack thread reader", () => {
     expect(result.filter(m => JSON.parse(m.content).text === "internal control")).toHaveLength(1);
     expect(result.every(m => m.role === "user")).toBe(true);
   });
+  it.each([
+    { user: "USH", bot_id: "BSH", metadata: { event_type: "shookie_request_control" }, removed: true },
+    { user: undefined, bot_id: "BSH", metadata: { event_type: "shookie_request_control" }, removed: true },
+    { user: "U2", bot_id: undefined, metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: "UOTHER", bot_id: "BOTHER", metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: undefined, bot_id: "BOTHER", metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: "USH", bot_id: "BSH", metadata: undefined, removed: false },
+    { user: "USH", bot_id: "BSH", metadata: { event_type: "unrelated" }, removed: false },
+  ])("filters only authenticated Shookie controls with the exact metadata marker: %j", async ({ removed, ...identity }) => {
+    const items = messages.map((m, i) => i === 2 ? { ...m, ...identity, text: "요청을 완료했습니다." } : m);
+    const result = await readSlackThread(client(page(items)).api, mention);
+    expect(result).toHaveLength(removed ? 4 : 5);
+    expect(result.filter(m => JSON.parse(m.content).text === "요청을 완료했습니다.")).toHaveLength(removed ? 0 : 1);
+  });
   it("reads all cursor pages, dedupes repeated root, orders chronologically and distinguishes own/other bots", async () => {
     const h = client({ ...page([messages[0], messages[2], messages[1]]), has_more: true,
       response_metadata: { next_cursor: "cursor1" } }, page([messages[0], messages[4], messages[3]]));

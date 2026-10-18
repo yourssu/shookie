@@ -225,7 +225,7 @@ describe('registered image tool + live Slack bridge + shared cancellation (synth
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName: 'slack_analyze_image', input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls, vi.mocked(appendTaskUpdate).mock.calls]);
       for (const secret of ['DERIVED_IMAGE_SECRET', 'PRIVATE_IMAGE_QUERY', 'PRIVATE_URL_SECRET', pngFixture().toString('base64'), fixture.settings.SLACK_BOT_TOKEN, fixture.settings.LLM_API_KEY]) expect(logs).not.toContain(secret);
-      expect(appendTaskUpdate).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ status: 'complete', output: expect.stringContaining('파생 해석') }));
+      expect(appendTaskUpdate).not.toHaveBeenCalled(); // final-only UI never publishes tool output
     } finally { spy.mockRestore(); }
   });
 });

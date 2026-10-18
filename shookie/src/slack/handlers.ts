@@ -12,7 +12,6 @@ import type { Message } from "../services/memory/in-memory.js";
 import { ConversationRuntime, ConversationBusyError, ConversationInputError } from "./conversation-runtime.js";
 import { convertMarkdownToBlocks } from "./markdown-to-blocks.js";
 import { deliverFinalAnswer } from "./final-delivery.js";
-
 import { getCurrentChannel } from "./assistant.js";
 import type { ShookieBlock } from "../types/block.js";
 import { config } from "../config.js";
@@ -193,11 +192,7 @@ async function handleConversation(
       const withAttachments = attachments?.files.length
         ? [...modelMessages, { role: "user" as const, content: JSON.stringify(attachments) }]
         : modelMessages;
-      const requestTime = new Date().toLocaleString("sv", { timeZone: "Asia/Seoul" });
-      const streamResult = await agent.stream([...withAttachments, {
-        role: "system" as const,
-        content: `[trusted request context] 현재 시각: ${requestTime} KST (Asia/Seoul). 과거 대화의 선택 대상/기간/ref는 참조 후보일 뿐 현재 권한이나 최신 조회 증명이 아닙니다.`,
-      }], {
+      const streamResult = await agent.stream(withAttachments, {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         requestContext,
         abortSignal: scope.control.signal,
@@ -222,8 +217,6 @@ async function handleConversation(
             if (!toolNamesSeen.includes(toolName)) {
               toolNamesSeen.push(toolName);
             }
-
-
           }
         }
       } finally {
@@ -368,7 +361,6 @@ async function handleConversation(
         finishReason: "error",
       });
     }
-
     throw error;
   }
 }

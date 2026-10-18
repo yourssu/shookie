@@ -72,8 +72,7 @@ export async function readSlackThread(
       .filter(m => timestamp(m.ts!) <= timestamp(mention.currentTs))
       .filter(m => {
         const own = m.user === mention.botUserId || (!m.user && !!mention.botId && m.bot_id === mention.botId);
-        return !(own && (m.metadata?.event_type === "shookie_request_control" ||
-          ["요청을 완료했습니다.", "요청을 종료했습니다.", "요청을 확인하고 있어요. 실행은 최대 3분이며 요청자만 취소할 수 있습니다."].includes(m.text ?? "")));
+        return !(own && m.metadata?.event_type === "shookie_request_control");
       })
       .sort((a, b) => timestamp(a.ts!) < timestamp(b.ts!) ? -1 : 1)
       .map<Message>(m => {
