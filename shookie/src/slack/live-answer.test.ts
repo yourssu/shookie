@@ -76,13 +76,23 @@ describe("generation-time provisional transport", () => {
     if (stage === "before") expect(h.postMessage).not.toHaveBeenCalled();
     else expect(h.update.mock.calls.at(-1)?.[0]).toMatchObject({ metadata: { event_type: PREVIEW_MARKER }, text: expect.stringContaining("미완료") });
   });
-  it("long markdown, fences and Unicode are unchanged; byte cap stops previews without changing canonical source", async () => {
+  it("long markdown, fences and Unicode are unchanged; code-unit cap freezes delivery without changing canonical source", async () => {
     const h = harness(); const body = "```ts\n" + "한글😀".repeat(1000) + "\n```";
     h.event(body); await h.live.seal();
     expect(h.postMessage.mock.calls[0][0]).toMatchObject({ text: `생성 중 · 미확정 답변\n\n${body}` });
     await h.live.finalize(body, []);
     const capped = harness(); capped.event("a"); capped.event("x".repeat(24001)); await capped.live.seal();
     await expect(capped.live.finalize("canonical still saved by caller", [])).rejects.toThrow();
+  });
+  it("enforces an independent UTF-8 byte budget for multibyte text below the code-unit cap", async () => {
+    const h = harness(); h.event("first");
+    // 22,005 code units fit the 24,000 unit bound, but 66,005 UTF-8 bytes exceed 64,000.
+    h.event("한".repeat(22_000));
+    await h.live.seal();
+    await expect(h.live.finalize("canonical still owned by caller", [])).rejects.toThrow();
+    expect(h.postMessage).toHaveBeenCalledTimes(1); expect(h.update).not.toHaveBeenCalled();
+    const below = harness(); below.event("한".repeat(21_000)); await below.live.seal();
+    expect(await below.live.finalize("canonical", [])).toBe(true);
   });
   it("caps calls and retains only a latest bounded snapshot", async () => {
     vi.useFakeTimers(); const h = harness();

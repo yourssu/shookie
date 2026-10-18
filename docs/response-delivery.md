@@ -35,7 +35,7 @@ persist 성공 후 동일 `chat.update` 요청에 canonical renderer 본문·fee
 
 ## bounded backpressure / transport
 
-모델 소비는 Slack을 await하지 않는다. one-inflight + latest snapshot 1개이며 delta queue는 없다. 첫 public delta 즉시, 후속 갱신은 최소 1.5초 간격 coalescing(분당 약 40회)으로 rate-limit을 방어한다. 인위적 typing delay가 아니다. 실행 전체 최대 preview API 60회, step text 24,000 UTF-16 units(UTF-8 최대 약 96KB), final 1회와 cleanup 최대 1회다. cap이면 preview를 freeze하고 전송 미확인으로 처리한다. text/대기/inflight의 고정 개수 snapshot만 보유한다. surrogate pair가 delta 경계를 가로지르면 trailing high surrogate를 보류한다.
+모델 소비는 Slack을 await하지 않는다. one-inflight + latest snapshot 1개이며 delta queue는 없다. 첫 public delta 즉시, 후속 갱신은 최소 1.5초 간격 coalescing(분당 약 40회)으로 rate-limit을 방어한다. 인위적 typing delay가 아니다. 실행 전체 최대 preview API 60회, final 1회와 cleanup 최대 1회다. step text에는 별도의 두 상한을 적용한다: Slack 문자 수에 보수적인 **24,000 UTF-16 code units**와 step text의 **64,000 UTF-8 bytes**다(미확정 안내 prefix와 요청 envelope에는 고정 크기 overhead가 추가된다). 다중바이트 한글은 code-unit 상한 이내여도 byte 상한에 먼저 걸릴 수 있다. 누적 문자열 전체를 UTF-8로 측정하므로 delta 경계의 surrogate pair를 잘못 이중 계산하지 않는다. cap이면 preview를 freeze하고 전송 미확인으로 처리한다. 앱은 장기 참조로 text/대기/inflight의 최대 3개 bounded snapshot만 유지하며 전체 delta 이력이나 요청 queue를 쌓지 않는다. 갱신 중 임시 문자열도 같은 문자 상한 이내의 고정 개수뿐이다. 각 snapshot은 이중 상한 이내이고 SDK 요청도 one-inflight이므로 앱이 보유한 preview 데이터는 delta 개수와 무관하게 bounded다(프로세스 전체 heap의 정확한 byte cap을 주장하지 않으며 final renderer/model 결과 메모리는 별도다). surrogate pair가 delta 경계를 가로지르면 trailing high surrogate를 보류한다.
 
 전용 WebClient를 사용하고 retry 0, 429 즉시 reject, HTTP timeout 최대 15초, execution signal을 실제 Axios transport에 전달한다. cancel 후 새 text를 보내지 않는다. 이미 in-flight인 HTTP의 서버 적용을 되돌린다는 보장은 없다. 실제 settlement/drain 전에 같은-thread runtime lane을 해제하지 않는다. cleanup/final delivery는 실행 ALS 밖 독립 전체 15초 scope다. 공유 client/서버/worker를 종료하지 않는다.
 

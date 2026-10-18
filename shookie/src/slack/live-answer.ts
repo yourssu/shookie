@@ -5,7 +5,8 @@ import type { ShookieBlock } from "../types/block.js";
 
 export const PREVIEW_MARKER = "shookie_response_preview";
 const COMMITTED_MARKER = "shookie_response_committed";
-const LIMIT = 24_000;
+const MAX_CODE_UNITS = 24_000;
+const MAX_UTF8_BYTES = 64_000;
 const MAX_CALLS = 60;
 const SAFE_REJECTIONS = new Set(["unknown_method", "method_not_supported", "not_allowed_token_type", "missing_scope"]);
 const marker = (event_type: string) => ({ event_type, event_payload: {} });
@@ -38,8 +39,12 @@ export class LiveAnswer {
     if (value.type !== "text-delta") return;
     const delta = (value.payload as { text?: unknown })?.text;
     if (typeof delta !== "string" || !delta) return;
-    if (this.text.length + delta.length > LIMIT) { this.failed = true; this.pending = undefined; return; }
-    this.text += delta;
+    if (this.text.length + delta.length > MAX_CODE_UNITS) { this.failed = true; this.pending = undefined; return; }
+    const next = this.text + delta;
+    // Separate Slack character bound from the retained/serialized UTF-8 budget.
+    // Measure the combined string: surrogate pairs may cross delta boundaries.
+    if (Buffer.byteLength(next, "utf8") > MAX_UTF8_BYTES) { this.failed = true; this.pending = undefined; return; }
+    this.text = next;
     // Do not split a trailing high surrogate across Slack requests.
     const snapshot = this.text.replace(/[\uD800-\uDBFF]$/, "");
     if (!snapshot) return;

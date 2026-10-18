@@ -121,6 +121,7 @@ describe("actual Slack handler wiring", () => {
     { finish: "length", text: "partial", tools: false, limited: true },
     { finish: "steps", text: "partial", tools: false, limited: true },
     { finish: "stop", text: "pre-tool", tools: true, limited: false },
+    { finish: "stop", text: "", tools: true, limited: false },
     { finish: "stop", text: "  ", tools: false, limited: false },
     { finish: "unknown", text: "partial", tools: false, limited: false },
     { finish: "error", text: "partial", tools: false, limited: false },
@@ -133,6 +134,7 @@ describe("actual Slack handler wiring", () => {
       steps: Promise.resolve([{ text: "previous" }, { text, toolCalls: tools ? [{ payload: { toolName: "lookup" } }] : [] }]), finishReason: Promise.resolve(finish),
     }) as never);
     await h.deliver(`incomplete-${finish}-${tools}`);
+    expect(h.postMessage).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("public preview"), metadata: { event_type: "shookie_response_preview", event_payload: {} } }));
     expect(h.repository.complete).not.toHaveBeenCalled(); expect(h.repository.fail).toHaveBeenCalled();
     expect(h.client.chat.delete).not.toHaveBeenCalled();
     expect(JSON.stringify(vi.mocked(h.client.chat.update).mock.calls)).not.toContain("shookie_response_committed");
