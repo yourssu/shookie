@@ -6,15 +6,15 @@ describe("phase2 main policy (prompt contract, not live routing proof)", () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     const first = buildMainShookieInstructions({ toolKeys: ["github_read", "listProjects"] });
     vi.setSystemTime(9_999_999_999_999);
-    expect(buildMainShookieInstructions({ toolKeys: ["github_read", "listProjects"] })).not.toBe(first);
-    expect(first).toContain("현재 시각:");
+    expect(buildMainShookieInstructions({ toolKeys: ["github_read", "listProjects"] })).toBe(first);
+    expect(first).toContain("신뢰된 요청 시각");
     expect(first).toContain("github_read, listProjects");
     expect(first).toContain("Asia/Seoul");
   });
   it("uses direct tools and bounded optional research with proportional answers", () => {
     const text = buildMainShookieInstructions();
     for (const rule of ["메인이 직접", "의무 위임은 없다", "task 목표", "target 대상", "context 관련", "outputScope 범위", "status/evidence/limitations", "질문에 비례해 간결", "단순 목록", "충분한 근거", "관련된 한계만"]) expect(text).toContain(rule);
-    for (const obsolete of ["반드시 sub-agent에 위임", "조정자(orchestrator)", "load_domain_guidance", "trusted request context"]) expect(text).not.toContain(obsolete);
+    for (const obsolete of ["반드시 sub-agent에 위임", "조정자(orchestrator)", "trusted request context"]) expect(text).not.toContain(obsolete);
   });
   it("keeps live registration and security, disables Radar guidance workflows", () => {
     const text = buildMainShookieInstructions();

@@ -6,6 +6,7 @@ import { executionCheckpoint, executionSignal, type ExecutionScope } from "../ca
 import { ConversationStoppedError } from "../cancellation/conversation-control.js";
 import type { KnownBlock } from "@slack/types";
 import type { Agent } from "@mastra/core/agent";
+import { bindRequestClock, requestClockMessages } from "../agent/request-clock.js";
 import { RequestContext } from "@mastra/core/request-context";
 import { createHash } from "node:crypto";
 import type { Message } from "../services/memory/in-memory.js";
@@ -180,6 +181,7 @@ async function handleConversation(
         ["requestId", requestId],
         ...(teamId ? [["teamId", teamId] as [string, string]] : []),
       ]);
+      bindRequestClock(requestContext);
       // Only authenticated event metadata authorizes explicit Slack reads, never model/user text
       // or the threadTs-only Assistant view hint. Missing team fails closed for read tools.
       if (teamId) bindSlackReadContext(requestContext, { channel, userId, teamId, requestId }, actionToken);
@@ -192,7 +194,7 @@ async function handleConversation(
       const withAttachments = attachments?.files.length
         ? [...modelMessages, { role: "user" as const, content: JSON.stringify(attachments) }]
         : modelMessages;
-      const streamResult = await agent.stream(withAttachments, {
+      const streamResult = await agent.stream([...withAttachments, ...requestClockMessages(requestContext)], {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         requestContext,
         abortSignal: scope.control.signal,

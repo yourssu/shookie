@@ -13,6 +13,8 @@ Mastra 및 기존 모델/provider 설정을 유지한다. 역사 커밋 `4db5500
 - Radar fetch를 끄지 않는다. 기존 schema/식별자/보안 검증 후 지침을 빈 문자열로 버리고 모델 projection에서 다시 차단한다. PostHog의 자유 텍스트 설명 preview도 비활성화했다. 목록, 개별 조회, clone, 기존 snapshot list/read/search, 메인/전문가 경로에 동일하게 적용된다. 식별 이름/ID/시각 및 policy metadata는 유지한다. 기존 호환 schema의 instructions/preview 필드는 빈 문자열, truncated는 false다.
 - Radar 지침 조회/업데이트/저장/다음 조회 반영을 약속하는 workflow는 제거했다. Radar 코드/데이터는 변경하지 않았다.
 
+현재 3단계 로컬 지침·고정 prefix·후속 맥락은 [phase3-stable-context.md](phase3-stable-context.md)를 참고한다. 아래는 2단계 merge 당시 제외 범위다.
+
 ## 제외 및 유지
 
 3단계 로컬 지침 loader, stable prefix/시각 이동·캐시, 새 후속 memory/state 시스템은 없다. 기존 KST 시각 생성/상대 날짜 처리, Slack authoritative context, 병합된 P0 저장 후 전달·control·취소 동작을 유지했다. 기존 안전 운영에 필요한 서비스 규칙만 trusted code prompt에 둔다. GitHub 쓰기/쉘 권한은 추가하지 않았다. PostHog HogQL의 읽기 전용은 도구가 강제하지 않는 기존 한계를 명시하며 새 쓰기 기능을 추가하지 않았다. UI/배포/서버/DB 운영 변경은 없다.

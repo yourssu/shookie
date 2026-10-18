@@ -6,15 +6,25 @@ import { buildMainShookieInstructions } from './instructions.js';
 
 // No generate() or real provider/network call in these registration tests.
 describe('main direct web wiring', () => {
+  it('keeps actual fixed instructions and ordered tool definitions identical across request times', async () => {
+    const first = createMainShookieAgent({}, 'openai/test-model');
+    const prompt = await first.getInstructions();
+    const definitions = async (agent: typeof first) => Object.entries(await agent.listTools()).map(([key, tool]) => ({ key, id: tool.id, description: tool.description, schema: tool.inputSchema }));
+    const before = JSON.stringify(await definitions(first));
+    const second = createMainShookieAgent({}, 'openai/test-model');
+    expect(await second.getInstructions()).toBe(prompt);
+    expect(JSON.stringify(await definitions(second))).toBe(before);
+    expect(Object.keys(await second.listTools())).toEqual(Object.keys(await second.listTools()).sort());
+  });
   it('preserves old constructors and always registers direct fetch', () => {
-    expect(Object.keys(createMainShookieTools({}))).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content']);
-    expect(Object.keys(createMainShookieTools({}, {exaApiKey:' \t '}))).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content']);
+    expect(Object.keys(createMainShookieTools({}))).toEqual(['load_domain_guidance','web_fetch','web_search','web_read_more','web_find_in_content'].sort());
+    expect(Object.keys(createMainShookieTools({}, {exaApiKey:' \t '}))).toEqual(['load_domain_guidance','web_fetch','web_search','web_read_more','web_find_in_content'].sort());
     const agent = createMainShookieAgent({}, 'openai/test-model');
     expect(agent.id).toBe('main-shookie');
   });
   it('always registers search and derives truthful main catalogue', () => {
     const tools = createMainShookieTools({}, {exaApiKey:'synthetic'});
-    expect(Object.keys(tools)).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content']);
+    expect(Object.keys(tools)).toEqual(['load_domain_guidance','web_fetch','web_search','web_read_more','web_find_in_content'].sort());
     const enabled = buildMainShookieInstructions({toolKeys:Object.keys(tools)});
     expect(enabled).toContain('web_search 등록됨 (Exa)');
     const disabled = buildMainShookieInstructions({toolKeys:['web_fetch']});
