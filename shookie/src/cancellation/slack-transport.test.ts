@@ -5,6 +5,7 @@ import { WebClient, LogLevel, type WebClientOptions } from "@slack/web-api";
 import { createCancellationSlackClient, SLACK_TRANSPORT_TIMEOUT_MS, slackDelivery } from "./slack-transport.js";
 import { ExecutionScope, executionStorage, executionCheckpoint } from "./execution-context.js";
 import type { App } from "@slack/bolt";
+import { LiveAnswer } from "../slack/live-answer.js";
 
 type RequestConfig = Parameters<NonNullable<WebClientOptions["requestInterceptor"]>>[0];
 
@@ -34,6 +35,31 @@ function source(options: WebClientOptions) {
 }
 
 describe("dedicated Slack transport (real localhost HTTP, no Slack E2E)", () => {
+  it("sends real preview metadata before a gated model finishes, then updates that exact message atomically", async () => {
+    const received = deferred(); const bodies: URLSearchParams[] = []; const paths: string[] = [];
+    const h = await fixture((req, res) => {
+      let body = ""; req.on("data", chunk => { body += chunk; }); req.on("end", () => {
+        paths.push(req.url!); bodies.push(new URLSearchParams(body));
+        res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ ok: true, ts: "known" })); received.resolve();
+      });
+    });
+    const live = new LiveAnswer(source(h.options) as App, { channel: "C1", threadTs: "1.1" }, new AbortController().signal);
+    const modelGate = deferred(); let modelFinished = false;
+    const model = (async () => {
+      live.event({ type: "text-delta", from: "AGENT", runId: "root", payload: { text: "first public text" } }, "root");
+      await modelGate.promise; modelFinished = true;
+    })();
+    await received.promise; expect(modelFinished).toBe(false);
+    expect(bodies[0].get("text")).toContain("first public text");
+    expect(JSON.parse(bodies[0].get("metadata")!)).toEqual({ event_type: "shookie_response_preview", event_payload: {} });
+    modelGate.resolve(); await model;
+    await live.finalize("canonical", []); await live.cleanup();
+    expect(paths).toEqual(["/api/chat.postMessage", "/api/chat.update"]);
+    expect(bodies[1].get("ts")).toBe("known"); expect(bodies[1].get("text")).toBe("canonical");
+    expect(JSON.parse(bodies[1].get("metadata")!).event_type).toBe("shookie_response_committed");
+    expect(bodies.every(body => !body.has("signal"))).toBe(true);
+  });
+
   it("aborts the actual underlying socket on shared cancellation, without SDK retry", async () => {
     const received = deferred();
     const closed = deferred();
