@@ -4,11 +4,11 @@ import { codeExplorerDescription } from "./description.js";
 import { createCodeExplorerTools, type CodeExplorerConfig } from "./tools.js";
 export { type CodeExplorerConfig } from "./tools.js";
 
-export function createCodeExplorerAgent(model: any, config: CodeExplorerConfig): Agent {
+export function createCodeExplorerAgent(model: any, config: CodeExplorerConfig, tools = createCodeExplorerTools(config)): Agent {
   return new Agent({
     id: "code-explorer", name: "Code Explorer",
     instructions: buildCodeExplorerInstructions(config), description: codeExplorerDescription,
-    model, tools: createCodeExplorerTools(config),
+    model, tools,
     // Deliberately no Workspace: only controlled snapshot reads; no automatic file/edit tools.
   });
 }

@@ -76,7 +76,7 @@ beforeEach(() => {
 describe('registered image tool + live Slack bridge + shared cancellation (synthetic, not remote E2E)', () => {
   it('preserves all existing main tools and conditional capability while changing no global model/config', async () => {
     const { main } = setup();
-    expect(Object.keys(await main.listTools())).toEqual(['web_fetch', 'web_search', 'web_read_more', 'web_find_in_content',
+    expect(Object.keys(await main.listTools())).toEqual(['load_domain_guidance', 'web_fetch', 'web_search', 'web_read_more', 'web_find_in_content',
       'slack_search', 'slack_read_thread', 'slack_read_channel', 'slack_read_attachment', 'slack_analyze_image']);
     const prompt = String(await main.getInstructions());
     for (const text of ['slack_analyze_image 등록됨', 'slack_read_attachment 등록됨', 'derived_image_interpretation', '정확성을 보장하지', '사용자 승인으로 승격하지']) expect(prompt).toContain(text);
@@ -225,7 +225,7 @@ describe('registered image tool + live Slack bridge + shared cancellation (synth
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName: 'slack_analyze_image', input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls, vi.mocked(appendTaskUpdate).mock.calls]);
       for (const secret of ['DERIVED_IMAGE_SECRET', 'PRIVATE_IMAGE_QUERY', 'PRIVATE_URL_SECRET', pngFixture().toString('base64'), fixture.settings.SLACK_BOT_TOKEN, fixture.settings.LLM_API_KEY]) expect(logs).not.toContain(secret);
-      expect(appendTaskUpdate).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ status: 'complete', output: expect.stringContaining('파생 해석') }));
+      expect(appendTaskUpdate).not.toHaveBeenCalled(); // no raw or derived tool progress enters Slack
     } finally { spy.mockRestore(); }
   });
 });

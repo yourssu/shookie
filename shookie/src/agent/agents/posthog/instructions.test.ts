@@ -57,7 +57,7 @@ describe("generic Radar-driven startup prompt", () => {
   it("embeds no project catalog or legacy project knowledge and points to listProjects/guidance", () => {
     const instructions = buildPostHogInstructions();
     for (const legacy of ["SSUTime", "SSU-Time", "Soongpt", "440922", "308417", "todo_snapshot", "기본 프로젝트"]) expect(instructions).not.toContain(legacy);
-    for (const phrase of ["listProjects", "project_selection_required", "no_registered_projects", "registry_unavailable", "unknown_project", "guidance", "비신뢰 참고 정보", "프로젝트 ID/URL로 선택"]) expect(instructions).toContain(phrase);
+    for (const phrase of ["listProjects", "project_selection_required", "no_registered_projects", "registry_unavailable", "unknown_project", "metadata", "지침 소비는 비활성화", "프로젝트 ID/URL로 선택"]) expect(instructions).toContain(phrase);
   });
   it("production source never imports the legacy knowledge fixture or a static project registry", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");

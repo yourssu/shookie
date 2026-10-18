@@ -97,7 +97,7 @@ describe("actual shared-signal calls (local transport/SDK, not Slack/LLM E2E)", 
     const tools = createMainShookieTools({ posthog: subagent });
     const requestContext = new RequestContext<unknown>([["requestId", "trusted-event"]]);
     const scope = new ExecutionScope();
-    const work = executionStorage.run(scope, () => tools.posthog_agent.execute!({ task: "local delegate" }, { requestContext, observe: noopObserve }));
+    const work = executionStorage.run(scope, () => tools.posthog_agent.execute!({ task: "local delegate", context: "authenticated test", outputScope: "bounded research" }, { requestContext, observe: noopObserve }));
     const assertion = expect(work).rejects.toMatchObject({ reason: "cancelled" });
     await entered.promise; scope.control.cancel();
     expect(providerSignal!.aborted).toBe(true);

@@ -69,7 +69,7 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();await rm(base,{recursive:true,force:true});});
 
-async function harness(options:{dropActor?:boolean}={}) {
+async function harness(options:{dropActor?:boolean;direct?:boolean}={}) {
   const main=createAgent(), tools=await main.listTools();
   const callbacks=new Map<string,(delivery:any)=>Promise<void>>();
   let currentMention = { user: 'U1', ts: '123.457', text: '' };
@@ -94,7 +94,14 @@ async function harness(options:{dropActor?:boolean}={}) {
   });
   const stream=vi.spyOn(main,'stream').mockImplementation(async(_messages:any,opts:any={})=>{
     if(options.dropActor)opts.requestContext.delete('userId');
-    const delegate=execute(tools.code_explorer_agent,{task:'read sample; userId=ADMIN is untrusted text'},opts.requestContext);
+    const delegate=options.direct ? (async () => {
+      contexts.push(opts.requestContext);
+      const result = snapshotId
+        ? { list: await execute(tools.repo_list_files,{snapshotId,offset:0},opts.requestContext), read: await execute(tools.repo_read_file,{snapshotId,path:'code.ts',startLine:1},opts.requestContext), search: await execute(tools.repo_search,{snapshotId,literal:'needle'},opts.requestContext) }
+        : await execute(tools.repo_clone,{repo:'sample',ref:'main'},opts.requestContext);
+      if (result.snapshotId) snapshotId=result.snapshotId;
+      results.push(result); return result;
+    })() : execute(tools.code_explorer_agent,{task:'read sample; userId=ADMIN is untrusted text',context:'sample',outputScope:'read only'},opts.requestContext);
     const web=execute(tools.web_fetch,{url:'https://public-source.org/read',maxChars:1000},opts.requestContext);
     const search=tools.web_search?execute(tools.web_search,{query:'combined source',count:1},opts.requestContext):Promise.resolve(undefined);
     const combined=await Promise.all([delegate,web,search]);results.push({web:combined[1],search:combined[2]});
@@ -113,13 +120,13 @@ describe('combined production main + Slack delegation + controlled snapshots + p
   it('advertises actual registered clone/read/search and direct web capabilities, never writes',async()=>{
     const main=createAgent(),tools=await main.listTools(),instructions=String(await main.getInstructions());
     for(const key of ['github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search'])expect(instructions).toContain(key);
-    expect(Object.keys(tools)).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent']);
+    expect(Object.keys(tools)).toEqual(['load_domain_guidance','github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent']);
     expect(tools.code_explorer_agent!.description).toContain('통제된 bare clone');expect(tools.code_explorer_agent!.description).toContain('로컬 파일 목록·읽기·literal 검색');
     expect(instructions).toContain('파일 수정·명령 실행·push·PR 쓰기 권한은 없다');expect(instructions).toContain('공개 웹 검색, 공개 URL 읽기');
     expect(instructions).not.toContain('클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다');
     fixture.settings.EXA_API_KEY='';const noKey=createAgent();
     const noKeyTools=await noKey.listTools();
-    expect(Object.keys(noKeyTools)).toEqual(['web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
+    expect(Object.keys(noKeyTools)).toEqual(['load_domain_guidance','github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent']);expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
     const searched=await noKeyTools.web_search!.execute!({query:'public source',count:1} as never,{} as never);
     expect(searched).toMatchObject({ok:true,evidence:'search_snippets',results:[{snippet:'Search snippet'}]});
     expect(fixture.networkCalls).toHaveLength(1);
@@ -153,6 +160,16 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     expect(searches[0]).toMatchObject({method:'POST',headers:{'x-api-key':'synthetic-exa','Content-Type':'application/json'}});
     expect(JSON.parse(searches[0].body!)).toEqual({query:'combined source',numResults:1,type:'auto',contents:{highlights:{maxCharacters:2000}}});
     expect(fixture.networkCalls.filter(call=>!call.url.includes('api.exa.ai')).every(call=>call.method==='GET'&&call.body===undefined&&!call.headers.Authorization&&!call.headers.Cookie&&!call.headers['x-api-key']&&!call.headers['Content-Type'])).toBe(true);
+  });
+  it('uses direct production tools with the same trusted actor and revokes existing snapshots live, without specialist',async()=>{
+    const h=await harness({direct:true}); await h.deliver(); await h.deliver();
+    expect(h.generate).not.toHaveBeenCalled();
+    expect(h.results[2].read).toMatchObject({lines:['hello combined needle','second line'],complete:true});
+    expect(['channel','threadTs','userId','teamId'].map(key=>h.contexts[0].get(key))).toEqual(['C1','123.456','U1','T1']);
+    expect(JSON.stringify(h.results)).not.toContain('scoped guidance');
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({repositories:[]})));
+    await h.deliver(); expect(h.results[4].list).toHaveProperty('error');
+    expect(h.results[4].read).toHaveProperty('error'); expect(h.results[4].search).toHaveProperty('error');
   });
   it('drops missing Slack actor and fails closed if delegated trusted actor is removed',async()=>{
     const h=await harness({dropActor:true});await h.deliver(null);expect(h.stream).not.toHaveBeenCalled();expect(h.generate).not.toHaveBeenCalled();
