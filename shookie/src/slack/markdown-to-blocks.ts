@@ -32,7 +32,7 @@ export function convertMarkdownToBlocks(
   if (options?.withFeedback) {
     blocks.push(buildFeedbackBlock());
   }
-  blocks.push(buildDebugContextBlock(debugFooter));
+  if (debugFooter) blocks.push(buildDebugContextBlock(debugFooter));
   const trimmed = enforceBlockLimit(blocks);
   const fallbackText = buildFallbackText(responseText, debugFooter);
 
@@ -338,7 +338,7 @@ function buildFallbackText(responseText: string, debugFooter: string): string {
     .replace(/^\|[-:|\s]+\|$/gm, "");
   // Fallback text는 알림/미리보기/검색 등에서 노출되므로 mrkdwn 정규화 필수.
   // 정규화하지 않으면 **bold**, *<URL*> 등이 그대로 노출됨.
-  return toSlackMrkdwn(stripped) + "\n" + debugFooter;
+  return toSlackMrkdwn(stripped) + (debugFooter ? "\n" + debugFooter : "");
 }
 
 function stripMarkdownBold(text: string): string {

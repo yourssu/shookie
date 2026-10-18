@@ -4,6 +4,9 @@ import type { ExecutionScope } from "./execution-context.js";
 import { CANCEL_ACTION_ID, CANCEL_ACCEPTED_TEXT, CANCEL_UNAVAILABLE_TEXT, CancellationRegistry } from "./request-registry.js";
 import { scopedSlackClient, slackDelivery } from "./slack-transport.js";
 
+export const DELIVERY_UNCONFIRMED_TEXT = "답변 전달 상태를 확인하지 못했어요. 일부 또는 전체가 표시되었을 수 있으며 자동 재전송하지 않습니다.";
+export const FINISHED_CONTROL_TEXT = "요청 처리를 마쳤어요.";
+
 export const STOP_TEXT = {
   cancelled: "요청을 취소했습니다. 진행 중인 작업을 정리하고 있어요. 다시 필요하시면 새 메시지로 요청해주세요.",
   timed_out: "요청 처리 시간이 3분을 초과해 중단했습니다. 진행 중인 작업을 정리하고 있어요. 질문 범위를 줄여 새 메시지로 요청해주세요.",
@@ -35,6 +38,8 @@ export class SlackRequestControls {
   private scope?: ExecutionScope;
   private notification?: Promise<void>;
   private notified = false;
+  private delivered = false;
+  markDelivered(): void { this.delivered = true; }
   constructor(private readonly app: App, private readonly registry: CancellationRegistry,
     private readonly event: ConversationEvent) {}
   get stopNotified(): boolean { return this.notified; }
@@ -45,6 +50,7 @@ export class SlackRequestControls {
     const client = scopedSlackClient(this.app, scope.control.signal);
     const posted = await client.chat.postMessage({ channel: this.event.channel, thread_ts: this.event.threadTs,
       text: "요청을 확인하고 있어요. 실행은 최대 3분이며 요청자만 취소할 수 있습니다.",
+      metadata: { event_type: "shookie_request_control", event_payload: {} },
       blocks: this.event.teamId ? [{ type: "actions", elements: [{ type: "button", action_id: CANCEL_ACTION_ID,
         text: { type: "plain_text", text: "요청 취소" }, value: this.event.requestId }] }] : [] });
     if (!posted.ts) throw new Error("Missing control message linkage");
@@ -70,8 +76,25 @@ export class SlackRequestControls {
     this.registry.remove(this.event.requestId, scope.control);
     if (this.notification) await this.notification;
     if (this.messageTs && !this.notified) {
-      try { await slackDelivery(this.app, client => client.chat.update({ channel: this.event.channel,
-        ts: this.messageTs!, text: scope.control.isCommitted ? "요청을 완료했습니다." : "요청을 종료했습니다.", blocks: [] })); } catch { /* expired button still denied by registry */ }
+      const control = { channel: this.event.channel, ts: this.messageTs };
+      if (this.delivered) {
+        try {
+          await slackDelivery(this.app, async client => {
+            const deleted = await client.chat.delete(control);
+            if (!deleted.ok) throw new Error("Control deletion not confirmed");
+          });
+          return;
+        } catch {
+          // A delete may have succeeded despite a lost response. Update only this known
+          // control once, under its own bounded delivery scope; message_not_found is fine.
+          try { await slackDelivery(this.app, client => client.chat.update({ ...control,
+            text: FINISHED_CONTROL_TEXT, blocks: [] })); } catch { /* no new post or retry */ }
+        }
+      } else {
+        try { await slackDelivery(this.app, client => client.chat.update({ ...control,
+          text: scope.control.isCommitted ? DELIVERY_UNCONFIRMED_TEXT : "요청을 종료했습니다.", blocks: [] })); }
+        catch { /* expired button still denied by registry */ }
+      }
     }
   }
 }

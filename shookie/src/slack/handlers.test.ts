@@ -37,7 +37,8 @@ function harness(summarize?: ThreadSummarizer) {
   const controlPost = vi.fn(async () => ({ ok: true, ts: "control" }));
   const app = { event: (kind: string, callback: (args: Delivery) => Promise<void>) => callbacks.set(kind, callback), action: vi.fn(),
     client: { chat: { postMessage: (args: { blocks?: { type: string }[] }) => args.blocks?.[0]?.type === "actions"
-      ? controlPost() : postMessage(args), update: vi.fn(async () => ({ ok: true })) } } } as unknown as App;
+      ? controlPost() : postMessage(args), update: vi.fn(async () => ({ ok: true })), delete: vi.fn(async () => ({ ok: true })) },
+      apiCall: vi.fn(async () => ({ ok: false, error: "unknown_method" })) } } as unknown as App;
   const events = new Map<string, string>();
   const turns = new Map<string, ConversationTurn[]>();
   const repository: ConversationRepository = {
@@ -236,11 +237,11 @@ describe("actual Slack handler wiring", () => {
     await h.deliver("recovered");
     expect(h.repository.complete).toHaveBeenCalledTimes(1);
     expect(h.postMessage.mock.calls.slice(0, 2).every(call => !JSON.stringify(call).includes("SECRET"))).toBe(true);
-    const calls = h.stream.mock.calls as unknown as [unknown][];
+    const calls = h.stream.mock.calls as unknown as [unknown[]][];
     expect(calls[1][0]).toEqual([{ role: "user", content: "hello <@OTHER>" }]);
   });
 
-  it("opens a plan stream, sends matching task updates and finalizes only after durable save", async () => {
+  it("hides tool arguments/results and delivers only after durable save", async () => {
     const h = harness();
     const session = { channel: "C1", threadTs: "root", messageTs: "plan-stream" };
     vi.mocked(startPlanStream).mockResolvedValueOnce(session);
@@ -253,46 +254,40 @@ describe("actual Slack handler wiring", () => {
     } }) });
 
     await h.deliver("stream-success");
-    expect(startPlanStream).toHaveBeenCalledWith(h.client, "C1", "root", "T1", "U1");
-    expect(appendTaskUpdate).toHaveBeenCalledTimes(2);
-    expect(appendTaskUpdate).toHaveBeenNthCalledWith(1, session, h.client, {
-      id: "task-1", title: "🔍 PostHog 데이터 분석 중...", status: "in_progress", details: JSON.stringify({ question: "synthetic" }),
-    });
-    expect(appendTaskUpdate).toHaveBeenNthCalledWith(2, session, h.client, {
-      id: "task-1", title: "🔍 PostHog 데이터 분석 중...", status: "complete", output: "synthetic result",
-    });
+    expect(startPlanStream).not.toHaveBeenCalled();
+    expect(appendTaskUpdate).not.toHaveBeenCalled();
     expect(h.repository.complete).toHaveBeenCalledTimes(1);
-    expect(stopStreamWithBlocks).toHaveBeenCalledTimes(1);
-    expect(stopStreamWithBlocks).toHaveBeenCalledWith(session, h.client, expect.stringContaining("answer"), expect.arrayContaining([expect.any(Object)]));
-    expect(vi.mocked(h.repository.complete).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(stopStreamWithBlocks).mock.invocationCallOrder[0]);
-    expect(h.postMessage).not.toHaveBeenCalled();
+    expect(h.postMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.repository.complete).mock.invocationCallOrder[0]).toBeLessThan(h.postMessage.mock.invocationCallOrder[0]);
+    expect(JSON.stringify(h.postMessage.mock.calls)).not.toMatch(/synthetic result|question|💰|💵|🔧/);
     expect(h.events.get("slack-event:stream-success")).toBe("completed");
   });
 
-  it("falls back to one thread post when final stream stop fails, retaining the successful turn", async () => {
+  it("uses one final post only on explicit unsupported stream start and suppresses replay", async () => {
     const h = harness();
     const session = { channel: "C1", threadTs: "root", messageTs: "plan-stream" };
     vi.mocked(startPlanStream).mockResolvedValueOnce(session);
     vi.mocked(stopStreamWithBlocks).mockRejectedValueOnce(new Error("SECRET synthetic stop failure"));
     await h.deliver("stop-fallback");
-    expect(stopStreamWithBlocks).toHaveBeenCalledTimes(1);
+    expect(stopStreamWithBlocks).not.toHaveBeenCalled();
     expect(h.postMessage).toHaveBeenCalledTimes(1);
     expect(h.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: "C1", thread_ts: "root", text: expect.stringContaining("answer"), blocks: expect.any(Array) }));
     expect(h.repository.complete).toHaveBeenCalledTimes(1);
     expect(h.events.get("slack-event:stop-fallback")).toBe("completed");
     expect(JSON.stringify(h.postMessage.mock.calls)).not.toContain("SECRET");
     await h.deliver("stop-fallback");
-    expect(startPlanStream).toHaveBeenCalledTimes(1);
+    expect(startPlanStream).not.toHaveBeenCalled();
     expect(h.postMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("terminates an opened stream kindly after persistence failure without saving or caching the failed turn", async () => {
+  it("never opens a stream after persistence failure or caches the failed turn", async () => {
     const h = harness();
     const session = { channel: "C1", threadTs: "root", messageTs: "plan-stream" };
     vi.mocked(startPlanStream).mockResolvedValueOnce(session);
     vi.mocked(h.repository.complete).mockRejectedValueOnce(new Error("SECRET synthetic persistence failure"));
     await h.deliver("stream-save-failure");
-    expect(stopStreamWithBlocks).toHaveBeenCalledExactlyOnceWith(session, h.client, "요청을 완료하지 못했습니다.", []);
+    expect(stopStreamWithBlocks).not.toHaveBeenCalled();
+    expect(h.client.apiCall).not.toHaveBeenCalled();
     expect(h.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ channel: "C1", thread_ts: "root", text: "대화를 안전하게 처리하지 못했습니다. 잠시 후 새 메시지로 다시 시도해주세요." }));
     expect(h.turns.size).toBe(0);
     expect(h.events.get("slack-event:stream-save-failure")).toBe("failed");
@@ -362,7 +357,7 @@ describe("actual Slack handler wiring", () => {
     await Promise.all([h.deliver("thread", changes, "app_mention"), h.deliver("thread", changes, "app_mention")]);
     await h.deliver("thread", changes, "app_mention");
     expect(h.replies).toHaveBeenCalledTimes(1);
-    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "1.000001", limit: 15 });
+    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "1.000001", limit: 15, include_all_metadata: true });
     expect(h.stream).toHaveBeenCalledTimes(1);
     const dialogue = (h.stream.mock.calls as unknown as [{ role: string; content: string }[]][])[0][0];
     expect(dialogue.map(m => JSON.parse(m.content).text)).toEqual(["root", "other opinion", "old Shookie answer", "<@BOT> current"]);

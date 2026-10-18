@@ -10,6 +10,7 @@ vi.mock("../slack/streaming.js", () => ({ startPlanStream: vi.fn(async () => { t
 vi.mock("database", () => ({ conversationRepository: {}, logAgentCall: vi.fn(), startAgentCall: vi.fn(async () => null), startInvocation: vi.fn(), completeAgentCall: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn() }));
 import { registerHandlers } from "../slack/handlers.js";
 import { CANCEL_ACTION_ID, CANCEL_ACCEPTED_TEXT, CANCEL_UNAVAILABLE_TEXT } from "./request-registry.js";
+import { DELIVERY_UNCONFIRMED_TEXT, FINISHED_CONTROL_TEXT } from "./slack-controls.js";
 import { startPlanStream, stopStreamWithBlocks } from "../slack/streaming.js";
 import { startAgentCall, startInvocation, completeInvocation, completeAgentCall, logToolCall, logAgentCall } from "database";
 import { logger } from "../logger.js";
@@ -20,7 +21,7 @@ async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
 function answer() { return { fullStream: new ReadableStream({ start(c) { c.close(); } }), text: Promise.resolve("safe answer"), usage: Promise.resolve({}), steps: Promise.resolve([]), finishReason: Promise.resolve("stop") }; }
 function harness(summary = vi.fn(async () => "summary")) {
   const events = new Map<string, (args: any) => Promise<void>>(); const actions = new Map<string, (args: any) => Promise<void>>();
-  const client = { chat: { postMessage: vi.fn(async (_args: any) => ({ ok: true, ts: "2.000001" })),
+  const client = { apiCall: vi.fn(async (_method?: string, _args?: unknown): Promise<{ok: boolean; error?: string; ts?: string}> => ({ ok: false, error: "unknown_method" })), chat: { delete: vi.fn(async () => ({ ok: true })), postMessage: vi.fn(async (_args: any) => ({ ok: true, ts: "2.000001" })),
     update: vi.fn(async (_args: any) => ({ ok: true })), postEphemeral: vi.fn(async (_args: any) => ({ ok: true })) }, conversations: { replies: vi.fn() } };
   const app = { client, event: (id: string, fn: any) => events.set(id, fn), action: (id: string, fn: any) => actions.set(id, fn) } as unknown as App;
   const claimed = new Set<string>();
@@ -57,6 +58,7 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     const h = harness(); const fetch = deferred<any>(); h.client.conversations.replies.mockReturnValue(fetch.promise);
     const run = h.deliver("fetch", true); await flush();
     expect(h.client.chat.postMessage).toHaveBeenCalledOnce();
+    expect(h.client.chat.postMessage.mock.calls[0][0].metadata).toEqual({event_type:"shookie_request_control",event_payload:{}});
     expect(h.client.chat.postMessage.mock.calls[0][0]).toMatchObject({ channel: "C1", thread_ts: "1.000001", blocks: [{ type: "actions", elements: [{ action_id: CANCEL_ACTION_ID, value: "slack-event:fetch" }] }] });
     expect(startPlanStream).not.toHaveBeenCalled(); expect(h.summary).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage.mock.invocationCallOrder[0]).toBeLessThan(h.client.conversations.replies.mock.invocationCallOrder[0]);
@@ -128,7 +130,7 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     db.resolve(); await run;
     expect(h.repository.fail).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage.mock.calls.at(-1)![0].text).toContain("safe answer");
-    expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({ text: "요청을 완료했습니다." }));
+    expect(h.client.chat.delete).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "2.000001" });
   });
 
   it("a final delivery error never posts a misleading failure or reverses the saved turn", async () => {
@@ -140,7 +142,8 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     await h.deliver("delivery-failure");
     expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage).toHaveBeenCalledTimes(2); // control + answer attempt, no failure replacement
-    expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({ text: "요청을 완료했습니다.", blocks: [] }));
+    expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({ text: DELIVERY_UNCONFIRMED_TEXT, blocks: [] }));
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
     expect(logAgentCall).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ answer: "safe answer" }));
     expect(vi.mocked(logger.info).mock.calls.some(([text]) => text.includes("📤"))).toBe(false);
   });
@@ -184,22 +187,57 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     expect(JSON.stringify(h.client.chat.postMessage.mock.calls)).not.toContain("private delivery");
   });
 
-  it("retains a plan returned exactly at the absolute deadline for bounded cleanup without model/commit", async () => {
+  it("never opens a progress stream before generation and cleans controls only after verified delivery", async () => {
+    const h = harness(); const pending = deferred<ReturnType<typeof answer>>();
+    h.stream.mockReturnValueOnce(pending.promise);
+    const run = h.deliver("final-only"); await flush();
+    expect(h.client.apiCall).not.toHaveBeenCalled();
+    expect(startPlanStream).not.toHaveBeenCalled();
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
+    pending.resolve(answer()); await run;
+    expect(h.repository.complete).toHaveBeenCalledOnce();
+    expect(h.client.chat.delete).toHaveBeenCalledOnce();
+    expect(h.client.chat.postMessage.mock.invocationCallOrder.at(-1)).toBeLessThan(h.client.chat.delete.mock.invocationCallOrder[0]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["success", "chat.appendStream", "chat.stopStream"])("deletes controls only after the actual final stream is confirmed: %s", async outcome => {
     const h = harness();
-    const session = { channel: "C1", threadTs: "1.000001", messageTs: "3.000001" };
-    vi.mocked(startPlanStream).mockImplementationOnce(async () => {
-      // The HTTP call successfully returns a timestamp, but the timer callback has not run yet.
-      vi.setSystemTime(180_000);
-      return session;
+    h.stream.mockResolvedValueOnce({ ...answer(), text: Promise.resolve("safe answer " + "x".repeat(13_000)) });
+    h.client.apiCall.mockImplementation(async method => {
+      if (method === "chat.startStream") return {ok:true,ts:"3.000001"};
+      if (method === outcome) throw new Error("ambiguous final stream transport");
+      return {ok:true};
     });
-    await h.deliver("plan-deadline");
-    expect(startPlanStream).toHaveBeenCalledOnce();
-    expect(h.stream).not.toHaveBeenCalled(); expect(h.repository.complete).not.toHaveBeenCalled();
-    expect(h.repository.fail).toHaveBeenCalledOnce();
-    expect(stopStreamWithBlocks).toHaveBeenCalledExactlyOnceWith(session, h.client, "요청을 완료하지 못했습니다.", []);
-    expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ blocks: [], text: expect.stringContaining("3분을 초과") }));
-    expect(h.client.chat.postMessage).toHaveBeenCalledOnce(); // initial control only; no fallback answer/model execution
-    expect(vi.getTimerCount()).toBe(0); // independent bounded cleanup scope settled and cleared
+    await h.deliver(`stream-${outcome}`);
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
+    expect(h.client.chat.postMessage).toHaveBeenCalledOnce(); // control only, no answer replay
+    expect(h.client.apiCall.mock.calls[0][0]).toBe("chat.startStream");
+    expect(vi.mocked(h.repository.complete).mock.invocationCallOrder[0]).toBeLessThan(h.client.apiCall.mock.invocationCallOrder[0]);
+    expect(h.client.apiCall.mock.calls.some(([method]) => method === "chat.appendStream")).toBe(true);
+    if (outcome === "success") {
+      expect(h.client.chat.delete).toHaveBeenCalledExactlyOnceWith({channel:"C1",ts:"2.000001"});
+      expect(h.client.apiCall.mock.invocationCallOrder.at(-1)).toBeLessThan(h.client.chat.delete.mock.invocationCallOrder[0]);
+    } else {
+      expect(h.client.chat.delete).not.toHaveBeenCalled();
+      expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({text:DELIVERY_UNCONFIRMED_TEXT}));
+    }
+  });
+
+  it.each(["update succeeds", "already deleted", "delete explicit rejection"])("falls back to one bounded update of only the known control after delete failure: %s", async mode => {
+    const h = harness();
+    h.client.apiCall.mockResolvedValue({ok:true,ts:"3.000001"});
+    if (mode === "delete explicit rejection") h.client.chat.delete.mockResolvedValueOnce({ok:false});
+    else h.client.chat.delete.mockRejectedValueOnce(new Error("ambiguous delete response"));
+    if (mode === "already deleted") h.client.chat.update.mockRejectedValueOnce({code:"slack_webapi_platform_error",data:{error:"message_not_found"}});
+    await h.deliver("delete-failure");
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
+    expect(h.client.chat.delete).toHaveBeenCalledExactlyOnceWith({channel:"C1",ts:"2.000001"});
+    expect(h.client.chat.update).toHaveBeenCalledExactlyOnceWith({channel:"C1",ts:"2.000001",text:FINISHED_CONTROL_TEXT,blocks:[]});
+    expect(h.client.chat.delete.mock.invocationCallOrder[0]).toBeLessThan(h.client.chat.update.mock.invocationCallOrder[0]);
+    expect(h.client.chat.postMessage).toHaveBeenCalledOnce(); // no replacement post or replay loop
+    await h.click({},"slack-event:delete-failure");
+    expect(h.client.chat.postEphemeral).toHaveBeenLastCalledWith(expect.objectContaining({text:CANCEL_UNAVAILABLE_TEXT}));
   });
 
   it("keeps committed success/answer despite a later logging failure and clears completed buttons", async () => {
@@ -207,7 +245,7 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     await h.deliver("done");
     expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage.mock.calls.at(-1)![0].text).toContain("safe answer");
-    expect(h.client.chat.update).toHaveBeenCalledWith(expect.objectContaining({ text: "요청을 완료했습니다.", blocks: [] }));
+    expect(h.client.chat.delete).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "2.000001" });
     await h.click({}, "slack-event:done");
     expect(h.client.chat.postEphemeral.mock.calls.at(-1)![0].text).toBe(CANCEL_UNAVAILABLE_TEXT);
     expect(JSON.stringify(h.client.chat.postMessage.mock.calls)).not.toContain("secret");

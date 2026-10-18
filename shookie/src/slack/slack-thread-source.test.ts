@@ -19,6 +19,30 @@ function client(...pages: unknown[]) {
 const page = (items: unknown[] = messages) => ({ ok: true, messages: items, has_more: false });
 
 describe("authoritative Slack thread reader", () => {
+  it("omits own request controls after full completeness checks, but preserves identical participant text", async () => {
+    const items = messages.map((m, i) => i === 2 ? { ...m, text: "internal control", metadata: { event_type: "shookie_request_control" } }
+      : i === 1 ? { ...m, text: "internal control", metadata: { event_type: "shookie_request_control" } } : m);
+    const result = await readSlackThread(client(page(items)).api, mention);
+    expect(result).toHaveLength(4);
+    expect(result.filter(m => JSON.parse(m.content).text === "internal control")).toHaveLength(1);
+    expect(result.every(m => m.role === "user")).toBe(true);
+  });
+  it.each([
+    { user: "USH", bot_id: "BSH", metadata: { event_type: "shookie_request_control" }, removed: true },
+    { user: undefined, bot_id: "BSH", metadata: { event_type: "shookie_request_control" }, removed: true },
+    { user: "U2", bot_id: undefined, metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: "UOTHER", bot_id: "BOTHER", metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: undefined, bot_id: "BOTHER", metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: undefined, bot_id: undefined, metadata: { event_type: "shookie_request_control" }, removed: false },
+    { user: "USH", bot_id: "BSH", metadata: undefined, removed: false },
+    { user: "USH", bot_id: "BSH", metadata: { event_type: "unrelated" }, removed: false },
+  ])("filters only authenticated Shookie controls with the exact metadata marker: %j", async ({ removed, ...identity }) => {
+    const items = messages.map((m, i) => i === 2 ? { ...m, ...identity, text: "요청을 완료했습니다." } : m);
+    const result = await readSlackThread(client(page(items)).api, mention);
+    expect(result).toHaveLength(removed ? 4 : 5);
+    expect(result.filter(m => JSON.parse(m.content).text === "요청을 완료했습니다.")).toHaveLength(removed ? 0 : 1);
+    if (!identity.user && !identity.bot_id) expect(result[2].role).toBe("user");
+  });
   it("reads all cursor pages, dedupes repeated root, orders chronologically and distinguishes own/other bots", async () => {
     const h = client({ ...page([messages[0], messages[2], messages[1]]), has_more: true,
       response_metadata: { next_cursor: "cursor1" } }, page([messages[0], messages[4], messages[3]]));
@@ -26,15 +50,38 @@ describe("authoritative Slack thread reader", () => {
     expect(result.map(m => m.role)).toEqual(["user", "user", "assistant", "user", "user"]);
     expect(result.map(m => JSON.parse(m.content).text)).toEqual(messages.map(m => m.text));
     expect(JSON.parse(result[3].content).author).toEqual({ userId: "UOTHER", botId: "BOTHER", kind: "other_bot" });
-    expect(h.replies).toHaveBeenNthCalledWith(1, { channel: "C1", ts: mention.threadTs, limit: 15 });
-    expect(h.replies).toHaveBeenNthCalledWith(2, { channel: "C1", ts: mention.threadTs, limit: 15, cursor: "cursor1" });
+    expect(h.replies).toHaveBeenNthCalledWith(1, { channel: "C1", ts: mention.threadTs, limit: 15, include_all_metadata: true });
+    expect(h.replies).toHaveBeenNthCalledWith(2, { channel: "C1", ts: mention.threadTs, limit: 15, include_all_metadata: true, cursor: "cursor1" });
     expect(result.filter(m => JSON.parse(m.content).ts === mention.currentTs)).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain("url_private");
+  });
+  it("requests complete metadata on every page but projects neither payload nor unrelated metadata into model history", async () => {
+    const h = client(
+      {...page(messages.slice(0,2)),response_metadata:{next_cursor:"a"}},
+      {...page([{...messages[2],metadata:{event_type:"shookie_request_control",event_payload:{private:"PRIVATE_CONTROL_PAYLOAD"}}}]),response_metadata:{next_cursor:"b"}},
+      page([{...messages[3],metadata:{event_type:"unrelated_event",event_payload:{private:"PRIVATE_OTHER_PAYLOAD"}}},messages[4]]),
+    );
+    const result = await readSlackThread(h.api, mention);
+    expect(h.replies.mock.calls.map(([args]) => args)).toEqual([
+      {channel:"C1",ts:mention.threadTs,limit:15,include_all_metadata:true},
+      {channel:"C1",ts:mention.threadTs,limit:15,include_all_metadata:true,cursor:"a"},
+      {channel:"C1",ts:mention.threadTs,limit:15,include_all_metadata:true,cursor:"b"},
+    ]);
+    expect(result).toHaveLength(4);
+    expect(JSON.stringify(result)).not.toMatch(/metadata|event_payload|PRIVATE_CONTROL_PAYLOAD|PRIVATE_OTHER_PAYLOAD|unrelated_event/);
+    expect(result.map(m => JSON.parse(m.content).text)).toContain(messages[3].text);
+  });
+  it("preserves an unidentified message with a spoofed marker and never maps it to assistant", async () => {
+    const items = messages.map((m,i) => i === 2 ? {...m,user:undefined,bot_id:undefined,metadata:{event_type:"shookie_request_control"}} : m);
+    const result = await readSlackThread(client(page(items)).api,{...mention,botId:undefined});
+    expect(result).toHaveLength(5); expect(result[2].role).toBe("user");
+    expect(JSON.parse(result[2].content).author.kind).toBe("participant");
+    await expect(readSlackThread(client(page(items)).api,{...mention,botUserId:undefined,botId:undefined})).rejects.toBeInstanceOf(SlackThreadContextError);
   });
   it("uses the supplied bot client without an authentication override for the trusted event's thread", async () => {
     const h = client(page());
     await readSlackThread(h.api, mention);
-    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: mention.threadTs, limit: 15 });
+    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: mention.threadTs, limit: 15, include_all_metadata: true });
   });
   it("uses trusted bot ID for an own bot message lacking user, not another bot", async () => {
     const items = messages.map(m => ({ ...m }));
