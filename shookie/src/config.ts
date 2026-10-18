@@ -98,6 +98,9 @@ const envSchema = z.object({
 
   // GitHub (optional) — PAT, code-explorer에서 GH_TOKEN으로 사용
   GITHUB: z.string().default(""),
+  SHOOKIE_GITHUB_APP_ID: z.string().default(""),
+  SHOOKIE_GITHUB_APP_INSTALLATION_ID: z.string().default(""),
+  SHOOKIE_GITHUB_APP_PRIVATE_KEY_BASE64: z.string().default(""),
   GITHUB_OWNER: z.string().default("yourssu"),
   RADAR_GITHUB_REGISTRY_API_URL: z.string().default(""),
   SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY: z.string().default(""),

@@ -45,6 +45,28 @@ beforeEach(async () => {
 afterEach(async () => { vi.unstubAllGlobals(); await rm(base, { recursive: true, force: true }); });
 
 describe("real bare clone snapshots", () => {
+  it("awaits refreshed async credentials only after live registration, passes credentials only in env and aborts before git", async () => {
+    let repositories = [{ ...registeredFixture, owner: "example", name: "sample" }];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ repositories })));
+    let current = "fresh-one";
+    const tokenProvider = { getToken: vi.fn(async () => { await Promise.resolve(); return current; }), redact: (s: string) => s.replaceAll("fresh-one", "[REDACTED]").replaceAll("fresh-two", "[REDACTED]") };
+    const transport = vi.fn(async (request: Parameters<CloneTransport>[0]) => {
+      expect(request.env.GIT_CONFIG_VALUE_8).toBe(`Authorization: Basic ${Buffer.from(`x-access-token:${current}`).toString("base64")}`);
+      expect(request.url).not.toContain(current); expect(request.destination).not.toContain(current);
+      await fixtureTransport(request);
+    });
+    const m = new RepositorySnapshots({ owner: "example", registry: registryFixture, gitHubToken: "", tokenProvider, workspaceBasePath: workspace, workspaceMaxGb: 1 }, transport);
+    await expect(m.clone({ repo: "denied" }, context())).rejects.toThrow(); expect(tokenProvider.getToken).not.toHaveBeenCalled();
+    await write("credential.txt", "fresh-one fresh-two"); await commit();
+    const first = await m.clone({ repo: "sample" }, context());
+    current = "fresh-two"; const second = await m.clone({ repo: "sample" }, context());
+    expect(JSON.stringify(await m.read(second.snapshotId, context(), "credential.txt"))).not.toContain("fresh-");
+    const controller = new AbortController(); controller.abort();
+    await expect(m.clone({ repo: "sample" }, context(), controller.signal)).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(2);
+    repositories = []; await expect(m.list(first.snapshotId, context())).rejects.toThrow();
+    expect(tokenProvider.getToken).toHaveBeenCalledTimes(2);
+  });
   it("revalidates live registry on clones and existing snapshot list/read/search, delivering updated guidance", async () => {
     let repositories = [{ ...registeredFixture, owner: "example", name: "sample" }];
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ repositories })));

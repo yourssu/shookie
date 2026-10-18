@@ -5,6 +5,7 @@ import { createPostHogAgent } from "./agents/posthog/index.js";
 import { createCodeExplorerAgent } from "./agents/code-explorer/index.js";
 import { PostHogClientManager } from "../tools/posthog/client.js";
 import { posthogRegistryConfig } from "../tools/posthog/registry.js";
+import { createGithubTokenProvider } from "../tools/code-explorer/github-auth.js";
 import { registryConfig } from "../tools/code-explorer/registry.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -38,10 +39,12 @@ export function createAgent(options: { slackClient?: SlackReadClient & Partial<P
   }
 
   const githubRegistry = registryConfig(config.RADAR_GITHUB_REGISTRY_API_URL ?? "", config.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY ?? "");
-  if (config.GITHUB && githubRegistry) {
+  const tokenProvider = createGithubTokenProvider(config);
+  if ((tokenProvider || config.GITHUB) && githubRegistry) {
     subAgents.codeExplorer = createCodeExplorerAgent(model, {
       registry: githubRegistry,
       gitHubToken: config.GITHUB,
+      tokenProvider,
       owner: config.GITHUB_OWNER,
       workspaceBasePath: config.THREAD_WORKSPACE_BASE_PATH,
       workspaceMaxGb: config.THREAD_WORKSPACE_MAX_GB,
