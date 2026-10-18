@@ -32,7 +32,7 @@ App 권한은 repository metadata/read, contents/read, pull_requests/read, issue
 
 서버는 RS256 JWT(iat 60초 skew, exp-iat 600초)로 고정 api.github.com의 App/installation ID·조직 계정·read-only 권한을 검증한 뒤 명시적 read-only permissions로 installation token을 발급한다. 토큰만 메모리에 단일 캐시하며 만료 60초 전 갱신, 동시 요청은 single-flight다. 캐시는 등록을 캐시하지 않는다. 키/JWT/토큰은 모델·로그·디스크에 전달하지 않으며 최근 64개 임시 자격증명을 응답 마스킹에 보관한다. clone 인증은 기존 격리 git 환경의 extraHeader에만 전달한다(URL/argv/config 파일 금지).
 
-키 회전은 main 운영자가 전용 App의 새 키를 외부에서 발급해 Secret 교체 후 재배포하고 검증한 다음 이전 키를 폐기한다. 캐시는 프로세스 재시작으로 제거된다. 기존 PAT Secret은 변경/삭제하지 않고 승인된 merge 이후 App 설정으로 전환한다. 실제 설치·배포 및 세 등록 저장소(비공개 두 개 포함)의 metadata/tree/clone 읽기 검증은 운영자가 별도로 수행해야 완료된다. 404는 인증/설치 범위 제한일 수도 있어 저장소가 존재하지 않는다는 증거가 아니다. 임의 브랜치 재시도로 권한 문제를 우회하지 않는다.
+키 회전은 main 운영자가 전용 App의 새 키를 외부에서 발급해 Secret 교체 후 재배포하고 검증한 다음 이전 키를 폐기한다. 캐시는 프로세스 재시작으로 제거된다. installation token은 고정 길이를 가정하지 않으며 GitHub의 약 520자 토큰도 지원한다(방어적 최대 4096자). 기존 PAT Secret은 변경/삭제하지 않고 승인된 merge 이후 App 설정으로 전환한다. 실제 설치·배포 및 세 등록 저장소(비공개 두 개 포함)의 metadata/tree/clone 읽기 검증은 운영자가 별도로 수행해야 완료된다. 404는 인증/설치 범위 제한일 수도 있어 저장소가 존재하지 않는다는 증거가 아니다. 임의 브랜치 재시도로 권한 문제를 우회하지 않는다.
 코드의 GET 제한은 credential 자체의 광범위한 권한을 줄여주지는 않는다. 별도 read-only credential wiring은 후속 운영 작업이다.
 
 ## HTTP 및 출력 경계

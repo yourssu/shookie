@@ -33,6 +33,18 @@ describe("dedicated GitHub App credentials", () => {
     f.advance(3600001); expect(await p.getToken()).toBe("installation-3");
     for (const secret of [pem, settings.SHOOKIE_GITHUB_APP_PRIVATE_KEY_BASE64, settings.GITHUB, "installation-1", "installation-2", "installation-3", Buffer.from("x-access-token:installation-2").toString("base64")]) expect(p.redact(secret)).toBe("[REDACTED]");
   });
+  it("accepts long installation tokens without assuming a fixed GitHub token length", async () => {
+    const f = fixture(); const token = `ghs_${"a".repeat(516)}`;
+    const fetcher: typeof fetch = async (url, init) => {
+      const response = await f.fetcher(url, init);
+      return String(url).endsWith("/access_tokens") ? Response.json({ ...(await response.json() as Record<string, unknown>), token }) : response;
+    };
+    const p = createGithubTokenProvider({ ...settings, GITHUB: "" }, fetcher, f.now)!;
+    expect(token.length).toBe(520);
+    expect(await p.getToken()).toBe(token);
+    expect(p.redact(token)).toBe("[REDACTED]");
+    expect(p.redact(Buffer.from(`x-access-token:${token}`).toString("base64"))).toBe("[REDACTED]");
+  });
   it("allows only all-blank migration; partial or malformed config never selects PAT", () => {
     expect(createGithubTokenProvider({ GITHUB_OWNER: "yourssu", GITHUB: "old" })).toBeUndefined();
     for (const change of [{ SHOOKIE_GITHUB_APP_ID: "" }, { SHOOKIE_GITHUB_APP_ID: "-1" }, { SHOOKIE_GITHUB_APP_INSTALLATION_ID: "0" }, { SHOOKIE_GITHUB_APP_PRIVATE_KEY_BASE64: "bad" }, { SHOOKIE_GITHUB_APP_PRIVATE_KEY_BASE64: Buffer.from("not PEM").toString("base64") }]) {
