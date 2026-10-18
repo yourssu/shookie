@@ -25,4 +25,6 @@ Mastra 및 기존 모델/provider 설정을 유지한다. 역사 커밋 `4db5500
 - `yarn workspace shookie test src/tools/code-explorer/registry.test.ts src/tools/code-explorer/github-read.test.ts src/tools/code-explorer/repository-snapshots.test.ts src/tools/posthog/registry.test.ts src/tools/posthog/client.test.ts --maxWorkers=2 --minWorkers=1 --reporter=dot`: 5 files / 188 tests 통과. 지침 sentinel 비전파, schema/security fail-closed, 등록 삭제 후 기존 snapshot/continuation 거부 포함. clone은 로컬 synthetic Git fixture이며 live GitHub가 아니다.
 - `yarn workspace shookie test src/slack/handlers.test.ts src/slack/final-delivery.test.ts src/slack/slack-thread-source.test.ts src/slack/github-context.integration.test.ts src/slack/conversation-runtime.test.ts src/slack/thread-summarizer.test.ts --maxWorkers=2 --minWorkers=1 --reporter=dot`: 6 files / 94 tests 통과. 기존 P0 전달/control·Slack context 회귀를 mock transport로 확인한다.
 
+추가 반복에서 agent/cancellation 묶음은 230/230 통과했다. 그 직전 한 번은 combined fixture의 초기 clone이 snapshotId를 만들지 못해 229/230이었다. 같은 SHA에서 해당 파일 단독 10/10 및 전체 230/230 재실행은 통과했다. 1단계 인계에 기록된 controlled clone 간헐 실패와 유사한 증상이지만 원인 동일성을 입증하지 않았다. 보안 assertion 완화나 무관한 clone 수정은 하지 않았다.
+
 실제 DeepSeek routing/답변 품질, 실제 Slack UI/metadata 보존/전달, live Radar/GitHub/PostHog E2E, 배포는 미검증이다. synthetic 모델 스크립트는 도구 가용성과 runtime loop를 검증할 뿐 실제 모델의 선택 빈도나 운영 품질을 입증하지 않는다. main merge 전 독립 리뷰가 필요하다.

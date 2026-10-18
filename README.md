@@ -24,7 +24,7 @@ agent/main-shookie — 메인 에이전트 (직접 도구 + 선택적 전문 조
     ↓
 ┌─────────────────────┬──────────────────────┐
 │  PostHog Analyst     │  Code Explorer       │
-│  (9개 도구)          │  (git/gh CLI + 파일) │
+│  (기존 서비스 도구)  │  (API/bare snapshot) │
 └─────────────────────┴──────────────────────┘
     ↓
 slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
@@ -33,14 +33,14 @@ Slack 스레드에 답글 + 호출 기록 DB 저장
 ```
 
 - **직접 도구 중심**: 일반 조회는 메인, 맥락이 큰 조사만 선택적 전문 에이전트
-- **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리, Workspace API)
+- **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리)
 - **스레드 단위 대화**: Slack 스레드(`channel:thread_ts`) = 하나의 대화 컨텍스트 (최대 30메시지)
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
 - **Slack Block Kit 포맷팅**: LLM 응답 Markdown을 헤더, 구분선, 테이블, mrkdwn 등 Block Kit으로 자동 변환
 - **호출 로깅**: 모든 에이전트 호출(사용자, 질문, 응답, 토큰 사용량)을 PostgreSQL에 영구 저장
 - **시스템 프롬프트 로깅**: LLM 호출 직전 시스템 프롬프트를 debug 레벨로 덤프해 프롬프트 회귀 추적 가능 (`agent/log-system-prompt.ts`)
 
-## 서브 에이전트
+## 직접 서비스 도구와 선택적 전문 에이전트
 
 ### PostHog Analyst
 
