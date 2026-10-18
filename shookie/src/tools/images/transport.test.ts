@@ -154,7 +154,7 @@ describe('isolated tool-free image transport', () => {
       await assertion; await closedSocket;
     } finally { vi.useRealTimers(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
-  it('documents installed SDK image-drop path with exact synthetic outgoing request proof', async () => {
+  it('documents installed SDK image serialization without changing the isolated production transport', async () => {
     const calls: string[] = [];
     const provider = createDeepSeek({ apiKey: config.apiKey, fetch: async (_url, init) => {
       calls.push(String(init?.body));
@@ -165,8 +165,10 @@ describe('isolated tool-free image transport', () => {
     const result = await provider(config.model).doGenerate({ prompt: [{ role: 'user', content: [
       { type: 'text', text: 'Describe image' }, { type: 'file', data: new Uint8Array(input.bytes), mediaType: input.mime },
     ] }] });
-    expect(JSON.parse(calls[0]).messages).toEqual([{ role: 'user', content: 'Describe image' }]);
-    expect(calls[0]).not.toContain('image_url'); expect(calls[0]).not.toContain(input.bytes.toString('base64'));
-    expect(result.warnings).toContainEqual({ type: 'unsupported', feature: 'user message part type: file' });
+    expect(JSON.parse(calls[0]).messages).toEqual([{ role: 'user', content: [
+      { type: 'text', text: 'Describe image' },
+      { type: 'image_url', image_url: { url: `data:${input.mime};base64,${input.bytes.toString('base64')}` } },
+    ] }]);
+    expect(result.warnings).not.toContainEqual({ type: 'unsupported', feature: 'user message part type: file' });
   });
 });

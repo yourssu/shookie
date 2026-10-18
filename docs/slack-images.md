@@ -35,9 +35,9 @@
 
 ## 현재 SDK가 아닌 독립 전송을 쓰는 이유
 
-공식 [DeepSeek Vision 가이드](https://api-docs.deepseek.com/guides/vision/)는 `deepseek-flash`에서 OpenAI-compatible `/chat/completions`의 user content 배열에 text와 inline base64 `image_url` block을 지원한다고 설명합니다. 하지만 설치된 `@ai-sdk/deepseek@2.0.35`의 `dist/index.js`의 `convertToDeepSeekChatMessages`는 user parts에서 `part.type === "text"`만 연결하고 나머지는 unsupported warning만 추가한 뒤 버립니다.
+공식 [DeepSeek Vision 가이드](https://api-docs.deepseek.com/guides/vision/)는 `deepseek-flash`에서 OpenAI-compatible `/chat/completions`의 user content 배열에 text와 inline base64 `image_url` block을 지원한다고 설명합니다. 독립 전송 도입 당시 SDK 2.0.35는 image file part를 버렸습니다. 현재 고정한 **2.0.76은 image_url 직렬화를 지원**하며 `transport.test.ts`가 실제 provider + synthetic fetch의 outgoing JSON으로 이를 확인합니다.
 
-`transport.test.ts`는 설치된 SDK를 실제 호출하되 fetch를 synthetic으로 대체합니다. 표준 image `file` part(`mediaType: image/png`, bytes)를 넣었을 때 **실제 outgoing JSON이 text-only**이고 `user message part type: file` unsupported warning이 생김을 검증합니다. 문서 지원만 보고 SDK 전달 성공으로 오인하지 않습니다.
+이번 SDK 호환성 수정은 **이미지 production 경로 전환이 아닙니다**. 별도 전송의 권한·URL/DNS·출력·취소 경계를 그대로 유지합니다. SDK 직렬화 테스트 통과도 실제 API 이미지 인식 성공을 뜻하지 않습니다.
 
 별도 `transport.ts`는 기존 `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` 값만 사용하는 최소 tool-free OpenAI-compatible HTTPS POST 경로입니다. main/provider/global model 설정이나 package deps를 바꾸지 않습니다. server의 trusted HTTPS config endpoint(`/` 또는 `/v1`)만 사용하며 URL userinfo/query/fragment/alternate port와 private DNS를 차단하고 DNS를 socket에 pinning합니다. redirect는 전부 거절하고 압축 response, API unsupported/error, malformed/refused/tool-return 응답은 정직하게 실패합니다. 텍스트-only 재시도나 다른 모델로의 fallback은 없습니다. 응답의 private URL/token/data URL과 긴 원시 base64 run을 차단하며, 공백·개행·탭을 제거한 응답이 원본 encoded image payload를 포함해도 실패로 처리합니다. 정규화된 일반 문장·수치가 길다는 이유만으로 base64로 판정하지 않고 원본 payload와 정확히 비교합니다. 차단된 raw response text는 반환하거나 로그/DB에 저장하지 않습니다.
 
@@ -45,7 +45,7 @@
 
 ## 검증 구분과 실제 E2E 계획
 
-실행한 독립 테스트는 synthetic PNG/JPEG 컨테이너·API 응답, exact outgoing JSON, installed SDK drop regression, 크기/헤더/오류/권한 capability 재사용 경계, redirect/response/output budget, DNS/header/body stall, 실제 local socket abort를 검증합니다. 이는 실제 DeepSeek의 이미지 인식 품질이나 Slack scope를 증명하지 않습니다.
+실행한 독립 테스트는 synthetic PNG/JPEG 컨테이너·API 응답, exact outgoing JSON, installed SDK image serialization regression, 크기/헤더/오류/권한 capability 재사용 경계, redirect/response/output budget, DNS/header/body stall, 실제 local socket abort를 검증합니다. 이는 실제 DeepSeek의 이미지 인식 품질이나 Slack scope를 증명하지 않습니다.
 
 `src/agent/image-registration.test.ts`는 실제 main 등록/현재 채널 live 권한 브리지/요청자 context/public signal/registry 취소/socket drain/DB·로그·progress redaction을 synthetic integration으로 검증합니다. 기본 텍스트 MIME 정책 보존, PNG·JPEG 실제 outgoing inline JSON, 임의 파일·위조 context·삭제 메시지·부모 첨부 차단, 매 호출 live membership 재검증, image-unsupported 실패/no fallback도 포함합니다. 실제 Slack/DeepSeek E2E는 **미실시**이며 main과 사용자가 승인한 범위에서만 다음과 같이 별도 진행합니다.
 

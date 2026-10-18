@@ -1,9 +1,8 @@
 import { conversationLimits as limits } from "./limits.js";
 
-export interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
+export type Message =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string };
 
 /** Bounded read-through cache; never the authoritative dialogue store. */
 export class InMemoryConversationStore {

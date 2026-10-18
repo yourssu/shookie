@@ -1,3 +1,4 @@
+import { noopObserve } from "@mastra/core/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RequestContext } from "@mastra/core/request-context";
 import { logger } from "../../logger.js";
@@ -140,19 +141,19 @@ describe("cross-channel search guards without instrumentation (synthetic, NOT ac
   it("cancelled continuation drains and unlocks the same seed without calling a throwing logger", async () => {
     const f = fixture(), tool = executionTools(createSlackReadTools(f.client)).slack_search;
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] }, next_cursor: "PRIVATE_CURSOR" });
-    const first = await tool.execute!({ query: "keyword", limit: 20 }, { requestContext: f.context });
-    if ("error" in first) throw new Error("Synthetic seed failed");
+    const first = await tool.execute!({ query: "keyword", limit: 20 }, { requestContext: f.context, observe: noopObserve });
+    if (!first || "error" in first) throw new Error("Synthetic seed failed");
     let entered!: () => void, reject!: (error: unknown) => void;
     const ready = new Promise<void>(resolve => { entered = resolve; });
     f.apiCall.mockImplementationOnce(() => { entered(); return new Promise((_resolve, no) => { reject = no; }); });
     assertNoDiagnostics(f); f.spy.mockImplementation(() => { throw new Error(token); });
     const scope = new ExecutionScope();
-    const work = executionStorage.run(scope, () => tool.execute!({ query: "keyword", limit: 20, cursor: first.nextCursor! }, { requestContext: f.context }));
+    const work = executionStorage.run(scope, () => tool.execute!({ query: "keyword", limit: 20, cursor: first.nextCursor! }, { requestContext: f.context, observe: noopObserve }));
     const assertion = expect(work).rejects.toMatchObject({ reason: "cancelled" });
     await ready; scope.control.cancel(); reject(new Error(token)); await assertion; await scope.drain(); scope.control.finish();
     assertNoDiagnostics(f);
     f.apiCall.mockResolvedValueOnce({ ok: true, results: { messages: [message()] } });
-    expect(await tool.execute!({ query: "keyword", limit: 20, cursor: first.nextCursor! }, { requestContext: f.context })).toMatchObject({ status: "ok", page: 2 });
+    expect(await tool.execute!({ query: "keyword", limit: 20, cursor: first.nextCursor! }, { requestContext: f.context, observe: noopObserve })).toMatchObject({ status: "ok", page: 2 });
     expect(f.apiCall).toHaveBeenCalledTimes(3); assertNoDiagnostics(f);
   });
   it("keeps seed immutable, bounded and text-free through rejection/unlock/retry", async () => {

@@ -229,7 +229,7 @@ Slack 앱 설정, 비밀값 분류, 로컬/수동 E2E, 기존 mention-bot 전환
 
 ## 기술 스택
 
-- **TypeScript ESM** (Node.js 20+) + @slack/bolt (Socket Mode)
+- **TypeScript ESM** (Node.js >=22.13.0, Docker `node:22-slim`; Mastra 지원 런타임) + @slack/bolt (Socket Mode)
 - **Mastra** (에이전트 프레임워크)
 - **LLM** DeepSeek (`@ai-sdk/deepseek`, `https://api.deepseek.com`, 기본 모델 `deepseek-flash`)
 - **PostgreSQL** (`pg`) — 에이전트 호출 로깅

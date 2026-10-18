@@ -16,6 +16,15 @@ describe("deployment contract", () => {
     .filter((line) => !line.trim().startsWith("#"))
     .join("\n");
 
+  it("uses the supported Mastra Node runtime without changing the deployment pipeline", () => {
+    const dockerfile = readRepoFile("shookie/Dockerfile");
+    expect(dockerfile).toMatch(/^FROM node:22-slim/m);
+    expect(dockerfile).toContain("major === 22 && minor < 13");
+    for (const file of ["package.json", "shookie/package.json"]) {
+      expect(JSON.parse(readRepoFile(file)).engines.node).toBe(">=22.13.0");
+    }
+  });
+
   it("EC2 never builds images or runs global cleanup", () => {
     for (const forbidden of [
       "docker compose build",
