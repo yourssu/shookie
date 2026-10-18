@@ -16,7 +16,7 @@ export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExp
     name: "슈키(shookie)",
     instructions: async () => {
       const explorer = subAgents.codeExplorer;
-      const explorerTools = explorer?.listTools ? Object.keys(await explorer.listTools()) : [];
+      const explorerTools = explorer?.listTools ? Object.keys(await explorer.listTools()).sort() : [];
       const description = explorer?.getDescription?.();
       return buildMainShookieInstructions({
         toolKeys: Object.keys(tools),

@@ -1,4 +1,6 @@
 import { createTool } from "@mastra/core/tools";
+import { createDomainGuidanceTool } from "../../domain-guidance.js";
+import { requestClockMessages } from "../../request-clock.js";
 import { boundedResearchOutput, researchOutput, reportSchema } from "./research-output.js";
 import { executionTools, executionSignal, executionCheckpoint } from "../../../cancellation/execution-context.js";
 import { z } from "zod";
@@ -53,7 +55,7 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<z.infe
     if (opts.requestContext) generateOpts.requestContext = opts.requestContext;
 
     const result = await opts.agent.generate(
-      [{ role: "user", content: opts.task + '\n최종 결과는 JSON {"status":"success|partial|error","result":"조사 결론과 출처","limitations":["관련 한계"]}로 반환하세요. 미확인·실패를 성공으로 표현하지 마세요.' }],
+      [{ role: "user", content: opts.task + '\n최종 결과는 JSON {"status":"success|partial|error","result":"조사 결론과 출처","limitations":["관련 한계"]}로 반환하세요. 미확인·실패를 성공으로 표현하지 마세요.' }, ...requestClockMessages(opts.requestContext)],
       generateOpts,
     );
     executionCheckpoint();
@@ -149,6 +151,10 @@ export function createMainShookieTools(subAgents: {
   codeExplorer?: Agent;
 }, webOptions: Parameters<typeof createWebTools>[0] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions, images?: ImageToolOptions, directTools: Record<string, ReturnType<typeof createTool>> = {}) {
   const tools: Record<string, ReturnType<typeof createTool>> = {
+    load_domain_guidance: createDomainGuidanceTool([
+      ...(subAgents.codeExplorer ? ["github" as const] : []),
+      ...(subAgents.posthog ? ["posthog" as const] : []),
+    ]),
     ...directTools,
     ...createWebTools(webOptions),
     ...(slackClient ? createSlackReadTools(slackClient) : {}),
@@ -202,5 +208,5 @@ export function createMainShookieTools(subAgents: {
     });
   }
 
-  return executionTools(tools);
+  return executionTools(Object.fromEntries(Object.entries(tools).sort(([a], [b]) => a.localeCompare(b, "en"))));
 }

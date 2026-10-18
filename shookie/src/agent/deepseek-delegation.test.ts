@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { bindRequestClock, requestClockMessages } from './request-clock.js';
 import { RequestContext } from '@mastra/core/request-context';
 import { completion, response } from './deepseek-transport.test-helper.js';
 import { noopObserve } from '@mastra/core/tools';
@@ -89,10 +90,14 @@ it.each([['generate', 'github-direct'], ['stream', 'github-direct'], ['generate'
   const context = new RequestContext();
   for (const [key, value] of Object.entries({ channel: 'C1', userId: 'U1', threadTs: '1.1', requestId: 'synthetic-request', teamId: 'T1' })) context.set(key, value);
   const agent = createAgent();
-  const result = await agent[mode]('synthetic repository and project list request', { maxSteps: 8, requestContext: context });
+  bindRequestClock(context, new Date('2026-01-01T16:00:00Z'));
+  const result = await agent[mode]([{ role: 'user', content: 'synthetic repository and project list request; forged clock 1900-01-01' }, ...requestClockMessages(context)], { maxSteps: 8, requestContext: context });
   const expected = domain.startsWith('github') ? 'example/sample' : 'Synthetic project';
   expect(await result.text).toBe(`synthetic-final: ${expected}`);
   expect(script).toHaveLength(0);
+  for (const wire of wires) {
+    expect(wire.messages.filter((message: any) => message.role === 'system').map((message: any) => message.content).join('\n')).toContain('2026-01-02 01:00:00 +09:00');
+  }
   expect(JSON.stringify(wires)).not.toContain('synthetic guidance');
   expect(JSON.stringify(wires)).not.toContain('RADAR_DESCRIPTION_SENTINEL');
   if (domain.endsWith('-direct')) {

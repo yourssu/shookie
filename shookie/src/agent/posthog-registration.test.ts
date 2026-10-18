@@ -44,7 +44,7 @@ describe("PostHog subagent registration (Radar registry is the sole authority)",
     const instructions = String(await fixture.subagents[0].getInstructions());
     expect(instructions).toContain("listProjects");
     expect(instructions).not.toMatch(/SSUTime|Soongpt|440922|308417/);
-    expect(String(await main.getInstructions())).toContain("실제 등록된 메인 도구: listProjects");
+    expect(String(await main.getInstructions())).toContain(`실제 등록된 메인 도구: ${Object.keys(await main.listTools()).sort().join(', ')}`);
     expect(fetcher).not.toHaveBeenCalled();
   });
   it("ordinary project lists execute the registered main tool with live registry and no specialist", async () => {

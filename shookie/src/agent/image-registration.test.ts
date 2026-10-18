@@ -76,8 +76,8 @@ beforeEach(() => {
 describe('registered image tool + live Slack bridge + shared cancellation (synthetic, not remote E2E)', () => {
   it('preserves all existing main tools and conditional capability while changing no global model/config', async () => {
     const { main } = setup();
-    expect(Object.keys(await main.listTools())).toEqual(['web_fetch', 'web_search', 'web_read_more', 'web_find_in_content',
-      'slack_search', 'slack_read_thread', 'slack_read_channel', 'slack_read_attachment', 'slack_analyze_image']);
+    expect(Object.keys(await main.listTools())).toEqual(['load_domain_guidance', 'web_fetch', 'web_search', 'web_read_more', 'web_find_in_content',
+      'slack_search', 'slack_read_thread', 'slack_read_channel', 'slack_read_attachment', 'slack_analyze_image'].sort());
     const prompt = String(await main.getInstructions());
     for (const text of ['slack_analyze_image 등록됨', 'slack_read_attachment 등록됨', 'derived_image_interpretation', '정확성을 보장하지', '사용자 승인으로 승격하지']) expect(prompt).toContain(text);
     const token = fixture.settings.SLACK_BOT_TOKEN; fixture.settings.SLACK_BOT_TOKEN = '';
