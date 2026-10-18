@@ -1,8 +1,9 @@
 import type { App } from "@slack/bolt";
+import type { WebClient } from "@slack/web-api";
 import type { ConversationEvent } from "database";
 import type { ExecutionScope } from "./execution-context.js";
 import { CANCEL_ACTION_ID, CANCEL_ACCEPTED_TEXT, CANCEL_UNAVAILABLE_TEXT, CancellationRegistry } from "./request-registry.js";
-import { scopedSlackClient, slackDelivery } from "./slack-transport.js";
+import { scopedSlackClient, slackDelivery, SlackCooldown } from "./slack-transport.js";
 
 export const DELIVERY_UNCONFIRMED_TEXT = "답변 전달 상태를 확인하지 못했어요. 일부 또는 전체가 표시되었을 수 있으며 자동 재전송하지 않습니다.";
 export const FINISHED_CONTROL_TEXT = "요청 처리를 마쳤어요.";
@@ -45,18 +46,24 @@ export class SlackRequestControls {
   }
   markDelivered(): void { this.delivered = true; }
   constructor(private readonly app: App, private readonly registry: CancellationRegistry,
-    private readonly event: ConversationEvent) {}
+    private readonly event: ConversationEvent, readonly cooldown = new SlackCooldown()) {}
+  private delivery<T>(send: (client: WebClient) => Promise<T>): Promise<T> {
+    return slackDelivery(this.app, async (client, signal) => {
+      await this.cooldown.wait(signal);
+      return this.cooldown.run(() => send(client));
+    });
+  }
   get stopNotified(): boolean { return this.notified; }
 
   async start(scope: ExecutionScope): Promise<void> {
     this.scope = scope;
     if (this.event.teamId) this.registry.register({ ...this.event, teamId: this.event.teamId }, scope.control);
     const client = scopedSlackClient(this.app, scope.control.signal);
-    const posted = await client.chat.postMessage({ channel: this.event.channel, thread_ts: this.event.threadTs,
+    const posted = await this.cooldown.run(() => client.chat.postMessage({ channel: this.event.channel, thread_ts: this.event.threadTs,
       text: "요청을 확인하고 있어요. 실행은 최대 3분이며 요청자만 취소할 수 있습니다.",
       metadata: { event_type: "shookie_request_control", event_payload: {} },
       blocks: this.event.teamId ? [{ type: "actions", elements: [{ type: "button", action_id: CANCEL_ACTION_ID,
-        text: { type: "plain_text", text: "요청 취소" }, value: this.event.requestId }] }] : [] });
+        text: { type: "plain_text", text: "요청 취소" }, value: this.event.requestId }] }] : [] }));
     if (!posted.ts) throw new Error("Missing control message linkage");
     this.messageTs = posted.ts;
     if (this.event.teamId) this.registry.bindMessage(this.event.requestId, scope.control, posted.ts);
@@ -67,8 +74,8 @@ export class SlackRequestControls {
     if (!this.scope || this.scope.control.isCommitted || this.scope.control.state === "committing" || this.notified) return;
     this.notified = true;
     const text = STOP_TEXT[this.scope.control.stopReason ?? "cancelled"];
-    // Notify immediately at 180 seconds, independently of residual tool settlement.
-    this.notification = slackDelivery(this.app, async client => {
+    // Begin independently of residual work at 180 seconds; a known cooldown may defer/skip network.
+    this.notification = this.delivery(async client => {
       if (this.messageTs) await client.chat.update({ channel: this.event.channel, ts: this.messageTs, text, blocks: [] });
       else await client.chat.postMessage({ channel: this.event.channel, thread_ts: this.event.threadTs, text });
     }).catch(() => {});
@@ -83,7 +90,7 @@ export class SlackRequestControls {
       const control = { channel: this.event.channel, ts: this.messageTs };
       if (this.delivered) {
         try {
-          await slackDelivery(this.app, async client => {
+          await this.delivery(async client => {
             const deleted = await client.chat.delete(control);
             if (!deleted.ok) throw new Error("Control deletion not confirmed");
           });
@@ -91,11 +98,11 @@ export class SlackRequestControls {
         } catch {
           // A delete may have succeeded despite a lost response. Update only this known
           // control once, under its own bounded delivery scope; message_not_found is fine.
-          try { await slackDelivery(this.app, client => client.chat.update({ ...control,
+          try { await this.delivery(client => client.chat.update({ ...control,
             text: FINISHED_CONTROL_TEXT, blocks: [] })); } catch { /* no new post or retry */ }
         }
       } else {
-        try { await slackDelivery(this.app, client => client.chat.update({ ...control,
+        try { await this.delivery(client => client.chat.update({ ...control,
           text: scope.control.isCommitted ? DELIVERY_UNCONFIRMED_TEXT : this.failureText, blocks: [] })); }
         catch { /* expired button still denied by registry */ }
       }

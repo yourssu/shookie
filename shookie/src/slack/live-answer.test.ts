@@ -51,7 +51,8 @@ describe("generation-time provisional transport", () => {
     if (kind === "warning") h.postMessage.mockResolvedValue({ ok: true, ts: "preview", warning: "metadata_ignored" } as never);
     else h.postMessage.mockRejectedValue(new Error(kind));
     h.event("first"); await h.live.seal();
-    await expect(h.live.finalize("answer", [])).rejects.toThrow();
+    if (kind === "warning") expect(await h.live.finalize("answer", [])).toBe(true); // known ts can reconcile metadata
+    else await expect(h.live.finalize("answer", [])).rejects.toThrow();
     await h.live.cleanup(); expect(h.postMessage).toHaveBeenCalledTimes(1);
   });
   it("allows fallback only before attempt or explicit unsupported creation rejection", async () => {
@@ -63,6 +64,7 @@ describe("generation-time provisional transport", () => {
     const h = harness(); h.event("preview"); await h.live.seal();
     h.update.mockRejectedValue(new Error("ack lost"));
     await expect(h.live.finalize("canonical", [])).rejects.toThrow(); await h.live.cleanup();
+    await expect(h.live.finalize("canonical", [])).rejects.toThrow("already attempted");
     expect(h.update).toHaveBeenCalledTimes(1);
   });
   it.each(["before", "after", "append"])("abort %s start prevents late text; independent cleanup retains preview marker", async stage => {
@@ -82,15 +84,16 @@ describe("generation-time provisional transport", () => {
     expect(h.postMessage.mock.calls[0][0]).toMatchObject({ text: `생성 중 · 미확정 답변\n\n${body}` });
     await h.live.finalize(body, []);
     const capped = harness(); capped.event("a"); capped.event("x".repeat(24001)); await capped.live.seal();
-    await expect(capped.live.finalize("canonical still saved by caller", [])).rejects.toThrow();
+    expect(await capped.live.finalize("canonical still saved by caller", [])).toBe(true);
+    expect(capped.update.mock.calls.at(-1)?.[0]).toMatchObject({ text: "canonical still saved by caller" });
   });
   it("enforces an independent UTF-8 byte budget for multibyte text below the code-unit cap", async () => {
     const h = harness(); h.event("first");
     // 22,005 code units fit the 24,000 unit bound, but 66,005 UTF-8 bytes exceed 64,000.
     h.event("한".repeat(22_000));
     await h.live.seal();
-    await expect(h.live.finalize("canonical still owned by caller", [])).rejects.toThrow();
     expect(h.postMessage).toHaveBeenCalledTimes(1); expect(h.update).not.toHaveBeenCalled();
+    expect(await h.live.finalize("canonical still owned by caller", [])).toBe(true);
     const below = harness(); below.event("한".repeat(21_000)); await below.live.seal();
     expect(await below.live.finalize("canonical", [])).toBe(true);
   });
@@ -99,8 +102,22 @@ describe("generation-time provisional transport", () => {
     h.event("first"); await tick();
     for (let i = 0; i < 65; i++) { h.event("x"); await vi.advanceTimersByTimeAsync(1500); }
     expect(h.postMessage.mock.calls.length + h.update.mock.calls.length).toBe(60);
-    await expect(h.live.finalize("canonical", [])).rejects.toThrow();
-    await h.live.cleanup(); expect(h.update).toHaveBeenCalledTimes(60); // 59 previews + one independent cleanup
+    expect(await h.live.finalize("canonical", [])).toBe(true);
+    await h.live.cleanup(); expect(h.update).toHaveBeenCalledTimes(60); // 59 previews + one distinct finalization
+  });
+  it.each([2, 30])("honors structured Retry-After=%i before one distinct finalization, or keeps saved delivery unconfirmed", async retryAfter => {
+    vi.useFakeTimers(); const h = harness(); h.event("first"); await tick();
+    h.update.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter });
+    h.event("second"); await vi.advanceTimersByTimeAsync(1500); await h.live.seal(); h.live.markSaved();
+    const finalized = h.live.finalize("canonical", []).then(() => true, () => false);
+    await tick(); expect(h.update).toHaveBeenCalledTimes(1);
+    if (retryAfter === 2) {
+      await vi.advanceTimersByTimeAsync(1999); expect(h.update).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1); expect(await finalized).toBe(true);
+      expect(h.update).toHaveBeenCalledTimes(2);
+    } else expect(await finalized).toBe(false);
+    const count = h.update.mock.calls.length; await h.live.cleanup(); expect(h.update).toHaveBeenCalledTimes(count);
+    expect(JSON.stringify(h.update.mock.calls)).not.toContain("미완료");
   });
   it("holds a split surrogate until the complete code point is available", async () => {
     const h = harness(); h.event(String.fromCharCode(0xD83D)); expect(h.postMessage).not.toHaveBeenCalled();
@@ -120,9 +137,12 @@ describe("generation-time provisional transport", () => {
     expect(h.update.mock.calls.at(-1)?.[0]).toMatchObject({ text: expect.stringContaining("미완료") });
   });
   it.each(["rate_limited", "ack lost"])("freezes after ambiguous/limited append: %s", async reason => {
-    vi.useFakeTimers(); const h = harness(); h.event("first"); await tick(); h.update.mockRejectedValue(new Error(reason));
+    vi.useFakeTimers(); const h = harness(); h.event("first"); await tick(); h.update.mockRejectedValueOnce(new Error(reason));
     h.event("second"); await vi.advanceTimersByTimeAsync(1500); h.event("third");
-    await h.live.seal(); await expect(h.live.finalize("canonical", [])).rejects.toThrow();
-    expect(h.update).toHaveBeenCalledTimes(1);
+    await h.live.seal(); expect(h.update).toHaveBeenCalledTimes(1);
+    expect(await h.live.finalize("canonical", [])).toBe(true);
+    await h.live.cleanup();
+    expect(h.update).toHaveBeenCalledTimes(2);
+    expect(h.update.mock.calls.at(-1)?.[0]).toMatchObject({ text: "canonical", metadata: { event_type: "shookie_response_committed" } });
   });
 });

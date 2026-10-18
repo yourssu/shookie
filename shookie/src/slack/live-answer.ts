@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { KnownBlock } from "@slack/types";
-import { scopedSlackClient, slackDelivery } from "../cancellation/slack-transport.js";
+import { scopedSlackClient, slackDelivery, SlackCooldown } from "../cancellation/slack-transport.js";
 import type { ShookieBlock } from "../types/block.js";
 
 export const PREVIEW_MARKER = "shookie_response_preview";
@@ -22,7 +22,7 @@ export class LiveAnswer {
   private ts?: string;
   private attempted = false;
   private fallbackSafe = false;
-  private failed = false;
+  private previewFrozen = false;
   private text = "";
   private pending?: string;
   private flight?: Promise<void>;
@@ -30,20 +30,22 @@ export class LiveAnswer {
   private calls = 0;
   private lastSent = 0;
   private limited = false;
+  private saved = false;
+  markSaved() { this.saved = true; }
   markLimited() { this.limited = true; }
-  constructor(private app: App, private input: { channel: string; threadTs: string }, private signal: AbortSignal) {}
+  constructor(private app: App, private input: { channel: string; threadTs: string }, private signal: AbortSignal, private cooldown = new SlackCooldown()) {}
 
   event(value: { type: string; from: string; runId: string; payload?: unknown }, rootRunId: string) {
-    if (this.phase !== "preview" || this.signal.aborted || this.failed || value.from !== "AGENT" || value.runId !== rootRunId) return;
+    if (this.phase !== "preview" || this.signal.aborted || this.previewFrozen || value.from !== "AGENT" || value.runId !== rootRunId) return;
     if (value.type === "step-start") { this.text = ""; return; }
     if (value.type !== "text-delta") return;
     const delta = (value.payload as { text?: unknown })?.text;
     if (typeof delta !== "string" || !delta) return;
-    if (this.text.length + delta.length > MAX_CODE_UNITS) { this.failed = true; this.pending = undefined; return; }
+    if (this.text.length + delta.length > MAX_CODE_UNITS) { this.previewFrozen = true; this.pending = undefined; return; }
     const next = this.text + delta;
     // Separate Slack character bound from the retained/serialized UTF-8 budget.
     // Measure the combined string: surrogate pairs may cross delta boundaries.
-    if (Buffer.byteLength(next, "utf8") > MAX_UTF8_BYTES) { this.failed = true; this.pending = undefined; return; }
+    if (Buffer.byteLength(next, "utf8") > MAX_UTF8_BYTES) { this.previewFrozen = true; this.pending = undefined; return; }
     this.text = next;
     // Do not split a trailing high surrogate across Slack requests.
     const snapshot = this.text.replace(/[\uD800-\uDBFF]$/, "");
@@ -53,10 +55,10 @@ export class LiveAnswer {
   }
 
   private pump() {
-    if (this.flight || this.timer || !this.pending || this.failed || this.signal.aborted || this.phase !== "preview") return;
+    if (this.flight || this.timer || !this.pending || this.previewFrozen || this.signal.aborted || this.phase !== "preview") return;
     const wait = this.attempted ? Math.max(0, 1500 - (Date.now() - this.lastSent)) : 0;
     if (wait) { this.timer = setTimeout(() => { this.timer = undefined; this.pump(); }, wait); return; }
-    if (this.calls >= MAX_CALLS) { this.failed = true; this.pending = undefined; return; }
+    if (this.calls >= MAX_CALLS) { this.previewFrozen = true; this.pending = undefined; return; }
     const text = `생성 중 · 미확정 답변\n\n${this.pending}`;
     this.pending = undefined;
     this.attempted = true;
@@ -74,9 +76,10 @@ export class LiveAnswer {
         if (res.ok && res.ts) this.ts = res.ts;
         if (!confirmed(res) || !this.ts) throw new Error("Preview delivery unconfirmed");
       } catch (error) {
-        const e = error as { code?: string; data?: { error?: string } };
-        if (!this.ts && e.code === "slack_webapi_platform_error" && SAFE_REJECTIONS.has(e.data?.error ?? "")) this.fallbackSafe = true;
-        this.failed = true;
+        this.cooldown.observe(error);
+        const e = error as { code?: string; data?: { error?: string } } | null;
+        if (!this.ts && e?.code === "slack_webapi_platform_error" && SAFE_REJECTIONS.has(e.data?.error ?? "")) this.fallbackSafe = true;
+        this.previewFrozen = true;
         this.pending = undefined;
       }
     })().finally(() => { this.flight = undefined; this.pump(); });
@@ -92,11 +95,14 @@ export class LiveAnswer {
 
   async finalize(text: string, blocks: ShookieBlock[]): Promise<boolean> {
     await this.seal();
+    if (this.phase === "finalizing" || this.phase === "committed") throw new Error("Finalization already attempted");
     if (!this.attempted || this.fallbackSafe) return false;
-    if (this.failed || !this.ts) throw new Error("Preview transport incomplete");
+    if (!this.ts) throw new Error("Preview identity unknown");
+    // Preview freeze/cap/error does not revoke one distinct canonical update to a known ts.
     this.phase = "finalizing"; // ACK loss must never allow error cleanup to overwrite a committed answer.
-    await slackDelivery(this.app, async client => {
-      const res = await client.chat.update({ channel: this.input.channel, ts: this.ts!, text, blocks: blocks as KnownBlock[], metadata: marker(COMMITTED_MARKER) });
+    await slackDelivery(this.app, async (client, signal) => {
+      await this.cooldown.wait(signal);
+      const res = await this.cooldown.run(() => client.chat.update({ channel: this.input.channel, ts: this.ts!, text, blocks: blocks as KnownBlock[], metadata: marker(COMMITTED_MARKER) }));
       if (!confirmed(res)) throw new Error("Final update unconfirmed");
     });
     this.phase = "committed";
@@ -105,9 +111,13 @@ export class LiveAnswer {
 
   async cleanup() {
     await this.seal();
-    if (!this.ts || this.phase === "finalizing" || this.phase === "committed") return;
+    // Durable success with uncertain delivery must not be relabeled generation failure.
+    if (!this.ts || this.saved || this.phase === "finalizing" || this.phase === "committed") return;
     try {
-      await slackDelivery(this.app, client => client.chat.update({ channel: this.input.channel, ts: this.ts!, text: this.limited ? "생성 한도에 도달해 중단된 미완성 답변입니다. 확정된 답변이 아니므로 사용하지 마세요." : "미완료 답변입니다. 확정된 답변이 아니므로 사용하지 마세요.", blocks: [], metadata: marker(PREVIEW_MARKER) }));
+      await slackDelivery(this.app, async (client, signal) => {
+        await this.cooldown.wait(signal);
+        return this.cooldown.run(() => client.chat.update({ channel: this.input.channel, ts: this.ts!, text: this.limited ? "생성 한도에 도달해 중단된 미완성 답변입니다. 확정된 답변이 아니므로 사용하지 마세요." : "미완료 답변입니다. 확정된 답변이 아니므로 사용하지 마세요.", blocks: [], metadata: marker(PREVIEW_MARKER) }));
+      });
     } catch { /* Known message only, bounded independent cleanup. Never replay. */ }
   }
 }

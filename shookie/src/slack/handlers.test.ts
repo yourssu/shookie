@@ -147,6 +147,50 @@ describe("actual Slack handler wiring", () => {
     expect(h.repository.complete).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["utf8-cap", "call-cap", "preview-ack-loss", "rate-2", "rate-30", "final-ack-loss", "final-rate-2", "final-rate-30", "no-ts"])("separates saved canonical delivery from preview freeze: %s", async mode => {
+    vi.useFakeTimers();
+    try {
+      const h = harness(); let controller!: ReadableStreamDefaultController;
+      const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
+      h.stream.mockImplementation(async (_messages, options) => ({
+        fullStream: new ReadableStream({ start(c) { controller = c; c.enqueue({ type: "text-delta", from: "AGENT", runId: (options as unknown as { runId: string }).runId, payload: { text: "public preview" } }); } }),
+        text: Promise.resolve("canonical"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 2 }), steps: Promise.resolve([{ text: "canonical", toolCalls: [] }]), finishReason: Promise.resolve("stop"),
+      }));
+      const update = vi.mocked(h.client.chat.update);
+      if (mode === "no-ts") h.postMessage.mockRejectedValueOnce(new Error("initial post ACK lost"));
+      if (mode.startsWith("final-")) update.mockImplementation(async args => {
+        if (args.metadata?.event_type === "shookie_response_committed") throw mode === "final-ack-loss" ? new Error("final ACK lost") : { code: "slack_webapi_rate_limited_error", retryAfter: mode === "final-rate-2" ? 2 : 30 };
+        return { ok: true };
+      });
+      const run = h.deliver(`freeze-${mode}`); await flush();
+      const emit = (text: string) => controller.enqueue({ type: "text-delta", from: "AGENT", runId: `slack-event:freeze-${mode}`, payload: { text } });
+      if (mode === "preview-ack-loss" || mode.startsWith("rate-")) {
+        update.mockRejectedValueOnce(mode === "preview-ack-loss" ? new Error("preview ACK lost") : { code: "slack_webapi_rate_limited_error", retryAfter: mode === "rate-2" ? 2 : 30 });
+        emit("second"); await vi.advanceTimersByTimeAsync(1500);
+      }
+      if (mode === "utf8-cap") emit("한".repeat(22_000));
+      if (mode === "call-cap") for (let i = 0; i < 65; i++) { emit("x"); await vi.advanceTimersByTimeAsync(1500); }
+      controller.close(); await flush();
+      if (mode === "rate-2" || mode === "final-rate-2") {
+        expect(update.mock.calls.filter(([args]) => args.metadata?.event_type === "shookie_response_committed")).toHaveLength(mode === "rate-2" ? 0 : 1);
+        expect(update.mock.calls.filter(([args]) => args.ts === "control")).toHaveLength(0);
+        await vi.advanceTimersByTimeAsync(2000);
+      }
+      await run;
+      expect(h.repository.complete).toHaveBeenCalledTimes(1); expect(h.repository.fail).not.toHaveBeenCalled();
+      expect(vi.mocked(h.repository.complete).mock.calls[0][1].assistantContent).toBe("canonical");
+      expect(h.postMessage).toHaveBeenCalledTimes(1); // never recreate an attempted preview
+      const finals = update.mock.calls.filter(([args]) => args.metadata?.event_type === "shookie_response_committed");
+      const delivered = !["rate-30", "final-ack-loss", "final-rate-2", "final-rate-30", "no-ts"].includes(mode);
+      expect(finals).toHaveLength(mode === "rate-30" || mode === "no-ts" ? 0 : 1);
+      if (finals.length) expect(finals[0][0]).toMatchObject({ ts: "reply", text: "canonical" });
+      expect(JSON.stringify(update.mock.calls)).not.toContain("미완료 답변입니다");
+      expect(h.client.chat.delete).toHaveBeenCalledTimes(delivered ? 1 : 0);
+      if (mode === "rate-30" || mode === "final-rate-30") expect(update.mock.calls.filter(([args]) => args.ts === "control")).toHaveLength(0);
+      else if (!delivered) expect(update).toHaveBeenCalledWith(expect.objectContaining({ ts: "control", text: expect.stringContaining("전달 상태를 확인하지 못했어요") }));
+    } finally { vi.useRealTimers(); }
+  });
+
   it("save failure after visible preview retains incomplete marker and never delivers success", async () => {
     const h = harness();
     h.stream.mockImplementation(async (_messages, options) => ({

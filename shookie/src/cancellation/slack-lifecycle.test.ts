@@ -54,6 +54,31 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("registered Slack cancel UI/action + actual runtime wiring", () => {
+  it("known cooldown takes precedence over immediate cancellation/control cleanup while registry still rejects expired buttons", async () => {
+    const h = harness(); let controller!: ReadableStreamDefaultController;
+    h.stream.mockImplementation(async (_messages, opts) => ({ ...answer(), fullStream: new ReadableStream({ start(c) {
+      controller = c; c.enqueue({ type: "text-delta", from: "AGENT", runId: (opts as unknown as { runId: string }).runId, payload: { text: "public" } });
+    } }) }));
+    const run = h.deliver("cooldown-cancel"); await flush();
+    h.client.chat.update.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter: 30 });
+    controller.enqueue({ type: "text-delta", from: "AGENT", runId: "slack-event:cooldown-cancel", payload: { text: "second" } });
+    await vi.advanceTimersByTimeAsync(1500);
+    await h.click({}, "slack-event:cooldown-cancel"); controller.close(); await run;
+    expect(h.repository.complete).not.toHaveBeenCalled(); expect(h.client.chat.update).toHaveBeenCalledTimes(1);
+    await h.click({}, "slack-event:cooldown-cancel");
+    expect(h.client.chat.postEphemeral).toHaveBeenLastCalledWith(expect.objectContaining({ text: CANCEL_UNAVAILABLE_TEXT }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a structured delete 429 also blocks immediate fallback control update without replay", async () => {
+    const h = harness(); h.client.chat.delete.mockRejectedValueOnce({ code: "slack_webapi_rate_limited_error", retryAfter: 30 });
+    await h.deliver("cooldown-delete");
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.client.chat.delete).toHaveBeenCalledOnce();
+    expect(h.client.chat.update).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    await h.click({}, "slack-event:cooldown-delete");
+    expect(h.client.chat.postEphemeral).toHaveBeenLastCalledWith(expect.objectContaining({ text: CANCEL_UNAVAILABLE_TEXT }));
+  });
+
   it.each(["cancelled", "timed_out"])("%s wins a race with late length completion after visible public preview", async reason => {
     const h = harness(); const gate = deferred<void>();
     h.stream.mockImplementation(async (_messages, opts) => ({ ...answer(),

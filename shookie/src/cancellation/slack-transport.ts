@@ -1,10 +1,40 @@
 import type { App } from "@slack/bolt";
+import { setTimeout as delay } from "node:timers/promises";
 import { WebClient, LogLevel } from "@slack/web-api";
 import { silentSlackLogger } from "../tools/slack/sdk-logger.js";
 import { executionSignal, executionCheckpoint, executionStorage } from "./execution-context.js";
 
 /** Transport timeout; not a new conversation/call/cost budget. */
 export const SLACK_TRANSPORT_TIMEOUT_MS = 15_000;
+
+/** Request-owned capability; never shared across requests or derived from model text. */
+export class SlackCooldown {
+  private notBefore = 0;
+  observe(error: unknown): void {
+    if (!error || typeof error !== "object") return;
+    const e = error as { code?: unknown; retryAfter?: unknown };
+    if (e.code !== "slack_webapi_rate_limited_error" || typeof e.retryAfter !== "number" || !Number.isFinite(e.retryAfter) || e.retryAfter < 0) return;
+    // Saturate huge finite seconds/overflow safely; impossible waits skip without timers.
+    const deadline = Math.min(Number.MAX_SAFE_INTEGER, Date.now() + Math.ceil(e.retryAfter * 1000));
+    this.notBefore = Math.max(this.notBefore, deadline);
+  }
+  async wait(signal: AbortSignal): Promise<void> {
+    const deadline = Date.now() + SLACK_TRANSPORT_TIMEOUT_MS;
+    while (true) {
+      signal.throwIfAborted();
+      const now = Date.now();
+      const remaining = Math.max(0, this.notBefore - now);
+      if (!remaining) return;
+      if (remaining >= deadline - now) throw new Error("Slack cooldown exceeds delivery deadline");
+      await delay(remaining, undefined, { signal });
+      // A concurrent request-owned notification may have learned a later 429 meanwhile.
+    }
+  }
+  async run<T>(send: () => Promise<T>): Promise<T> {
+    try { return await send(); }
+    catch (error) { this.observe(error); throw error; }
+  }
+}
 
 /**
  * A dedicated client, not a patch to the shared Bolt client. Uses Slack's public

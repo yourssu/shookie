@@ -1,7 +1,7 @@
 import type { App } from "@slack/bolt";
 import { CancellationRegistry } from "../cancellation/request-registry.js";
 import { registerCancellationAction, SlackRequestControls, STOP_TEXT } from "../cancellation/slack-controls.js";
-import { scopedSlackClient, slackDelivery } from "../cancellation/slack-transport.js";
+import { scopedSlackClient, slackDelivery, SlackCooldown } from "../cancellation/slack-transport.js";
 import { executionCheckpoint, executionSignal, type ExecutionScope } from "../cancellation/execution-context.js";
 import { ConversationStoppedError } from "../cancellation/conversation-control.js";
 import type { KnownBlock } from "@slack/types";
@@ -117,7 +117,7 @@ export function registerHandlers(
         }
         // Keep the original event-only selection and its single read; never supply a fallback.
         const actionToken = event.action_token;
-        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, () => controls.markDelivered(), stage => controls.markFailure(stage));
+        await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, () => controls.markDelivered(), stage => controls.markFailure(stage), controls.cooldown);
       }, slackContext, scope => controls.start(scope));
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
@@ -152,10 +152,11 @@ async function handleConversation(
   attachments?: AttachmentCandidates,
   onDelivered: () => void = () => {},
   onFailure: (stage: "generation" | "save" | "limit") => void = () => {},
+  cooldown = new SlackCooldown(),
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
-  const preview = new LiveAnswer(app, { channel, threadTs }, scope.control.signal);
+  const preview = new LiveAnswer(app, { channel, threadTs }, scope.control.signal, cooldown);
   let saving = false;
 
   try {
@@ -260,6 +261,7 @@ async function handleConversation(
     executionCheckpoint();
     saving = true;
     await commit(responseText);
+    preview.markSaved();
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, "", { withFeedback: true });
