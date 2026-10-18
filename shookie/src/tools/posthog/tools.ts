@@ -72,7 +72,7 @@ export function createPostHogTools(manager: PostHogClientManager) {
   return executionTools({
     listProjects: createTool({
       id: "list-projects",
-      description: "Radar에 현재 등록된 PostHog 프로젝트 목록(이름, 설명/지침 미리보기)을 페이지 단위로 조회합니다. 등록된 프로젝트만 조회 대상입니다. 전체 지침은 대상 프로젝트 조회 결과의 guidance에 포함됩니다.",
+      description: "Radar에 현재 등록된 PostHog 프로젝트 목록(이름, 선택용 설명)을 페이지 단위로 조회합니다. 등록된 프로젝트만 조회 대상이며 프로젝트 지침 소비는 비활성화되어 있습니다.",
       inputSchema: listProjectsSchema,
       outputSchema: listProjectsResultSchema,
       execute: async (input, context): Promise<ListProjectsResult> => {
