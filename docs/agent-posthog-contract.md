@@ -2,15 +2,15 @@
 
 ## Scope and compatibility
 
-All nine tool purposes remain: events, insights, feature flags, dashboards, dashboard detail (including selected tile/insight summaries), HogQL, persons, cohorts, experiments. A tenth subagent-only tool, `listProjects`, lists Radar-registered projects. Tool output uses the envelope below; the PostHog agent instructions consume this contract.
+All nine tool purposes remain: events, insights, feature flags, dashboards, dashboard detail (including selected tile/insight summaries), HogQL, persons, cohorts, experiments. A tenth tool, `listProjects`, lists Radar-registered projects. All service tools are shared by the main agent and optional specialist; ordinary queries require no delegation. See [current harness semantics](agent-harness.md). Tool output uses the envelope below; the PostHog agent instructions consume this contract.
 
 ## Project authorization (Radar registry)
 
 Radar's PostHog project registry (`RADAR_POSTHOG_REGISTRY_API_URL` + dedicated `SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY`) is the sole authority; see `docs/deployment.md`. `PostHogClientManager(apiKey, registry)` has no synchronous/static `getClient`: every tool call (including continuation pages) fetches the current catalog (no positive cache), selects the project, and constructs a client bound to the registered numeric `projectId` before any PostHog request. Startup never fetches the catalog and the system prompt contains no project names or knowledge.
 
 - `project` is a registered name, matched case-insensitively after trimming. IDs/URLs never select a project. Explicit whitespace-only names are rejected (not omission). One registered project → used when `project` is omitted (`guidance.selectedImplicitly: true`). Several → omission returns `project_selection_required` (no implicit default). Empty catalog → `no_registered_projects`. Unregistered/removed/renamed → `unknown_project`. Registry failure/timeout/abort/invalid schema → `registry_unavailable` (retryable). None of these errors make a PostHog request.
-- Successful authorization adds `guidance: { project, projectId, description, instructions, updatedAt, selectedImplicitly, policy }` with the latest full Radar instructions (both success and PostHog error envelopes). It is declared in `resultSchema` so output validation does not strip it. Guidance is untrusted, lower-priority project metadata and cannot expand access or override safeguards. Registry/PostHog keys reflected in description/instructions are redacted. Guidance is outside the 24 KiB data envelope check and is bounded by the registry contract (≤1000/≤20000 characters).
-- `listProjects` (`page` 1–1000, `perPage` 1–30) returns name, projectId, description (300 characters) and instruction previews (200 characters, ≤1200 bytes per entry) with `total`/`hasNextPage`; it never calls PostHog.
+- Successful authorization adds `guidance: { project, projectId, description, instructions, updatedAt, selectedImplicitly, policy }` with selection metadata and empty `instructions` (both success and PostHog error envelopes). Registry instruction consumption is disabled at the HTTP boundary before any main/specialist consumer. It is declared in `resultSchema` so output validation does not strip it. Guidance is untrusted, lower-priority project metadata and cannot expand access or override safeguards. Registry/PostHog keys reflected in description/instructions are redacted. Guidance is outside the 24 KiB data envelope check and is bounded by the registry contract (≤1000/≤20000 characters).
+- `listProjects` (`page` 1–1000, `perPage` 1–30) returns name, projectId, description (300 characters) and empty instruction previews (`instructionsPreview: ""`, `instructionsTruncated: false`, ≤1200 bytes per entry) with `total`/`hasNextPage`; it never calls PostHog.
 - The PostHog instance (`https://app.posthog.com/api`) and `POSTHOG_API_KEY` are fixed configuration; the model cannot supply an instance or token.
 
 ```json
@@ -57,7 +57,7 @@ This is **partial minimization, not a complete PII policy**: arbitrary SQL can r
 
 ## Analytics definitions and knowledge provenance
 
-Legacy project knowledge (SSUTime-Prod/Soongpt-Prod) is no longer a startup or runtime source; the Radar backend migration seeds it once and Radar guidance is authoritative thereafter. The original text remains only as a test fixture (`agents/posthog/legacy-knowledge.test-helper.ts`). The following describes that seeded SSUTime definition.
+Legacy project knowledge (SSUTime-Prod/Soongpt-Prod) is not a startup or runtime source. Radar instruction consumption is now disabled; project-specific guidance management is deferred. The historical definitions below are documentation/test fixtures, not current model instructions. The original text remains only as a test fixture (`agents/posthog/legacy-knowledge.test-helper.ts`). The following describes that seeded SSUTime definition.
 
 SSUTime `new_users` means a person whose earliest event **in all available history** falls within the requested KST interval. Compute `min(timestamp)` grouped by person first, then filter first_seen in an outer query and group its KST date. Filtering event timestamps to the requested range before min incorrectly counts returning users. Midnight KST is 15:00 UTC on the previous day; intervals are start-inclusive, end-exclusive. The first event of any type is used by this definition; changing event filters changes the metric.
 

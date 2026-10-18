@@ -1,5 +1,7 @@
 # Wave 1: Slack conversation runtime
 
+Current delivery/prompt/direct-tool semantics: [agent-harness.md](agent-harness.md). This historical runtime description is retained for persistence/admission boundaries; later changes below supersede its original progress/delivery behavior.
+
 ## Boundary and identity
 
 `registerHandlers` accepts original human `app_mention` events and original human `message` events with `channel_type=im`. Bot events, all message subtypes (including edits/deletes), and events missing channel, timestamp or user are ignored. Replies remain in the originating thread. Only the bot's own mention is removed when Bolt supplies its bot user ID; other mentions remain intact. Without that ID, mentions remain intact rather than removing arbitrary identities.
@@ -12,7 +14,7 @@ Conversation session keys include the available team, channel and thread timesta
 
 Additive migration `007_conversation_runtime.sql` creates the event ledger and paired-turn table. Applied migrations are unchanged. Startup now runs migrations unconditionally before Slack starts; existing OAuth and reminder setup is otherwise unchanged. Missing/unavailable DB prevents startup. Runtime DB failures prevent execution or final answer delivery as appropriate and produce a friendly Korean error, not raw exception details.
 
-Only successful agent output is committed. Stream errors, missing answers and error finish reasons do not become dialogue. Failed user input is not appended to future context. A successful turn is persisted **before** ancillary logging/final Slack delivery, so those failures cannot discard it. A delivery failure may leave a saved answer the user did not see; there is no automatic delivery replay in this wave. Plan/progress streaming can already have appeared before a run or save failure; it is not saved dialogue.
+Only successful agent output is committed. Stream errors, missing answers and error finish reasons do not become dialogue. Failed user input is not appended to future context. A successful turn is persisted **before** ancillary logging/final Slack delivery, so those failures cannot discard it. A delivery failure may leave a saved answer the user did not see; there is no automatic delivery replay in this wave. Only a request-owned status/cancel control appears during generation. No plan/raw tool output is sent or saved as dialogue. Final buffered delivery starts only after successful persistence.
 
 New runtimes hydrate the most recent 15 complete turns from PostgreSQL in chronological order. A read-through cache is only an optimization; it does not pretend to save dialogue. All repository errors propagate. Tests use synthetic data and mocked queries only; no migration was applied to a real DB during implementation.
 
@@ -42,7 +44,7 @@ Crash windows remain honest:
 2. After claim, before/during agent/tool execution: retry is suppressed, but work might have partially happened. No automatic recovery.
 3. After model output, before transaction commit: output may be lost; tool side effects are not rolled back.
 4. After commit, before Slack delivery: dialogue is saved but final reply may be missing.
-5. Slack stream-stop/post failure can be ambiguous; the existing fallback can result in duplicate Slack output.
+5. Slack stream-start/append/stop/post failures can be ambiguous. No automatic repost is allowed after ambiguous outcomes; only explicit unsupported/permission start rejections permit a single final-post fallback. Saved answers may be unseen or partially delivered.
 
 Admission/input rejections are not persisted claims. Retrying a rejected event can get another rejection or be admitted later. The durable ledger has no automatic retention deletion in this wave, so dedupe does not silently expire; operational retention/recovery policy is future work.
 
