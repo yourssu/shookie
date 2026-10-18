@@ -7,6 +7,7 @@ export interface CodeExplorerConfig {
   registry: RegistryConfig;
   gitHubToken: string;
   readOnlyToken?: string;
+  tokenProvider?: import("../../../tools/code-explorer/github-auth.js").GithubTokenProvider;
   owner: string;
   workspaceBasePath: string;
   workspaceMaxGb: number;

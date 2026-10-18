@@ -14,6 +14,27 @@ const fixtures: Record<string, unknown> = {
 };
 afterEach(() => vi.useRealTimers());
 describe("fixed-host read boundary", () => {
+  it("authorizes before async provider and uses refreshed credentials with redaction, never PAT fallback", async () => {
+    let allowed = true; let current = "fresh-one";
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ repositories: allowed ? [{ id: "12345678-1234-4234-8234-123456789abc", owner: "yourssu", name: "allowed", instructions: "fresh-one fresh-two", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }] : [] })));
+    const tokenProvider = { getToken: vi.fn(async () => { await Promise.resolve(); return current; }), redact: (s: string) => s.replaceAll("fresh-one", "[REDACTED]").replaceAll("fresh-two", "[REDACTED]") };
+    const cfg = { ...config, registry: registryFixture, tokenProvider };
+    const fetcher = vi.fn(async (_url: any, init: any) => { expect(init.headers.Authorization).toBe(`Bearer ${current}`); return Response.json({ ...detail, title: "fresh-one fresh-two" }); });
+    try {
+      for (const token of ["fresh-one", "fresh-two"]) {
+        current = token; const output = await readGithub(cfg, { operation: "issue", repo: "allowed", number: 1 }, fetcher);
+        expect(JSON.stringify(output)).not.toContain("fresh-");
+      }
+      allowed = false; await expect(readGithub(cfg, { operation: "issue", repo: "allowed", number: 1 }, fetcher)).rejects.toThrow();
+      expect(tokenProvider.getToken).toHaveBeenCalledTimes(2);
+      allowed = true; tokenProvider.getToken.mockRejectedValue(new Error("safe failure"));
+      await expect(readGithub(cfg, { operation: "issue", repo: "allowed", number: 1 }, fetcher)).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const controller = new AbortController(); controller.abort();
+      await expect(readGithub(cfg, { operation: "issue", repo: "allowed", number: 1 }, fetcher, controller.signal)).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it.each(["repository", "tree", "file", "history", "pull_requests", "pull_request", "issues", "issue"])("supports %s", async operation => {
     const input = { operation, repo: "allowed", ...(operation === "tree" ? { ref: "main" } : {}), ...(operation === "file" ? { path: "src/a b.ts", ref: "main" } : {}), ...(["pull_request", "issue"].includes(operation) ? { number: 1 } : {}) };
     const fetcher = mock(fixtures[operation]);

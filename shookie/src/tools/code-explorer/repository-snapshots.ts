@@ -71,6 +71,7 @@ export class RepositorySnapshots {
       for (const value of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"),
         Buffer.from(`x-access-token:${secret}`).toString("base64")]) text = text.split(value).join("[REDACTED]");
     }
+    text = this.config.tokenProvider?.redact(text) ?? text;
     return this.config.registry ? redactRegistry(text, this.config.registry) : text;
   }
   private source(s: Snapshot, path?: string) {
@@ -84,7 +85,9 @@ export class RepositorySnapshots {
     if (this.config.repositories && !this.config.repositories.some(r => r.toLowerCase() === repo.toLowerCase())) throw new Error("repository scope");
     const repositoryGuidance = this.config.registry ? await authorizeRepository(this.config.registry, owner, repo, signal) : undefined;
     if (repositoryGuidance) repositoryGuidance.repository.instructions = this.redact(repositoryGuidance.repository.instructions);
-    const token = this.config.readOnlyToken || this.config.gitHubToken;
+    const token = this.config.tokenProvider ? await this.config.tokenProvider.getToken(signal) : this.config.readOnlyToken || this.config.gitHubToken;
+    signal?.throwIfAborted();
+    if (repositoryGuidance) repositoryGuidance.repository.instructions = this.redact(repositoryGuidance.repository.instructions);
     if (!token || /[\r\n\x00]/.test(token)) throw new Error("credential required");
     const url = `https://github.com/${owner}/${repo}.git`;
     if (this.redact(url) !== url || (ref && this.redact(ref) !== ref)) throw new Error("secret in source");

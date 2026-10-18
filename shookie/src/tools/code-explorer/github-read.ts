@@ -1,3 +1,4 @@
+import type { GithubTokenProvider } from "./github-auth.js";
 import { createTool } from "@mastra/core/tools";
 import { executionSignal, trackExecution } from "../../cancellation/execution-context.js";
 import { z } from "zod";
@@ -15,7 +16,7 @@ export const readInput = z.object({
   perPage: z.number().int().min(1).max(30).default(20),
 }).strict();
 export type ReadInput = z.infer<typeof readInput>;
-export interface ReadConfig { owner: string; gitHubToken: string; readOnlyToken?: string; repositories?: string[]; registry?: RegistryConfig }
+export interface ReadConfig { owner: string; gitHubToken: string; readOnlyToken?: string; tokenProvider?: GithubTokenProvider; repositories?: string[]; registry?: RegistryConfig }
 const MAX_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 32 * 1024;
 export const READ_TIMEOUT_MS = 10_000;
@@ -113,7 +114,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
       for (const value of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) text = text.split(value).join("[REDACTED]");
     }
-    return text;
+    return config.tokenProvider?.redact(text) ?? text;
   };
   let repositoryGuidance: Awaited<ReturnType<typeof authorizeRepository>> | undefined;
   if (config.registry) {
@@ -138,9 +139,13 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     config = { ...config, repositories: [repositoryGuidance.repository.name] };
   }
   const url = buildReadUrl(config, input);
-  const token = config.readOnlyToken || config.gitHubToken;
-  if (!token) throw new Error("credential required");
-  for (const secret of [config.gitHubToken, config.readOnlyToken, config.registry?.apiKey].filter(Boolean) as string[]) {
+  const token = config.tokenProvider ? await config.tokenProvider.getToken(actionSignal) : config.readOnlyToken || config.gitHubToken;
+  actionSignal?.throwIfAborted();
+  if (repositoryGuidance) repositoryGuidance = JSON.parse(redactGuidance(JSON.stringify(repositoryGuidance)));
+
+  if (!token || /[\r\n\x00]/.test(token)) throw new Error("credential required");
+  if (config.tokenProvider && config.tokenProvider.redact(url.toString()) !== url.toString()) throw new Error("secret in source");
+  for (const secret of [token, config.gitHubToken, config.readOnlyToken, config.registry?.apiKey].filter(Boolean) as string[]) {
     if (url.toString().includes(secret) || url.toString().includes(encodeURIComponent(secret))) throw new Error("secret in source");
   }
   const controller = new AbortController();
@@ -176,6 +181,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
       for (const representation of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) text = text.split(representation).join("[REDACTED]");
     }
+    text = config.tokenProvider?.redact(text) ?? text;
     if (config.registry) text = redactRegistry(text, config.registry);
     const outputTruncated = Buffer.byteLength(text) > MAX_OUTPUT_BYTES;
     const truncated = outputTruncated || data.truncated === true;
