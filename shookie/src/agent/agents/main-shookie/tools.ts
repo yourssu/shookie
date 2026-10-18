@@ -1,4 +1,5 @@
 import { createTool } from "@mastra/core/tools";
+import { boundedResearchOutput, researchOutput, reportSchema } from "./research-output.js";
 import { executionTools, executionSignal, executionCheckpoint } from "../../../cancellation/execution-context.js";
 import { z } from "zod";
 import type { Agent } from "@mastra/core/agent";
@@ -30,10 +31,6 @@ const researchInput = z.object({
   target: z.string().min(1).max(2000).describe("선택한 프로젝트/저장소 및 기간/ref"),
   context: z.string().min(1).max(12000).describe("필요한 대화 맥락과 근거, 선택한 대상·기간·ref"),
   outputScope: z.string().min(1).max(2000).describe("요청 결과 범위와 제외 범위"),
-});
-const researchOutput = z.object({
-  status: z.enum(["success", "partial", "error"]), result: z.string(),
-  evidence: z.array(z.object({ tool: z.string(), result: z.unknown() })), limitations: z.array(z.string()),
 });
 async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<z.infer<typeof researchOutput>> {
   const parent = getCurrentContext();
@@ -111,7 +108,6 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<z.infe
         (value.status === "error" || value.status === "partial" || value.success === false || Boolean(value.error) ||
           (value as { complete?: boolean }).complete === false || (value as { truncated?: boolean }).truncated === true);
     }));
-    const reportSchema = researchOutput.omit({ evidence: true });
     let report: z.infer<typeof reportSchema> | undefined;
     try { report = reportSchema.parse(JSON.parse(result.text)); } catch { /* Invalid report is partial, not success. */ }
     const status = result.finishReason === "error" || !result.text || report?.status === "error" ? "error"
@@ -127,10 +123,13 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<z.infe
       });
     }
 
-    return { status, result: report?.result ?? result.text ?? "", evidence: (result.steps ?? []).flatMap(step =>
-      (step.toolResults ?? []).map(tr => ({ tool: tr.payload.toolName, result: tr.payload.result }))),
-      limitations: [...(report?.limitations ?? []), ...(status === "success" ? [] : ["조사 미완료 또는 도구 실패; 완전한 성공으로 해석하지 마세요."])] };
-  } catch (err) {
+    function* evidence() {
+      for (const step of result.steps ?? []) for (const tr of step.toolResults ?? []) {
+        yield { tool: tr.payload.toolName, result: tr.payload.result };
+      }
+    }
+    return boundedResearchOutput(status, report, result.text ?? "", evidence());
+  } catch {
     if (invocationId) {
       await completeInvocation(invocationId, {
         status: "error",
@@ -138,8 +137,10 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<z.infe
         finishReason: "error",
       });
     }
+    // Cancellation remains a rejection; never log arbitrary error fields or provider text.
     executionCheckpoint();
-    return { status: "error", result: "전문 조사를 완료하지 못했습니다.", evidence: [], limitations: ["조회 실패; 빈 데이터로 해석하지 마세요."] };
+    logger.warn("전문 조사 실행 실패 (sanitized)");
+    return { status: "error", result: "전문 조사를 완료하지 못했습니다.", evidence: [], limitations: ["조회 실패; 빈 데이터로 해석하지 마세요."], truncated: false };
   }
 }
 

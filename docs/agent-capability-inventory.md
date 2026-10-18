@@ -17,7 +17,7 @@
 
 메인은 파일 수정·명령 실행·push·PR 쓰기·Radar 설정 쓰기 도구가 없다. Radar 지침 소비 및 업데이트/저장 제안 워크플로우는 일시 중단한다.
 
-메인은 아래 PostHog 및 GitHub 서비스 도구도 동일한 설정 조건에서 직접 등록한다. specialist 입력은 task/target/context/outputScope, 출력은 status/result/evidence(tool+result)/limitations이며 최종 답변은 메인 책임이다.
+메인은 아래 PostHog 및 GitHub 서비스 도구도 동일한 설정 조건에서 직접 등록한다. specialist 입력은 task/target/context/outputScope, 출력은 status/result/evidence(tool/source/status/excerpt/truncated)/limitations 및 전체 truncated이며 최종 답변은 메인 책임이다. 위임 결과는 16 KiB 전체 UTF-8 JSON 예산 안에서 근거 최대 8건/건당 1400 bytes/합계 9000 bytes, excerpt 512 bytes, 보고서 본문 4096 bytes로 제한한다. 원문 중첩 결과를 덤프하지 않으며 생략은 partial/truncated 및 한계로 표시한다.
 
 ## PostHog Analyst 서브 에이전트 (`posthog_agent`)
 

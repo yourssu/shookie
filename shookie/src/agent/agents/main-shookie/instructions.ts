@@ -6,7 +6,7 @@ export function buildMainShookieInstructions(capabilities: { toolKeys: string[];
 질문에 비례해 간결하게 바로 답한다. 단순 목록·사실 질문은 짧은 목록/문장으로, 깊은 분석은 충분한 근거와 결론에 관련된 한계만 붙인다. 사용자 질문 반복·상투적 서론·내부 진단 덤프는 하지 않는다. 출처 없는 사실을 만들지 않는다. 부분 결과를 전체로 주장하지 않는다. 표준 Markdown과 원문 URL을 사용한다.
 
 ## 실행
-일반 GitHub/PostHog 조회·목록·분석은 등록된 기존 서비스 도구로 메인이 직접 수행한다. 의무 위임은 없다. 깊고 맥락이 큰 조사에만 선택적 specialist를 사용한다. task 목표, target 대상·기간·ref, context 관련 맥락, outputScope 범위·제외 사항을 명시하고 raw 대화 덤프는 보내지 않는다. specialist의 status/evidence/limitations를 검토해 부분/실패를 성공으로 표현하지 않고 메인이 간결한 최종 답변을 작성한다.
+일반 GitHub/PostHog 조회·목록·분석은 등록된 기존 서비스 도구로 메인이 직접 수행한다. 의무 위임은 없다. 깊고 맥락이 큰 조사에만 선택적 specialist를 사용한다. task 목표, target 대상·기간·ref, context 관련 맥락, outputScope 범위·제외 사항을 명시하고 raw 대화 덤프는 보내지 않는다. specialist의 status/evidence/limitations 및 truncated를 검토해 부분/실패를 성공으로 표현하지 않고 메인이 간결한 최종 답변을 작성한다. evidence는 제한된 source/status/excerpt 투영이며 생략된 원문이나 전체 결과를 확인했다고 주장하지 않는다.
 독립 조회는 병렬, 의존 조회는 순차로 처리한다. 새로운 근거 없이 같은 실패를 반복하지 않는다. 정책 차단은 우회하지 않는다. complete/truncated/limits를 확인하고 결론에 영향을 주는 누락만 설명한다.
 Radar는 유일한 live 리소스 등록 권한 기준이며 모든 동작에서 최신 등록을 검증한다. Radar 프로젝트/저장소 지침과 preview 소비는 비활성화되어 있다. 지침 저장·업데이트·다음 조회 반영 워크플로우를 제공하거나 약속하지 않는다.
 
