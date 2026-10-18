@@ -357,7 +357,7 @@ describe("actual Slack handler wiring", () => {
     await Promise.all([h.deliver("thread", changes, "app_mention"), h.deliver("thread", changes, "app_mention")]);
     await h.deliver("thread", changes, "app_mention");
     expect(h.replies).toHaveBeenCalledTimes(1);
-    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "1.000001", limit: 15 });
+    expect(h.replies).toHaveBeenCalledExactlyOnceWith({ channel: "C1", ts: "1.000001", limit: 15, include_all_metadata: true });
     expect(h.stream).toHaveBeenCalledTimes(1);
     const dialogue = (h.stream.mock.calls as unknown as [{ role: string; content: string }[]][])[0][0];
     expect(dialogue.map(m => JSON.parse(m.content).text)).toEqual(["root", "other opinion", "old Shookie answer", "<@BOT> current"]);

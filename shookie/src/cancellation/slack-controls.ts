@@ -4,6 +4,9 @@ import type { ExecutionScope } from "./execution-context.js";
 import { CANCEL_ACTION_ID, CANCEL_ACCEPTED_TEXT, CANCEL_UNAVAILABLE_TEXT, CancellationRegistry } from "./request-registry.js";
 import { scopedSlackClient, slackDelivery } from "./slack-transport.js";
 
+export const DELIVERY_UNCONFIRMED_TEXT = "답변 전달 상태를 확인하지 못했어요. 일부 또는 전체가 표시되었을 수 있으며 자동 재전송하지 않습니다.";
+export const FINISHED_CONTROL_TEXT = "요청 처리를 마쳤어요.";
+
 export const STOP_TEXT = {
   cancelled: "요청을 취소했습니다. 진행 중인 작업을 정리하고 있어요. 다시 필요하시면 새 메시지로 요청해주세요.",
   timed_out: "요청 처리 시간이 3분을 초과해 중단했습니다. 진행 중인 작업을 정리하고 있어요. 질문 범위를 줄여 새 메시지로 요청해주세요.",
@@ -73,13 +76,25 @@ export class SlackRequestControls {
     this.registry.remove(this.event.requestId, scope.control);
     if (this.notification) await this.notification;
     if (this.messageTs && !this.notified) {
-      try {
-        await slackDelivery(this.app, async client => {
-          if (this.delivered) await client.chat.delete({ channel: this.event.channel, ts: this.messageTs! });
-          else await client.chat.update({ channel: this.event.channel, ts: this.messageTs!,
-            text: scope.control.isCommitted ? "답변을 저장했지만 전달을 확인하지 못했습니다. 자동 재전송하지 않습니다." : "요청을 종료했습니다.", blocks: [] });
-        });
-      } catch { /* expired button still denied by registry */ }
+      const control = { channel: this.event.channel, ts: this.messageTs };
+      if (this.delivered) {
+        try {
+          await slackDelivery(this.app, async client => {
+            const deleted = await client.chat.delete(control);
+            if (!deleted.ok) throw new Error("Control deletion not confirmed");
+          });
+          return;
+        } catch {
+          // A delete may have succeeded despite a lost response. Update only this known
+          // control once, under its own bounded delivery scope; message_not_found is fine.
+          try { await slackDelivery(this.app, client => client.chat.update({ ...control,
+            text: FINISHED_CONTROL_TEXT, blocks: [] })); } catch { /* no new post or retry */ }
+        }
+      } else {
+        try { await slackDelivery(this.app, client => client.chat.update({ ...control,
+          text: scope.control.isCommitted ? DELIVERY_UNCONFIRMED_TEXT : "요청을 종료했습니다.", blocks: [] })); }
+        catch { /* expired button still denied by registry */ }
+      }
     }
   }
 }

@@ -10,6 +10,7 @@ vi.mock("../slack/streaming.js", () => ({ startPlanStream: vi.fn(async () => { t
 vi.mock("database", () => ({ conversationRepository: {}, logAgentCall: vi.fn(), startAgentCall: vi.fn(async () => null), startInvocation: vi.fn(), completeAgentCall: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn() }));
 import { registerHandlers } from "../slack/handlers.js";
 import { CANCEL_ACTION_ID, CANCEL_ACCEPTED_TEXT, CANCEL_UNAVAILABLE_TEXT } from "./request-registry.js";
+import { DELIVERY_UNCONFIRMED_TEXT, FINISHED_CONTROL_TEXT } from "./slack-controls.js";
 import { startPlanStream, stopStreamWithBlocks } from "../slack/streaming.js";
 import { startAgentCall, startInvocation, completeInvocation, completeAgentCall, logToolCall, logAgentCall } from "database";
 import { logger } from "../logger.js";
@@ -141,7 +142,7 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
     await h.deliver("delivery-failure");
     expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
     expect(h.client.chat.postMessage).toHaveBeenCalledTimes(2); // control + answer attempt, no failure replacement
-    expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({ text: expect.stringContaining("전달을 확인하지 못했습니다"), blocks: [] }));
+    expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({ text: DELIVERY_UNCONFIRMED_TEXT, blocks: [] }));
     expect(h.client.chat.delete).not.toHaveBeenCalled();
     expect(logAgentCall).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ answer: "safe answer" }));
     expect(vi.mocked(logger.info).mock.calls.some(([text]) => text.includes("📤"))).toBe(false);
@@ -219,8 +220,24 @@ describe("registered Slack cancel UI/action + actual runtime wiring", () => {
       expect(h.client.apiCall.mock.invocationCallOrder.at(-1)).toBeLessThan(h.client.chat.delete.mock.invocationCallOrder[0]);
     } else {
       expect(h.client.chat.delete).not.toHaveBeenCalled();
-      expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({text:expect.stringContaining("전달을 확인하지 못했습니다")}));
+      expect(h.client.chat.update).toHaveBeenLastCalledWith(expect.objectContaining({text:DELIVERY_UNCONFIRMED_TEXT}));
     }
+  });
+
+  it.each(["update succeeds", "already deleted", "delete explicit rejection"])("falls back to one bounded update of only the known control after delete failure: %s", async mode => {
+    const h = harness();
+    h.client.apiCall.mockResolvedValue({ok:true,ts:"3.000001"});
+    if (mode === "delete explicit rejection") h.client.chat.delete.mockResolvedValueOnce({ok:false});
+    else h.client.chat.delete.mockRejectedValueOnce(new Error("ambiguous delete response"));
+    if (mode === "already deleted") h.client.chat.update.mockRejectedValueOnce({code:"slack_webapi_platform_error",data:{error:"message_not_found"}});
+    await h.deliver("delete-failure");
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.repository.fail).not.toHaveBeenCalled();
+    expect(h.client.chat.delete).toHaveBeenCalledExactlyOnceWith({channel:"C1",ts:"2.000001"});
+    expect(h.client.chat.update).toHaveBeenCalledExactlyOnceWith({channel:"C1",ts:"2.000001",text:FINISHED_CONTROL_TEXT,blocks:[]});
+    expect(h.client.chat.delete.mock.invocationCallOrder[0]).toBeLessThan(h.client.chat.update.mock.invocationCallOrder[0]);
+    expect(h.client.chat.postMessage).toHaveBeenCalledOnce(); // no replacement post or replay loop
+    await h.click({},"slack-event:delete-failure");
+    expect(h.client.chat.postEphemeral).toHaveBeenLastCalledWith(expect.objectContaining({text:CANCEL_UNAVAILABLE_TEXT}));
   });
 
   it("keeps committed success/answer despite a later logging failure and clears completed buttons", async () => {

@@ -17,6 +17,10 @@ export type ThreadMention = { channel: string; threadTs: string; currentTs: stri
 const validTs = (ts: unknown): ts is string => typeof ts === "string" && /^\d+\.\d{1,6}$/u.test(ts);
 const timestamp = (ts: string) => BigInt(ts.split(".")[0]) * 1_000_000n + BigInt(ts.split(".")[1].padEnd(6, "0"));
 function fail(): never { throw new SlackThreadContextError("Slack thread context unavailable"); }
+function isOwnMessage(message: SlackMessage, mention: ThreadMention): boolean {
+  return (!!mention.botUserId && !!message.user && message.user === mention.botUserId) ||
+    (!message.user && !!mention.botId && !!message.bot_id && message.bot_id === mention.botId);
+}
 
 /** Only call for a trusted bot-mention event, never from model-supplied channel/thread IDs. */
 export async function readSlackThread(
@@ -32,7 +36,7 @@ export async function readSlackThread(
       executionCheckpoint();
       if (page >= 1000) fail();
       const response = await client.conversations.replies({ channel: mention.channel, ts: mention.threadTs,
-        limit: 15, ...(cursor ? { cursor } : {}) });
+        limit: 15, include_all_metadata: true, ...(cursor ? { cursor } : {}) });
       if (!response.ok || response.error || (response as { warning?: string }).warning || response.response_metadata?.warnings?.length ||
           !response.messages?.length) fail();
       for (const message of response.messages) {
@@ -71,12 +75,11 @@ export async function readSlackThread(
     const messages = [...collected.values()]
       .filter(m => timestamp(m.ts!) <= timestamp(mention.currentTs))
       .filter(m => {
-        const own = m.user === mention.botUserId || (!m.user && !!mention.botId && m.bot_id === mention.botId);
-        return !(own && m.metadata?.event_type === "shookie_request_control");
+        return !(isOwnMessage(m, mention) && m.metadata?.event_type === "shookie_request_control");
       })
       .sort((a, b) => timestamp(a.ts!) < timestamp(b.ts!) ? -1 : 1)
       .map<Message>(m => {
-        const own = m.user === mention.botUserId || (!m.user && !!mention.botId && m.bot_id === mention.botId);
+        const own = isOwnMessage(m, mention);
         // JSON keeps author/text boundaries unambiguous. IDs here are data, not RequestContext identities.
         return { role: own ? "assistant" : "user", content: JSON.stringify({
           source: "slack_thread", ...(channelName ? { channelName } : {}), ts: m.ts, author: { userId: m.user ?? null, botId: m.bot_id ?? null,

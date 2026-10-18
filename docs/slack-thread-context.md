@@ -1,6 +1,6 @@
 # Slack 스레드 맥락
 
-P0 UI 제어 post는 `shookie_request_control` metadata로 표시한다. 전체 원문 completeness 검증 후 검증된 슈키 작성자와 이 marker가 모두 일치하는 제어만 모델 이력에서 제외한다. 사람/다른 봇의 동일 본문·metadata와 metadata 없는 슈키 일반 발화는 보존한다. 텍스트 일치만으로 필터하지 않는다. [P0 전달 계약](response-delivery.md)
+P0 UI 제어 post는 `shookie_request_control` metadata로 표시한다. 전체 원문 completeness 검증 후 검증된 슈키 작성자와 이 marker가 모두 일치하는 제어만 모델 이력에서 제외한다. 사람/다른 봇의 동일 본문·metadata와 metadata 없는 슈키 일반 발화는 보존한다. 텍스트 일치만으로 필터하지 않으며 metadata 없는 legacy 제어는 식별/제외하지 못한다. replies의 모든 페이지에 include_all_metadata:true를 지정하되 payload/기타 metadata는 모델에 투영하지 않는다. 이는 전체 metadata 요청이지 marker가 없는 메시지에 marker를 만드는 기능은 아니다. [P0 전달 계약](response-delivery.md)
 
 ## 동작과 신뢰 경계
 

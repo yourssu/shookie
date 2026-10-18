@@ -7,8 +7,14 @@ Mastra, 모델/provider 설정, main prompt, 서비스 도구 등록/위임, Rad
 - 생성 중에는 요청별 짧은 상태/취소 제어만 표시한다. plan/raw 도구 인자·결과, 추론, 도구 전 텍스트는 보내지 않는다.
 - 정상 최종 답변에서 도구/토큰/비용 debug footer를 제거한다. 별도 모델 재작성은 없다.
 - 최종 답변을 성공 저장한 뒤에만 전달한다. 저장 성공과 delivered 성공은 별개이며 전달 실패가 저장된 성공을 실패로 뒤집지 않는다.
-- 최종 전송 성공을 확인한 뒤 해당 요청의 control을 삭제한다. 삭제 실패는 답변 재전송 사유가 아니다. 전달 미확인은 control에 명시하고 버튼은 registry에서 비활성화한다. 취소/실패 안내는 보존한다.
-- control post에 `shookie_request_control` metadata를 부여한다. 자동 Slack source reader는 전체 원문 completeness 검증 후, 검증된 슈키 작성자(user ID 또는 user 없는 메시지의 bot ID)와 정확한 metadata가 모두 일치하는 control만 모델 이력에서 제외한다. 사람/다른 봇의 동일 문구·metadata와 슈키의 metadata 없는 일반 발화는 보존한다. 텍스트 문구만으로 제거하지 않는다.
+- 최종 전송 성공을 확인한 뒤 해당 요청의 control을 삭제한다. 삭제 실패는 답변 재전송 사유가 아니다. 실패 시 이미 알고 있는 해당 control의 channel/ts에만 별도 15초 bounded scope로 update를 한 번 시도해 버튼을 없애고 '요청 처리를 마쳤어요.'로 바꾼다. ambiguous delete가 실제로 성공했다면 update의 message_not_found도 허용하며 새 post/재시도 루프는 없다. 전달 미확인은 '답변 전달 상태를 확인하지 못했어요. 일부 또는 전체가 표시되었을 수 있으며 자동 재전송하지 않습니다.'로 안내하고 버튼은 registry에서 비활성화한다. 취소/실패 안내는 보존한다.
+- control post에 `shookie_request_control` metadata를 부여한다. 자동 Slack source reader는 전체 원문 completeness 검증 후, 검증된 슈키 작성자(user ID 또는 user 없는 메시지의 bot ID)와 정확한 metadata가 모두 일치하는 control만 모델 이력에서 제외한다. 사람/다른 봇의 동일 문구·metadata와 슈키의 metadata 없는 일반 발화는 보존한다. 텍스트 문구만으로 제거하지 않는다. metadata 없는 legacy control은 이 방식으로 식별할 수 없으므로 보존한다. 작성자 ID가 없는 메시지의 spoofed marker도 제거하거나 assistant로 승격하지 않는다.
+
+### Replies metadata 계약 확인
+
+`readSlackThread`는 **모든** `conversations.replies` 페이지에 `include_all_metadata: true`를 지정한다. 공식 [replies API](https://docs.slack.dev/reference/methods/conversations.replies/)는 이 값을 'Return all metadata associated with this message'로 정의한다. 설치된 `@slack/web-api` 7.15.2의 `dist/types/request/conversations.d.ts`도 `ConversationsRepliesArguments extends IncludeAllMetadata`와 `include_all_metadata?: boolean`(기본 false)을 제공한다. [metadata 가이드](https://docs.slack.dev/messaging/message-metadata/)의 Web API 예시는 true일 때 `event_type`과 `event_payload`를 함께 반환한다. 즉 event_type만 켜는 옵션이 아니라 payload까지 포함하는 전체 metadata 요청이다. false일 때 marker가 반드시 반환된다고 가정하지 않는다.
+
+필터에는 정확한 event_type만 투영하고 event_payload·다른 event_type·기타 metadata는 모델 이력으로 전달하지 않는다. 플래그는 기존 메시지에 없는 metadata를 만들거나 해당 marker의 존재를 보장하지 않는다. 가이드에는 custom schema의 app manifest 등록 및 invalid metadata가 warning과 함께 무시될 수 있다는 운영 전제가 있다. 이 PR은 앱 설정/manifest를 변경하거나 등록 작업을 하지 않았고 live metadata 보존 여부도 미검증이다. marker가 없거나 무시된 legacy/운영 메시지는 text 기반으로 대신 지우지 않는다.
 
 ## Buffered final-only 전달 계약
 
@@ -28,9 +34,10 @@ Fallback은 start의 명시적 `unknown_method`/`method_not_supported`/`not_allo
 
 축소 후 새 검증:
 - database/shookie TypeScript build 통과.
-- `yarn workspace shookie test src/slack/handlers.test.ts src/slack/final-delivery.test.ts src/slack/markdown-to-blocks.test.ts src/slack/slack-thread-source.test.ts src/slack/github-context.integration.test.ts src/slack/conversation-runtime.test.ts src/slack/thread-summarizer.test.ts src/cancellation src/agent --maxWorkers=2 --minWorkers=1 --reporter=dot`: 25 files / 340 tests 통과. start 성공 후 append 실패/stop 실패 각각 handler 통합에서 final post 재생성 없음, 성공 control 삭제 없음, 전달 미확인 안내를 확인한다.
+- `yarn workspace shookie test src/slack/handlers.test.ts src/slack/final-delivery.test.ts src/slack/markdown-to-blocks.test.ts src/slack/slack-thread-source.test.ts src/slack/github-context.integration.test.ts src/slack/conversation-runtime.test.ts src/slack/thread-summarizer.test.ts src/cancellation src/agent --maxWorkers=2 --minWorkers=1 --reporter=dot`: 25 files / 346 tests 통과. start 성공 후 append 실패/stop 실패 각각 handler 통합에서 final post 재생성 없음, 성공 control 삭제 없음, 전달 미확인 안내를 확인한다.
 - `yarn workspace shookie test src/tools/code-explorer/registry.test.ts src/tools/code-explorer/github-read.test.ts src/tools/posthog/registry.test.ts src/tools/posthog/client.test.ts --maxWorkers=2 --minWorkers=1 --reporter=dot`: 4 files / 173 tests 통과. Radar guidance 소비/인가가 base 계약으로 복원되었음을 원래 테스트로 확인했다.
 - base `6a12031093af970582deefa1970fb6c449db3ec9`와 비교해 agent production 코드/main prompt/등록, tools 전체, execution-context.ts, AGENTS/README/manifest/lock diff 없음을 확인했다. agent의 유일한 잔여 변경은 이미지 tool progress 미전송 테스트다.
+- 배포/snapshot은 아래 결과를 추가 검증 당시(`f826218`에 포함된 기록)의 증거로 보존한다. 이후 runtime 수정은 metadata 읽기와 control cleanup에 한정되며 배포/snapshot 소스는 바뀌지 않았다. 이번 재리뷰 수정 후 해당 두 묶음은 재실행하지 않았다.
 - 이전 deploy-script command 60초 timeout은 regression 증거로 단정하지 않았다. 배포 scripts/tests에 base 대비 diff 없음을 확인하고 `yarn workspace shookie test src/deployment/deploy-script.test.ts -t 'image retention' --maxWorkers=1 --minWorkers=1 --reporter=dot` (10/36 통과, 15.31초), `-t '^(?!.*image retention).*'` (나머지 26/36 통과, 34.37초)로 분할하여 전체 36개를 완료했다. 선택 제외 skip은 두 분할의 합집합으로 모두 커버된다. 실제 배포는 아니다.
 - snapshot fixture 추가 단독 반복: 첫 실행 14 pass/1 fail (`awaits refreshed async credentials...` 첫 clone의 `controlled clone failed`), 다음 실행 15/15 pass로 간헐 재현했다. code-explorer 소스·fixture/테스트 전체, execution-context/config/logger, manifest/lock/tsconfig가 base와 동일함을 diff 검사로 확인했다. 즉 base와 동일한 snapshot 코드/의존성에서도 발생하는 증거이나 별도 base checkout 실행과 동일하다고 주장하지 않는다. sanitized clone 경계가 원인을 숨기므로 subprocess/monitor/timeout 중 근본 원인은 미확정이다. 무관한 broad fix나 보안 assertion 완화는 하지 않았다. 실제 Slack start/append/stop 및 feedback UI 렌더링은 여전히 미실행이다.
 
