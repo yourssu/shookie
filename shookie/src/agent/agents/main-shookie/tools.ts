@@ -25,7 +25,17 @@ interface SubAgentDelegateOptions {
   requestContext?: RequestContext;
 }
 
-async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string> {
+const researchInput = z.object({
+  task: z.string().min(1).max(8000).describe("명시적 조사 목표"),
+  target: z.string().min(1).max(2000).describe("선택한 프로젝트/저장소 및 기간/ref"),
+  context: z.string().min(1).max(12000).describe("필요한 대화 맥락과 근거, 선택한 대상·기간·ref"),
+  outputScope: z.string().min(1).max(2000).describe("요청 결과 범위와 제외 범위"),
+});
+const researchOutput = z.object({
+  status: z.enum(["success", "partial", "error"]), result: z.string(),
+  evidence: z.array(z.object({ tool: z.string(), result: z.unknown() })), limitations: z.array(z.string()),
+});
+async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<z.infer<typeof researchOutput>> {
   const parent = getCurrentContext();
   const parentInvocationId = parent?.parentInvocationId ?? null;
   const agentCallId = parent?.agentCallId;
@@ -46,7 +56,7 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
     if (opts.requestContext) generateOpts.requestContext = opts.requestContext;
 
     const result = await opts.agent.generate(
-      [{ role: "user", content: opts.task }],
+      [{ role: "user", content: opts.task + '\n최종 결과는 JSON {"status":"success|partial|error","result":"조사 결론과 출처","limitations":["관련 한계"]}로 반환하세요. 미확인·실패를 성공으로 표현하지 마세요.' }],
       generateOpts,
     );
     executionCheckpoint();
@@ -94,9 +104,21 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
       }
     }
 
+    const failedTool = (result.steps ?? []).some(step => (step.toolResults ?? []).some(tr => {
+      let value = tr.payload.result as { status?: string; success?: boolean; error?: unknown } | string | undefined;
+      if (typeof value === "string") { try { value = JSON.parse(value); } catch { return false; } }
+      return typeof value === "object" && value !== null &&
+        (value.status === "error" || value.status === "partial" || value.success === false || Boolean(value.error) ||
+          (value as { complete?: boolean }).complete === false || (value as { truncated?: boolean }).truncated === true);
+    }));
+    const reportSchema = researchOutput.omit({ evidence: true });
+    let report: z.infer<typeof reportSchema> | undefined;
+    try { report = reportSchema.parse(JSON.parse(result.text)); } catch { /* Invalid report is partial, not success. */ }
+    const status = result.finishReason === "error" || !result.text || report?.status === "error" ? "error"
+      : failedTool || result.finishReason !== "stop" || !report || report.status === "partial" ? "partial" : "success";
     if (invocationId) {
       await completeInvocation(invocationId, {
-        status: "success",
+        status: status === "error" ? "error" : "success",
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
         cachedInputTokens: usage?.cachedInputTokens ?? 0,
@@ -105,7 +127,9 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
       });
     }
 
-    return result.text;
+    return { status, result: report?.result ?? result.text ?? "", evidence: (result.steps ?? []).flatMap(step =>
+      (step.toolResults ?? []).map(tr => ({ tool: tr.payload.toolName, result: tr.payload.result }))),
+      limitations: [...(report?.limitations ?? []), ...(status === "success" ? [] : ["조사 미완료 또는 도구 실패; 완전한 성공으로 해석하지 마세요."])] };
   } catch (err) {
     if (invocationId) {
       await completeInvocation(invocationId, {
@@ -114,15 +138,17 @@ async function delegateToSubAgent(opts: SubAgentDelegateOptions): Promise<string
         finishReason: "error",
       });
     }
-    throw err;
+    executionCheckpoint();
+    return { status: "error", result: "전문 조사를 완료하지 못했습니다.", evidence: [], limitations: ["조회 실패; 빈 데이터로 해석하지 마세요."] };
   }
 }
 
 export function createMainShookieTools(subAgents: {
   posthog?: Agent;
   codeExplorer?: Agent;
-}, webOptions: Parameters<typeof createWebTools>[0] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions, images?: ImageToolOptions) {
+}, webOptions: Parameters<typeof createWebTools>[0] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions, images?: ImageToolOptions, directTools: Record<string, ReturnType<typeof createTool>> = {}) {
   const tools: Record<string, ReturnType<typeof createTool>> = {
+    ...directTools,
     ...createWebTools(webOptions),
     ...(slackClient ? createSlackReadTools(slackClient) : {}),
     ...(attachments ? createAttachmentTools(attachments) : {}),
@@ -134,23 +160,17 @@ export function createMainShookieTools(subAgents: {
     tools.posthog_agent = createTool({
       id: "posthog-agent",
       description:
-        "PostHog 분석 데이터 조회를 담당하는 서브 에이전트에게 작업을 위임합니다. " +
-        "Radar에 현재 등록된 PostHog 프로젝트 목록·지침 확인과 이벤트, 인사이트, 대시보드, 기능 플래그, 사용자, 코호트, 실험, HogQL 쿼리 관련 질문에 사용합니다. " +
-        "등록되지 않은 프로젝트는 조회할 수 없고 프로젝트가 여러 개면 대상 확인이 필요합니다.",
-      inputSchema: z.object({
-        task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),
-      }),
-      outputSchema: z.object({
-        result: z.string(),
-      }),
+        "깊고 맥락이 큰 PostHog 조사에만 선택적으로 사용합니다. 일반 조회·목록은 직접 도구를 사용하세요.",
+      inputSchema: researchInput,
+      outputSchema: researchOutput,
       execute: async (input, context) => {
         const result = await delegateToSubAgent({
           agentName: "posthog",
           agent: posthogAgent,
-          task: input.task,
+          task: JSON.stringify(input),
           requestContext: context?.requestContext,
         });
-        return { result };
+        return result;
       },
     });
   }
@@ -160,14 +180,11 @@ export function createMainShookieTools(subAgents: {
     tools.code_explorer_agent = createTool({
       id: "code-explorer-agent",
       description:
-        "코드 탐색은 이 서브 에이전트에 위임합니다. 실제 지원 범위: " + (codeExplorerAgent.getDescription?.() ?? "등록된 읽기 도구를 사용합니다. 상세 지원 범위는 도구 결과로 확인하세요.") +
+        "깊고 맥락이 큰 코드 조사에만 선택적으로 사용합니다. 일반 GitHub 조회·목록은 직접 도구를 사용하세요. " +
+        (codeExplorerAgent.getDescription?.() ?? "상세 지원 범위는 도구 결과로 확인") +
         " 파일 수정·명령 실행·push·PR 생성/병합/삭제 권한은 없습니다.",
-      inputSchema: z.object({
-        task: z.string().describe("서브 에이전트가 수행할 작업 설명 (사용자의 원본 질문과 필요한 컨텍스트)"),
-      }),
-      outputSchema: z.object({
-        result: z.string(),
-      }),
+      inputSchema: researchInput,
+      outputSchema: researchOutput,
       execute: async (input, context) => {
         const opts: { requestContext?: RequestContext; maxSteps: number } = { maxSteps: 40 };
         if (context?.requestContext) {
@@ -176,10 +193,10 @@ export function createMainShookieTools(subAgents: {
         const result = await delegateToSubAgent({
           agentName: "code-explorer",
           agent: codeExplorerAgent,
-          task: input.task,
+          task: JSON.stringify(input),
           ...opts,
         });
-        return { result };
+        return result;
       },
     });
   }

@@ -8,8 +8,8 @@ import type { AttachmentToolOptions } from "../../../tools/attachments/tools.js"
 import type { ImageToolOptions } from "../../../tools/images/tools.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExplorer?: AgentType }, model: any, webOptions: Parameters<typeof createMainShookieTools>[1] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions, images?: ImageToolOptions) {
-  const tools = createMainShookieTools(subAgents, webOptions, slackClient, attachments, images);
+export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExplorer?: AgentType }, model: any, webOptions: Parameters<typeof createMainShookieTools>[1] = {}, slackClient?: SlackReadClient, attachments?: AttachmentToolOptions, images?: ImageToolOptions, directTools: Parameters<typeof createMainShookieTools>[5] = {}) {
+  const tools = createMainShookieTools(subAgents, webOptions, slackClient, attachments, images, directTools);
 
   return new Agent({
     id: "main-shookie",

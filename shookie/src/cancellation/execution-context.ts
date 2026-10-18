@@ -42,9 +42,12 @@ export async function executionOperation<T>(work: () => Promise<T>, explicit?: A
   } catch (error) { executionCheckpoint(); signal?.throwIfAborted(); throw error; }
 }
 
+const wrappedTools = new WeakSet<object>();
 /** Wrap the public Tool.execute API once; preserve every tool/schema and RequestContext identity. */
 export function executionTools<T extends Record<string, ReturnType<typeof createTool>>>(tools: T): T {
   for (const tool of Object.values(tools)) {
+    if (wrappedTools.has(tool)) continue;
+    wrappedTools.add(tool);
     const execute = tool.execute;
     if (execute) tool.execute = (input, context) => executionOperation(
       async () => execute.call(tool, input, context), context?.abortSignal,

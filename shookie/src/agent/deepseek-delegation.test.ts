@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { RequestContext } from '@mastra/core/request-context';
 import { completion, response } from './deepseek-transport.test-helper.js';
+import { noopObserve } from '@mastra/core/tools';
+import { ExecutionScope, executionStorage } from '../cancellation/execution-context.js';
 
 const boundary = vi.hoisted(() => ({ calls: [] as { input: string[]; output: string[]; kind: string }[] }));
 vi.mock('@ai-sdk/deepseek', async importOriginal => {
@@ -45,22 +47,22 @@ vi.mock('database', () => ({ startInvocation: vi.fn(), completeInvocation: vi.fn
 import { createAgent } from './index.js';
 afterEach(() => { vi.unstubAllGlobals(); boundary.calls = []; });
 
-it.each([['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], ['stream', 'posthog'], ['generate', 'both'], ['stream', 'both'], ['generate', 'both-different-length'], ['stream', 'both-different-length']] as const)('factory %s delegates to %s and returns a final answer (offline)', async (mode, domain) => {
+it.each([['generate', 'github-direct'], ['stream', 'github-direct'], ['generate', 'posthog-direct'], ['stream', 'posthog-direct'], ['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], ['stream', 'posthog'], ['generate', 'both'], ['stream', 'both'], ['generate', 'both-different-length'], ['stream', 'both-different-length']] as const)('factory %s executes %s and returns a final answer (scripted offline model, not live routing quality)', async (mode, domain) => {
   const wires: any[] = [];
   const reads: string[] = [];
   const githubScript = [
-    completion('', 'code_explorer_agent', { task: 'List registered repositories' }),
+    completion('', 'code_explorer_agent', { target: "fixture", task: 'List registered repositories', context: 'optional research fixture', outputScope: 'list' }),
     completion('', 'github_read', { operation: 'repositories' }),
     completion('synthetic-repository-summary: example/sample'),
     completion('synthetic-final: example/sample'),
   ];
   const posthogScript = [
-    completion('', 'posthog_agent', { task: 'List registered projects' }),
+    completion('', 'posthog_agent', { target: "fixture", task: 'List registered projects', context: 'optional research fixture', outputScope: 'list' }),
     completion('', 'listProjects', {}),
     completion('synthetic-project-summary: Synthetic project'),
     completion('synthetic-final: Synthetic project'),
   ];
-  const script = domain === 'github' ? githubScript : domain === 'posthog' ? posthogScript : [
+  const script = domain === 'github-direct' ? [githubScript[1], githubScript[3]] : domain === 'posthog-direct' ? [posthogScript[1], posthogScript[3]] : domain === 'github' ? githubScript : domain === 'posthog' ? posthogScript : [
     ...githubScript.slice(0, 3), ...posthogScript,
   ];
   script.forEach((item, index) => { item.id = `synthetic-response-${index}`;
@@ -80,7 +82,7 @@ it.each([['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], 
     }] });
     if (target.endsWith('/posthog/projects')) return Response.json({ projects: [{
       id: '12345678-1234-4234-8234-123456789abc', projectId: '1001', name: 'Synthetic project', organizationId: 'org-1',
-      description: 'synthetic', instructions: 'synthetic guidance', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+      description: 'RADAR_DESCRIPTION_SENTINEL', instructions: 'synthetic guidance', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
     }] });
     throw new Error('Unexpected external request');
   }));
@@ -88,9 +90,18 @@ it.each([['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], 
   for (const [key, value] of Object.entries({ channel: 'C1', userId: 'U1', threadTs: '1.1', requestId: 'synthetic-request', teamId: 'T1' })) context.set(key, value);
   const agent = createAgent();
   const result = await agent[mode]('synthetic repository and project list request', { maxSteps: 8, requestContext: context });
-  const expected = domain === 'github' ? 'example/sample' : 'Synthetic project';
+  const expected = domain.startsWith('github') ? 'example/sample' : 'Synthetic project';
   expect(await result.text).toBe(`synthetic-final: ${expected}`);
   expect(script).toHaveLength(0);
+  expect(JSON.stringify(wires)).not.toContain('synthetic guidance');
+  expect(JSON.stringify(wires)).not.toContain('RADAR_DESCRIPTION_SENTINEL');
+  if (domain.endsWith('-direct')) {
+    expect(wires).toHaveLength(2);
+    const calls = wires.flatMap(w => w.messages.flatMap((m: any) => m.tool_calls ?? []));
+    expect(calls.map((c: any) => c.function.name)).toEqual([domain === 'github-direct' ? 'github_read' : 'listProjects']);
+    expect(JSON.stringify(wires[1].messages)).toContain(domain === 'github-direct' ? 'sample' : 'Synthetic project');
+    return;
+  }
   if (domain.startsWith('both')) {
     expect(wires).toHaveLength(7);
     expect(boundary.calls).toHaveLength(7);
@@ -114,4 +125,22 @@ it.each([['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], 
     expect(history).toHaveLength(1);
     expect(history[0].reasoning_content).toBe(`synthetic-reasoning-${index === 2 ? 1 : 0}`);
   }
+});
+
+it.each(['github_read', 'listProjects'] as const)('cancels actual main direct %s registry transport without delegation (mock fetch)', async key => {
+  let enter!: () => void; let observed: AbortSignal | undefined;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  vi.stubGlobal('fetch', vi.fn(async (_url, init?: RequestInit) => {
+    observed = init?.signal ?? undefined; enter();
+    return new Promise<Response>((_resolve, reject) => observed!.addEventListener('abort', () => reject(observed!.reason), { once: true }));
+  }));
+  const tools = await createAgent().listTools();
+  const context = new RequestContext();
+  for (const [key, value] of Object.entries({ userId: 'U1', channel: 'C1', threadTs: '1.1', teamId: 'T1', requestId: 'direct-cancel' })) context.set(key, value);
+  const scope = new ExecutionScope();
+  const work = executionStorage.run(scope, () => tools[key].execute!(key === 'github_read' ? { operation: 'repositories' } : {}, { requestContext: context, observe: noopObserve }));
+  const assertion = expect(work).rejects.toMatchObject({ reason: 'cancelled' });
+  await entered; scope.control.cancel(); await assertion; await scope.drain();
+  expect(observed?.aborted).toBe(true);
+  expect(boundary.calls).toHaveLength(0);
 });
