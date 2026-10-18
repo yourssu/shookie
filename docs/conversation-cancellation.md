@@ -8,7 +8,7 @@
 
 - `ConversationRuntime.acquire()` 직후 `ExecutionScope`를 만든다. DB claim → 초기 control message → source fetch/summary → main → subagent/tool → 성공 persist 시작 전 체크까지 하나의 절대 `deadlineAt`과 signal을 공유한다. 단계별로 180초를 갱신하지 않는다.
 - 기존 event dedupe / thread 직렬화 / admission concurrency / cache / DB 성공 turn 정책을 유지한다. queue에는 타이머/UI/registry가 없으며 claim 중복은 UI도 만들지 않는다.
-- `handlers.ts`는 Slack source 조회/요약 **전** 짧은 control message를 스레드에 게시한다. 생성 중 plan/raw tool 진행 전송은 제거했다. 버튼은 status message에만 두며 최종 답변 전달 성공을 확인한 뒤 해당 control을 삭제한다. 저장 성공만으로 완료를 표시하지 않는다.
+- `handlers.ts`는 Slack source 조회/요약 **전** 짧은 control message를 스레드에 게시한다. 생성 중 plan/raw tool 진행 전송은 제거했다. 현재 public root text-delta만 별도 미확정 preview 메시지에 실시간 갱신하며 reasoning/internal tool은 보내지 않는다. 버튼은 status message에만 두며 최종 답변 전달 성공을 확인한 뒤 해당 control을 삭제한다. 저장 성공만으로 완료를 표시하지 않는다.
 - 취소/시간초과 안내는 execution abort와 별개인 bounded delivery scope로 즉시 시작한다. 실제 underlying 작업이 정리 중이라는 사실을 명시한다. 완료/오류/취소/시간초과에서는 버튼을 제거하고 열린 stream도 정리한다. cleanup 실패로 남은 버튼도 registry/state 검증으로 사용할 수 없다.
 
 ## 신뢰 / 취소 권한
@@ -49,7 +49,7 @@ active registry는 기존 runtime admission bound만 사용한다. 중단됐지�
 
 final 성공 전달은 persist 뒤, 부가 DB logging 앞에 한다. 후속 logging 실패가 답변을 숨기지 않으며, final delivery 실패/timeout도 로컬 catch로 처리해 기존 tool/token/invocation/agent-call 성공 기록을 계속 시도한다. 전송 실패를 성공 전송 로그로 표시하지 않는다. runtime/handler 모두 committed 상태를 확인하여 성공 뒤 `repository.fail()`/오류 invocation 재기록/오류 안내를 하지 않는다. 취소/timeout turn은 다음 history에 넣지 않는다.
 
-`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. 저장 후 final-only buffered stream을 전송한다(생성 중 실시간 토큰 스트리밍 아님). 명시적 start 미지원/권한 거절만 한 번 postMessage fallback한다. start/append/stop의 불확실 전송은 재게시하지 않는다. 전달 미확인은 control에 표시하며 성공 control 삭제를 하지 않는다. status cleanup과 action ephemeral도 별도 bounded delivery다. 본문 중복 방지·호출 수·한계는 [P0 전달 계약](response-delivery.md) 참고.
+`slackDelivery()`는 execution ALS 밖에서 **별도 전체 15초 signal**, 전용 client, retry 0을 사용한다. 생성 중에는 execution signal을 따르는 별도 known-message public preview를 post/update한다. seal과 실제 in-flight drain 후 canonical final을 저장하고 동일 메시지에 확정 update한다. canonical 성공은 stop + 마지막 tool-free nonempty public step만 허용하며 length/steps는 미완료다. preview 미시도/명시적 생성 거절일 때만 기존 buffered final-only stream fallback을 사용한다. preview/final update와 fallback start/append/stop의 불확실 전송은 재게시하지 않는다. 전달 미확인은 control에 표시하며 성공 control 삭제를 하지 않는다. status cleanup과 action ephemeral도 별도 bounded delivery다. 본문 중복 방지·호출 수·한계는 [P0 전달 계약](response-delivery.md) 참고.
 
 ## Slack read/search/attachment 보안 보존
 
