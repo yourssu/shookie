@@ -9,7 +9,7 @@ Slack에서는 두 가지 방식으로 질문할 수 있어요:
 - **@멘션**: 채널에서 `@슈키 PostHog에 어떤 이벤트가 있어?`
 - **DM**: 봇과 1:1 대화
 
-메인 에이전트가 질문을 분석해 적절한 서브 에이전트에 위임하고, 결과를 종합해 답변해 드려요.
+메인이 일반 질문은 기존 서비스 도구로 직접 처리하고, 깊은 조사만 선택적 전문 에이전트에 맡긴 뒤 최종 답변해 드려요.
 
 실행은 대기열 시간을 제외하고 전체 **최대 3분**이며, 스레드의 초기 안내 메시지에 있는 **요청 취소** 버튼은 요청자만 사용할 수 있어요. 취소·시간초과 시 진행 중인 작업을 정리하고, 이미 저장한 성공 답변은 취소로 되돌리지 않아요. 실제 종료/잔여 작업과 검증 범위는 [대화 취소 정책](docs/conversation-cancellation.md)을 참고하세요.
 
@@ -20,11 +20,11 @@ Slack에서는 두 가지 방식으로 질문할 수 있어요:
     ↓
 slack/handlers.ts — 이벤트 감지, 스레드 단위 세션 관리
     ↓
-agent/main-shookie — 메인 에이전트 (질문 분석 → 서브 에이전트 라우팅)
+agent/main-shookie — 메인 에이전트 (직접 도구 + 선택적 전문 조사)
     ↓
 ┌─────────────────────┬──────────────────────┐
 │  PostHog Analyst     │  Code Explorer       │
-│  (9개 도구)          │  (git/gh CLI + 파일) │
+│  (기존 서비스 도구)  │  (API/bare snapshot) │
 └─────────────────────┴──────────────────────┘
     ↓
 slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
@@ -32,15 +32,15 @@ slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
 Slack 스레드에 답글 + 호출 기록 DB 저장
 ```
 
-- **멀티 에이전트 패턴**: 메인 에이전트가 도메인별 서브 에이전트에 위임
-- **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리, Workspace API)
+- **직접 도구 중심**: 일반 조회는 메인, 맥락이 큰 조사만 선택적 전문 에이전트
+- **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리)
 - **스레드 단위 대화**: Slack 스레드(`channel:thread_ts`) = 하나의 대화 컨텍스트 (최대 30메시지)
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
 - **Slack Block Kit 포맷팅**: LLM 응답 Markdown을 헤더, 구분선, 테이블, mrkdwn 등 Block Kit으로 자동 변환
 - **호출 로깅**: 모든 에이전트 호출(사용자, 질문, 응답, 토큰 사용량)을 PostgreSQL에 영구 저장
 - **시스템 프롬프트 로깅**: LLM 호출 직전 시스템 프롬프트를 debug 레벨로 덤프해 프롬프트 회귀 추적 가능 (`agent/log-system-prompt.ts`)
 
-## 서브 에이전트
+## 직접 서비스 도구와 선택적 전문 에이전트
 
 ### PostHog Analyst
 
@@ -48,7 +48,7 @@ PostHog 분석 데이터 조회를 담당해요. **Radar에 현재 등록된 Pos
 
 | 도구 | 설명 |
 |---|---|
-| `listProjects` | Radar 등록 프로젝트 목록·지침 미리보기 (서브 에이전트 내부 전용) |
+| `listProjects` | Radar 등록 프로젝트 목록 (메인 직접 및 선택적 전문 조사) |
 | `queryEvents` | 이벤트 목록 조회 |
 | `queryInsights` | 인사이트(분석 리포트) 조회 |
 | `listFeatureFlags` | 기능 플래그 목록 |
@@ -59,7 +59,7 @@ PostHog 분석 데이터 조회를 담당해요. **Radar에 현재 등록된 Pos
 | `listCohorts` | 코호트(사용자 그룹) 목록 |
 | `listExperiments` | 실험(A/B 테스트) 목록 |
 
-**지원 프로젝트**: Radar PostHog 프로젝트 등록 API가 유일한 기준이에요. 매 도구 호출마다 최신 등록을 다시 확인하므로 등록·삭제·이름·지침 변경이 재시작 없이 반영돼요. 등록이 1개면 자동 선택하고, 여러 개면 대상을 확인해요. 프로젝트별 도메인 지침은 각 결과의 `guidance`로 전달되며 비신뢰 참고 자료예요. 설정 없음·빈 목록·API 실패는 접근 거부이고 코드 화이트리스트로 돌아가지 않아요. [배포/롤아웃 설정](docs/deployment.md#radar-posthog-프로젝트-등록), [도구 인벤토리](docs/agent-capability-inventory.md)
+**지원 프로젝트**: Radar PostHog 프로젝트 등록 API가 유일한 기준이에요. 매 도구 호출마다 최신 등록을 다시 확인하므로 등록·삭제·이름 변경이 재시작 없이 반영돼요. 등록이 1개면 자동 선택하고, 여러 개면 대상을 확인해요. Radar 지침·설명 preview 소비는 일시 중단했으며 식별 metadata만 전달해요. 설정 없음·빈 목록·API 실패는 접근 거부이고 코드 화이트리스트로 돌아가지 않아요. [배포/롤아웃 설정](docs/deployment.md#radar-posthog-프로젝트-등록), [도구 인벤토리](docs/agent-capability-inventory.md)
 
 ### Code Explorer
 
@@ -67,11 +67,11 @@ PostHog 분석 데이터 조회를 담당해요. **Radar에 현재 등록된 Pos
 
 | 도구 | 설명 |
 |---|---|
-| `github_read` | Radar 등록 목록(지침 포함), GitHub 정보·구조·파일·이력·PR·이슈 조회 |
+| `github_read` | Radar 등록 목록(식별 metadata), GitHub 정보·구조·파일·이력·PR·이슈 조회 |
 | `repo_clone` | 사용자/스레드 전용 bare shallow snapshot 생성 |
 | `repo_list_files`, `repo_read_file`, `repo_search` | commit 고정 snapshot 목록·파일·literal 검색 |
 
-매 동작에서 Radar 등록을 새로 확인해요. 등록 삭제는 기존 snapshot도 즉시 다음 동작부터 차단하며, 응답의 최신 저장소별 지침은 시스템/보안 규칙보다 낮은 비신뢰 참고 자료예요. 설정 없음·빈 목록·API 실패는 접근 거부이고 조직 전체 접근으로 돌아가지 않아요. [배포/롤아웃 설정](docs/deployment.md#radar-github-등록-저장소)도 확인하세요.
+매 동작에서 Radar 등록을 새로 확인해요. 등록 삭제는 기존 snapshot도 즉시 다음 동작부터 차단하며, Radar 저장소 지침·preview는 모델에 전달하지 않아요. 설정 없음·빈 목록·API 실패는 접근 거부이고 조직 전체 접근으로 돌아가지 않아요. [배포/롤아웃 설정](docs/deployment.md#radar-github-등록-저장소)도 확인하세요.
 
 ## 모노레포 구조
 
@@ -237,3 +237,5 @@ Slack 앱 설정, 비밀값 분류, 로컬/수동 E2E, 기존 mention-bot 전환
 - **Yarn 4** (monorepo, corepack)
 - **Docker Compose** (bot과 공유 PostgreSQL 생명주기 분리) + GitHub Actions CI/CD → EC2
 - **Vitest** (테스트)
+
+일반 GitHub/PostHog 질문은 메인이 기존 도구로 직접 처리하고 깊고 맥락이 큰 조사만 선택적 전문가에 맡겨요. 지침 업데이트/저장 워크플로우는 제공하지 않아요. [2단계 범위와 검증 한계](docs/phase2-direct-tools.md)

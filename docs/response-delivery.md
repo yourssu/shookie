@@ -1,6 +1,8 @@
 # P0 응답 UX / 최종 전달
 
-## 현재 범위
+## 1단계 인계 당시 범위 (역사 기록)
+
+현재 2단계 직접 도구/지침 소비 중단 범위는 [phase2-direct-tools.md](phase2-direct-tools.md)를 참고한다. 아래 P0 전달·control 계약은 변경하지 않았다.
 
 Mastra, 모델/provider 설정, main prompt, 서비스 도구 등록/위임, Radar guidance 소비는 base 동작을 유지한다. 이 PR은 응답 UI와 안전한 전달·오류/취소 회귀만 변경한다. 직접 도구/선택적 전문 조사·간결성 지침/Radar 지침 소비 중단(2단계), 로컬 지침 loader/캐시/후속 맥락(3단계)은 이 PR에서 달성하지 않는다.
 

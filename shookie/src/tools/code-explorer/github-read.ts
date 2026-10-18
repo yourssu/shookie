@@ -121,13 +121,9 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
     if (input.operation === "repositories") {
       if (input.repo || input.ref || input.path || input.number) throw new Error("invalid options");
       const catalog = await fetchRegistry(config.registry, config.owner, actionSignal, fetcher);
-      for (const repo of catalog) repo.instructions = redactGuidance(repo.instructions);
       const start = (input.page - 1) * input.perPage;
       const page = catalog.slice(start, start + input.perPage).map(repo => {
-        // Keep catalog pages within the existing model-facing byte budget without dropping repos.
-        let instructions = Array.from(repo.instructions).slice(0, 200).join("");
-        while (Buffer.byteLength(JSON.stringify({ ...repo, instructions })) > 900 && instructions.length) instructions = instructions.slice(0, -1);
-        return { ...repo, instructions, instructionsTruncated: instructions.length < repo.instructions.length };
+        return { ...repo, instructions: "", instructionsTruncated: false };
       });
       return { repositoryGuidance: undefined, data: redactGuidance(JSON.stringify(page)), source: config.registry.apiUrl, owner: config.owner, repo: null, ref: null, path: null, complete: true, truncated: false,
         page: input.page,
@@ -135,6 +131,7 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
         message: catalog.length ? "Radar 등록 저장소 목록입니다." : "Radar에 등록된 저장소가 없습니다. 관리자에게 등록을 요청하세요." };
     }
     repositoryGuidance = await authorizeRepository(config.registry, config.owner, name.parse(input.repo), actionSignal);
+    repositoryGuidance.repository.instructions = ""; // Projection defense, even if the adapter changes.
     repositoryGuidance = JSON.parse(redactGuidance(JSON.stringify(repositoryGuidance))) as Awaited<ReturnType<typeof authorizeRepository>>;
     config = { ...config, repositories: [repositoryGuidance.repository.name] };
   }

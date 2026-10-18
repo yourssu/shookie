@@ -94,7 +94,7 @@ describe("actual main Slack tool registration", () => {
     expect(instructions).toContain("slack_read_thread / slack_read_channel 등록됨");
     expect(instructions).toContain("assistant.search.context");
     expect(instructions).toContain("search:read.public");
-    expect(instructions).toContain("타 private/DM·공유 채널 불가");
+    expect(instructions).toContain("타 private/DM·공유/외부 workspace 접근은 불가");
     expect(instructions).toContain("channel 생략은 workspace_public 검색");
     expect(instructions).toContain("channelName이 있으면 채널명으로 표시하고 없으면 '해당 채널'로 표시한다");
     expect(instructions).toContain("출처 permalink는 유지하고 도구 호출에는 channel ID를 사용한다");

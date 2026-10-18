@@ -18,15 +18,6 @@ import {
   type PostHogResult,
 } from "./schemas.js";
 
-const DESCRIPTION_PREVIEW_CHARS = 300;
-const INSTRUCTIONS_PREVIEW_CHARS = 200;
-const ENTRY_PREVIEW_BYTES = 1200;
-
-function preview(text: string, chars: number) {
-  const units = Array.from(text);
-  return { text: units.slice(0, chars).join(""), truncated: units.length > chars };
-}
-
 export function createPostHogTools(manager: PostHogClientManager) {
   // Production tools only accept the live registry-backed manager; no static project list.
   if (!(manager instanceof PostHogClientManager)) throw new Error("PostHog registry manager required");
@@ -64,15 +55,15 @@ export function createPostHogTools(manager: PostHogClientManager) {
       result.pagination.continuation = next;
     }
     return { ...result, guidance: {
-      project: auth.project.name, projectId: auth.project.projectId, description: auth.project.description,
-      instructions: auth.project.instructions, updatedAt: auth.project.updatedAt,
+      project: auth.project.name, projectId: auth.project.projectId, description: "",
+      instructions: "", updatedAt: auth.project.updatedAt,
       selectedImplicitly: auth.implicit, policy: posthogGuidancePolicy,
     } };
   }
   return executionTools({
     listProjects: createTool({
       id: "list-projects",
-      description: "Radar에 현재 등록된 PostHog 프로젝트 목록(이름, 설명/지침 미리보기)을 페이지 단위로 조회합니다. 등록된 프로젝트만 조회 대상입니다. 전체 지침은 대상 프로젝트 조회 결과의 guidance에 포함됩니다.",
+      description: "Radar에 현재 등록된 PostHog 프로젝트 목록(이름, 식별 metadata)을 페이지 단위로 조회합니다. 등록된 프로젝트만 조회 대상이며 프로젝트 지침 소비는 비활성화되어 있습니다.",
       inputSchema: listProjectsSchema,
       outputSchema: listProjectsResultSchema,
       execute: async (input, context): Promise<ListProjectsResult> => {
@@ -85,15 +76,11 @@ export function createPostHogTools(manager: PostHogClientManager) {
         }
         const page = input.page ?? 1, perPage = input.perPage ?? 20;
         const start = (page - 1) * perPage;
-        const projects = catalog.slice(start, start + perPage).map(p => {
-          const description = preview(p.description, DESCRIPTION_PREVIEW_CHARS);
-          let instructions = preview(p.instructions, INSTRUCTIONS_PREVIEW_CHARS).text;
-          const entry = () => ({ name: p.name, projectId: p.projectId, description: description.text, descriptionTruncated: description.truncated,
-            instructionsPreview: instructions, instructionsTruncated: instructions.length < p.instructions.length, updatedAt: p.updatedAt });
-          // Keep each entry within a fixed byte budget without dropping projects.
-          while (Buffer.byteLength(JSON.stringify(entry())) > ENTRY_PREVIEW_BYTES && instructions.length) instructions = Array.from(instructions).slice(0, -1).join("");
-          return entry();
-        });
+        // Defense in depth: free-text registry fields never enter model-facing previews.
+        const projects = catalog.slice(start, start + perPage).map(p => ({
+          name: p.name, projectId: p.projectId, description: "", descriptionTruncated: false,
+          instructionsPreview: "", instructionsTruncated: false, updatedAt: p.updatedAt,
+        }));
         const message = !catalog.length ? "Radar에 등록된 PostHog 프로젝트가 없습니다. 관리자에게 Radar에서 프로젝트 등록을 요청하세요."
           : catalog.length === 1 ? "등록된 프로젝트가 1개이므로 project를 생략하면 이 프로젝트를 사용합니다."
           : "등록된 프로젝트가 여러 개입니다. 사용자 요청에서 대상이 명확하지 않으면 먼저 확인하고 project에 이름을 지정하세요.";

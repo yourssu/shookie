@@ -8,8 +8,8 @@
 - Variable `GITHUB_OWNER`: 기본 `yourssu`. Radar `SHOOKIE_GITHUB_OWNER`와 동일해야 한다. 다른 owner 레코드가 하나라도 있으면 전체 catalog를 거부한다.
 - URL/키가 모두 비어 있으면 Code Explorer를 비활성화한다. 일부만 설정하거나 잘못된 URL/키는 부팅 검증 실패다. **기존 조직 전체 접근으로 fallback하지 않는다.**
 - API 계약: `GET` → `{repositories:[{id:UUID,owner,name,instructions,createdAt:ISO,updatedAt:ISO}]}`. 최대 1000건, 지침 10000자, 중복 ID/이름(대소문자 무시)·잘못된 레코드는 전체 거부한다. Radar는 빈 상태로 시작하며 자동 seed하지 않는다. 운영 담당자가 허용 저장소를 명시적으로 등록해야 탐색할 수 있다.
-- 목록은 Radar catalog만 page/perPage로 페이지 조회하며 GitHub 조직 전체를 스캔하지 않는다. 목록 지침은 최대 200자/항목 900-byte 예산 내 preview(`instructionsTruncated` 표시)로, 30개 목록도 기존 32KiB 내용 예산을 유지한다. 저장소 선택 후 각 scoped 동작 결과에는 최신 전체 지침이 포함된다. 매 API/clone/snapshot 목록·읽기·검색 동작마다 catalog를 새로 가져온다(양성 캐시 없음). 빈 catalog/응답 오류/시간 초과는 거부하며 삭제된 저장소는 기존 snapshot도 다음 동작에서 차단한다.
-- HTTP는 10초 timeout·취소 전파·64MiB body 상한·redirect 차단·schema 검증을 적용한다. 토큰/키와 원본 오류를 사용자에게 노출하지 않는다. 저장소 지침은 각 결과에 최신 repo-scoped 비신뢰 metadata로 포함되며 시스템/보안 규칙이나 접근 권한을 변경할 수 없다.
+- 목록은 Radar catalog만 page/perPage로 페이지 조회하며 GitHub 조직 전체를 스캔하지 않는다. 목록/개별 조회/clone/snapshot에서 지침과 preview는 빈 문자열로 차단한다. 매 API/clone/snapshot 목록·읽기·검색 동작마다 catalog를 새로 가져온다(양성 캐시 없음). 빈 catalog/응답 오류/시간 초과는 거부하며 삭제된 저장소는 기존 snapshot도 다음 동작에서 차단한다.
+- HTTP는 10초 timeout·취소 전파·64MiB body 상한·redirect 차단·schema 검증을 적용한다. 토큰/키와 원본 오류를 사용자에게 노출하지 않는다. 저장소 식별 metadata만 결과에 유지하고 지침 내용은 모델에 전달하지 않는다.
 - 기존 신뢰된 Slack actor/스레드 소유권 검사와 bounded read-only Git sandbox를 유지한다. 정적 `repositories`는 low-level 회귀 테스트 seam일 뿐이며 production 도구 factory는 live registry 없이는 생성되지 않는다.
 
 
@@ -19,8 +19,8 @@
 - GitHub Actions variable `RADAR_POSTHOG_REGISTRY_API_URL`: 절대 전체 endpoint `https://<Radar host>/internal/v1/shookie/posthog/projects`. 정확한 path만 허용하고 사용자 정보·query·fragment·끝 slash는 금지한다. HTTP는 localhost/127.0.0.1 개발 환경만 허용한다.
 - Secret `SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY`: 이 API 전용 공유 키(16–512자, 공백 없음)를 담당자가 **외부에서** Radar/Shookie 양쪽에 provision한다. GitHub 등록 키·다른 내부 키·`POSTHOG_API_KEY`를 재사용하지 않는다. `X-API-Key` 헤더에만 전달한다. 기존 `POSTHOG_API_KEY`(PostHog 계정 키)는 Shookie에만 둔다. 운영 Secrets 수정/SSH는 이 변경의 범위가 아니다.
 - URL/키가 모두 비어 있으면 PostHog 서브 에이전트를 비활성화한다(`POSTHOG_API_KEY`만 있어도 비활성). 일부만 설정하거나 잘못된 값은 부팅 검증 실패다. **코드 화이트리스트/정적 지식 fallback은 없다.** `shookie/src/projects/`의 정적 프로젝트·지식 파일은 제거되었고 원문은 테스트 fixture(`agents/posthog/legacy-knowledge.test-helper.ts`)에 legacy 참고용으로만 남아 있다.
-- API 계약: `GET` → `{projects:[{id:UUID,projectId:양의 10진수 1–16자리 문자열,name:1–100자,organizationId,description:≤1000자,instructions:≤20000자,createdAt:ISO,updatedAt:ISO}]}`. 최대 1000건, 중복 projectId/ID·이름(대소문자 무시)·추가 필드·잘못된 레코드는 전체 거부한다. 식별 필드에 키가 포함되면 거부하고, 설명/지침의 키 표현은 `[REDACTED]` 처리한다.
-- 시작 시에는 설정만 검증하고 catalog를 조회하지 않는다. `listProjects` 및 9개 PostHog 동작은 매 호출 catalog를 새로 조회하고(양성 캐시 없음) 등록 이름(대소문자 무시)을 등록 projectId로 바인딩한 뒤에만 PostHog를 호출한다. 모델용 continuation은 불투명 토큰으로 프로젝트 ID·도구·필터·limit에 묶이며 30분/1000개 메모리 예산을 적용한다. 원시 offset은 production 입력으로 받지 않는다. 같은 이름의 projectId가 바뀌면 이전 토큰을 거부하고, ID를 유지한 이름 변경은 새 이름으로 이어갈 수 있다. 재시작/만료 시 첫 페이지부터 다시 조회한다. continuation도 다음 호출에서 재승인되므로 삭제/이름 변경된 프로젝트는 즉시 거부된다. 등록·지침 변경은 재시작 없이 다음 동작에 반영된다.
+- API 계약: `GET` → `{projects:[{id:UUID,projectId:양의 10진수 1–16자리 문자열,name:1–100자,organizationId,description:≤1000자,instructions:≤20000자,createdAt:ISO,updatedAt:ISO}]}`. 최대 1000건, 중복 projectId/ID·이름(대소문자 무시)·추가 필드·잘못된 레코드는 전체 거부한다. 식별 필드에 키가 포함되면 거부하고, 설명/지침 내용은 schema 검증 후 버린다.
+- 시작 시에는 설정만 검증하고 catalog를 조회하지 않는다. `listProjects` 및 9개 PostHog 동작은 매 호출 catalog를 새로 조회하고(양성 캐시 없음) 등록 이름(대소문자 무시)을 등록 projectId로 바인딩한 뒤에만 PostHog를 호출한다. 모델용 continuation은 불투명 토큰으로 프로젝트 ID·도구·필터·limit에 묶이며 30분/1000개 메모리 예산을 적용한다. 원시 offset은 production 입력으로 받지 않는다. 같은 이름의 projectId가 바뀌면 이전 토큰을 거부하고, ID를 유지한 이름 변경은 새 이름으로 이어갈 수 있다. 재시작/만료 시 첫 페이지부터 다시 조회한다. continuation도 다음 호출에서 재승인되므로 삭제/이름 변경된 프로젝트는 즉시 거부된다. 등록 변경은 재시작 없이 다음 동작에 반영된다. 지침 소비는 중단 상태다.
 - HTTP는 10초 timeout·취소 전파·64MiB body 상한·redirect 차단·strict schema 검증을 적용하고 원본 오류/키를 노출하지 않는다.
 
 
