@@ -243,7 +243,7 @@ describe('actual main + merged trusted Slack authorization + hardened attachment
     const spy = vi.spyOn(main, 'stream').mockImplementation(async (messages: unknown, options: { requestContext?: RequestContext } = {}) => {
       expect(JSON.stringify(messages)).toContain('slack_attachment_candidates');
       expect(await execute(tools.slack_read_attachment, args, options.requestContext)).toMatchObject({ ok: true, source: { channelId: 'D1' } });
-      return { fullStream: new ReadableStream({ start(controller) { controller.close(); } }), text: Promise.resolve('answer'), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve('stop'), steps: Promise.resolve([]) } as never;
+      return { fullStream: new ReadableStream({ start(controller) { controller.close(); } }), text: Promise.resolve('answer'), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve('stop'), steps: Promise.resolve([{ text: 'answer', toolCalls: [] }]) } as never;
     });
     try {
       registerHandlers(app, main, repository);
@@ -272,7 +272,7 @@ describe('actual main + merged trusted Slack authorization + hardened attachment
       return { fullStream: new ReadableStream({ start(controller) {
         controller.enqueue({ type: 'tool-call', payload }); controller.enqueue({ type: 'tool-result', payload: { ...payload, result } }); controller.close();
       } }), text: Promise.resolve('answer PRIVATE_ATTACHMENT_TEXT'), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve('stop'),
-      steps: Promise.resolve([{ text: '', toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }]) } as never;
+      steps: Promise.resolve([{ text: '', toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }, { text: 'answer PRIVATE_ATTACHMENT_TEXT', toolCalls: [], toolResults: [] }]) } as never;
     });
     try {
       registerHandlers(app, main, repository);

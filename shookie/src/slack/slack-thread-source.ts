@@ -6,6 +6,7 @@ import { conversationLimits } from "../services/memory/limits.js";
 
 export class SlackThreadContextError extends Error {}
 export const THREAD_CONTEXT_ERROR_TEXT = "스레드 전체 맥락을 확인하지 못해 답변하지 않았습니다. 잠시 후 새 멘션으로 다시 시도해주세요. 계속 실패하면 관리자에게 Slack 앱의 채널 접근 권한·history 권한 설정을 확인해 달라고 요청해주세요.";
+const excludedMarkers = new Set(["shookie_request_control", "shookie_response_preview"]);
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 export const messageBytes = (messages: Message[]) => messages.reduce((sum, m) => sum + bytes(m.content), 0);
 export type ThreadSummarizer = (messages: Message[], maxBytes: number) => Promise<string>;
@@ -44,7 +45,7 @@ export async function readSlackThread(
         const raw = message as SlackMessage;
         const m: SlackMessage = { ts: raw.ts, thread_ts: raw.thread_ts, text: raw.text,
           user: raw.user, bot_id: raw.bot_id, subtype: raw.subtype, reply_count: raw.reply_count,
-          metadata: raw.metadata?.event_type === "shookie_request_control" ? { event_type: "shookie_request_control" } : undefined };
+          metadata: raw.metadata?.event_type && excludedMarkers.has(raw.metadata.event_type) ? { event_type: raw.metadata.event_type } : undefined };
         if (!validTs(m.ts) || typeof m.text !== "string" ||
             (m.thread_ts && m.thread_ts !== mention.threadTs)) fail();
         const previous = collected.get(m.ts);
@@ -75,7 +76,7 @@ export async function readSlackThread(
     const messages = [...collected.values()]
       .filter(m => timestamp(m.ts!) <= timestamp(mention.currentTs))
       .filter(m => {
-        return !(isOwnMessage(m, mention) && m.metadata?.event_type === "shookie_request_control");
+        return !(isOwnMessage(m, mention) && m.metadata?.event_type && excludedMarkers.has(m.metadata.event_type));
       })
       .sort((a, b) => timestamp(a.ts!) < timestamp(b.ts!) ? -1 : 1)
       .map<Message>(m => {

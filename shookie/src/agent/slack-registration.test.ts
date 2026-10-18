@@ -56,7 +56,7 @@ describe("actual main Slack tool registration", () => {
       const payload = { toolName: "slack_search", toolCallId: "bounded-task", args: { query } };
       return { fullStream: new ReadableStream({ start(c) { c.enqueue({ type: "tool-call", payload }); c.close(); } }),
         text: Promise.resolve("안전한 실패 안내"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve("stop"),
-        steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }]) } as never;
+        steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }, { text: "안전한 실패 안내", toolCalls: [], toolResults: [] }]) } as never;
     });
     try {
       registerHandlers(app, main, repository);
@@ -171,7 +171,7 @@ describe("actual main Slack tool registration", () => {
       return { fullStream: new ReadableStream({ start(controller) {
         controller.enqueue({ type: "tool-call", payload }); controller.close();
       } }), text: Promise.resolve("answer SECRET_FETCH_RESULT"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve("stop"),
-      steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result: toolName === "slack_search" ? searchResult : result } }] }]) } as never;
+      steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result: toolName === "slack_search" ? searchResult : result } }] }, { text: "answer SECRET_FETCH_RESULT", toolCalls: [], toolResults: [] }]) } as never;
     });
     try {
       registerHandlers(app, main, repository);
@@ -228,7 +228,7 @@ describe("actual main Slack tool registration", () => {
       const payload = { toolName, toolCallId: "failure-task", args: input };
       return { fullStream: new ReadableStream({ start(controller) { controller.enqueue({ type: "tool-call", payload }); controller.close(); } }),
         text: Promise.resolve("안전한 실패 안내"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve("stop"),
-        steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }]) } as never;
+        steps: Promise.resolve([{ text: "", toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }, { text: "안전한 실패 안내", toolCalls: [], toolResults: [] }]) } as never;
     });
     try {
       registerHandlers(app, main, repository);
@@ -295,7 +295,7 @@ describe("actual main Slack tool registration", () => {
       return { fullStream: new ReadableStream({ start(c) { for (const call of calls) c.enqueue({ type: "tool-call", payload: { ...call, toolCallId: call.toolName } }); c.close(); } }),
         text: Promise.resolve("조회 완료"), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve("stop"),
         steps: Promise.resolve([{ text: "", toolCalls: calls.map(call => ({ payload: { ...call, toolCallId: call.toolName } })),
-          toolResults: calls.map(call => ({ payload: { ...call, toolCallId: call.toolName } })) }]) } as never;
+          toolResults: calls.map(call => ({ payload: { ...call, toolCallId: call.toolName } })) }, { text: "조회 완료", toolCalls: [], toolResults: [] }]) } as never;
     });
     try {
       registerHandlers(app, main, repository);

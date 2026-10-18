@@ -39,6 +39,10 @@ export class SlackRequestControls {
   private notification?: Promise<void>;
   private notified = false;
   private delivered = false;
+  private failureText = "요청을 종료했습니다.";
+  markFailure(stage: "generation" | "save" | "limit"): void {
+    this.failureText = stage === "limit" ? "답변 생성 한도에 도달해 완료하지 못했어요. 질문 범위를 줄여 다시 요청해 주세요." : stage === "save" ? "답변을 저장하지 못했습니다. 표시된 미확정 답변은 완료된 답변이 아닙니다." : "답변 생성을 완료하지 못했습니다. 표시된 미확정 답변은 완료된 답변이 아닙니다.";
+  }
   markDelivered(): void { this.delivered = true; }
   constructor(private readonly app: App, private readonly registry: CancellationRegistry,
     private readonly event: ConversationEvent) {}
@@ -92,7 +96,7 @@ export class SlackRequestControls {
         }
       } else {
         try { await slackDelivery(this.app, client => client.chat.update({ ...control,
-          text: scope.control.isCommitted ? DELIVERY_UNCONFIRMED_TEXT : "요청을 종료했습니다.", blocks: [] })); }
+          text: scope.control.isCommitted ? DELIVERY_UNCONFIRMED_TEXT : this.failureText, blocks: [] })); }
         catch { /* expired button still denied by registry */ }
       }
     }

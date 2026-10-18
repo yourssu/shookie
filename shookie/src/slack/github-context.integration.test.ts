@@ -62,7 +62,7 @@ function harness(options: { spoofToolIdentity?: boolean; dropDelegatedActor?: bo
     const delegated = await delegate.execute!({ task: messages.at(-1)!.content, target: "allowed", context: "bounded test", outputScope: "read only", userId: "ADMIN", teamId: "EVIL", requestId: "fake" } as never,
       { requestContext: opts.requestContext } as never);
     return { fullStream: new ReadableStream({ start(controller) { controller.close(); } }),
-      text: Promise.resolve(JSON.stringify(delegated)), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), steps: Promise.resolve([]), finishReason: Promise.resolve("stop") };
+      text: Promise.resolve(JSON.stringify(delegated)), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), steps: Promise.resolve([{ text: JSON.stringify(delegated), toolCalls: [] }]), finishReason: Promise.resolve("stop") };
   });
   registerHandlers(app, { stream } as unknown as Agent, repository);
   const deliver = (teamId?: string, user: string | null = "U1") => callbacks.get("app_mention")!({

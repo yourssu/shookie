@@ -36,6 +36,12 @@ describe("authoritative Slack thread reader", () => {
     { user: undefined, bot_id: undefined, metadata: { event_type: "shookie_request_control" }, removed: false },
     { user: "USH", bot_id: "BSH", metadata: undefined, removed: false },
     { user: "USH", bot_id: "BSH", metadata: { event_type: "unrelated" }, removed: false },
+    { user: "USH", bot_id: "BSH", metadata: { event_type: "shookie_response_preview" }, removed: true },
+    { user: undefined, bot_id: "BSH", metadata: { event_type: "shookie_response_preview" }, removed: true },
+    { user: "U2", bot_id: undefined, metadata: { event_type: "shookie_response_preview" }, removed: false },
+    { user: "UOTHER", bot_id: "BOTHER", metadata: { event_type: "shookie_response_preview" }, removed: false },
+    { user: undefined, bot_id: undefined, metadata: { event_type: "shookie_response_preview" }, removed: false },
+    { user: "USH", bot_id: "BSH", metadata: { event_type: "shookie_response_committed" }, removed: false },
   ])("filters only authenticated Shookie controls with the exact metadata marker: %j", async ({ removed, ...identity }) => {
     const items = messages.map((m, i) => i === 2 ? { ...m, ...identity, text: "요청을 완료했습니다." } : m);
     const result = await readSlackThread(client(page(items)).api, mention);

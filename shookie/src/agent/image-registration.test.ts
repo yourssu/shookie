@@ -214,7 +214,7 @@ describe('registered image tool + live Slack bridge + shared cancellation (synth
       return { fullStream: new ReadableStream({ start(controller) {
         controller.enqueue({ type: 'tool-call', payload }); controller.enqueue({ type: 'tool-result', payload: { ...payload, result } }); controller.close();
       } }), text: Promise.resolve('DERIVED_IMAGE_SECRET'), usage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }), finishReason: Promise.resolve('stop'),
-      steps: Promise.resolve([{ text: '', toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }]) } as never;
+      steps: Promise.resolve([{ text: '', toolCalls: [{ payload }], toolResults: [{ payload: { ...payload, result } }] }, { text: 'DERIVED_IMAGE_SECRET', toolCalls: [], toolResults: [] }]) } as never;
     });
     try {
       registerHandlers(app, f.main, repository);
@@ -225,7 +225,7 @@ describe('registered image tool + live Slack bridge + shared cancellation (synth
       expect(logToolCall).toHaveBeenLastCalledWith(expect.objectContaining({ toolName: 'slack_analyze_image', input: { redacted: true }, output: { redacted: true } }));
       const logs = JSON.stringify([vi.mocked(logger.info).mock.calls, vi.mocked(logger.debug).mock.calls, vi.mocked(logToolCall).mock.calls, vi.mocked(appendTaskUpdate).mock.calls]);
       for (const secret of ['DERIVED_IMAGE_SECRET', 'PRIVATE_IMAGE_QUERY', 'PRIVATE_URL_SECRET', pngFixture().toString('base64'), fixture.settings.SLACK_BOT_TOKEN, fixture.settings.LLM_API_KEY]) expect(logs).not.toContain(secret);
-      expect(appendTaskUpdate).not.toHaveBeenCalled(); // final-only UI never publishes tool output
+      expect(appendTaskUpdate).not.toHaveBeenCalled(); // Public preview never publishes raw tool output
     } finally { spy.mockRestore(); }
   });
 });
