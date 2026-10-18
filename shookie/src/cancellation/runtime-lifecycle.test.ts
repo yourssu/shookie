@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent, ConversationRepository } from "database";
 import { ConversationRuntime } from "../slack/conversation-runtime.js";
 import { executionOperation, executionTools, type ExecutionScope } from "./execution-context.js";
-import { createTool } from "@mastra/core/tools";
+import { createTool, noopObserve } from "@mastra/core/tools";
 import { z } from "zod";
 
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
@@ -67,7 +67,7 @@ describe("actual runtime acquire + shared ownership lifecycle", () => {
     let scope!: ExecutionScope;
     const first = runtime.run(event("early", "thread"), "q", async (_m, commit, s) => {
       scope = s;
-      void tools.slow.execute!({}, {}).catch(() => {}); // engine abort/completion can precede this real tool
+      void tools.slow.execute!({}, { observe: noopObserve }).catch(() => {}); // engine abort/completion can precede this real tool
       await entered.promise; scope.control.cancel(); await commit("not allowed");
     }).catch(error => error);
     const nextExecute = vi.fn(async (_m, commit) => commit("next"));

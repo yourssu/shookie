@@ -3,7 +3,7 @@ import { createServer, request, type IncomingMessage, type ServerResponse } from
 import type { Socket } from "node:net";
 import { ChildProcess } from "node:child_process";
 import { Agent } from "@mastra/core/agent";
-import { createTool } from "@mastra/core/tools";
+import { createTool, noopObserve } from "@mastra/core/tools";
 import { z } from "zod";
 import { download, pinnedRequest } from "../tools/web/network.js";
 import { downloadAttachment } from "../tools/attachments/download.js";
@@ -97,7 +97,7 @@ describe("actual shared-signal calls (local transport/SDK, not Slack/LLM E2E)", 
     const tools = createMainShookieTools({ posthog: subagent });
     const requestContext = new RequestContext<unknown>([["requestId", "trusted-event"]]);
     const scope = new ExecutionScope();
-    const work = executionStorage.run(scope, () => tools.posthog_agent.execute!({ task: "local delegate" }, { requestContext }));
+    const work = executionStorage.run(scope, () => tools.posthog_agent.execute!({ task: "local delegate" }, { requestContext, observe: noopObserve }));
     const assertion = expect(work).rejects.toMatchObject({ reason: "cancelled" });
     await entered.promise; scope.control.cancel();
     expect(providerSignal!.aborted).toBe(true);

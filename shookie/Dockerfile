@@ -1,4 +1,6 @@
-FROM node:20-slim
+FROM node:22-slim
+# Mastra requires Node >=22.13.0 (also required by the previous 1.32.1).
+RUN node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 13)) process.exit(1)'
 
 WORKDIR /app
 
