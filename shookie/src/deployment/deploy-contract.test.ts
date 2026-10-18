@@ -16,6 +16,16 @@ describe("deployment contract", () => {
     .filter((line) => !line.trim().startsWith("#"))
     .join("\n");
 
+  it("propagates dedicated App IDs as variables and its key only as a secret", () => {
+    for (const key of ["SHOOKIE_GITHUB_APP_ID", "SHOOKIE_GITHUB_APP_INSTALLATION_ID", "SHOOKIE_GITHUB_APP_PRIVATE_KEY_BASE64"]) {
+      expect(readRepoFile(".env.example")).toContain(`${key}=`);
+      expect(readRepoFile("docker-compose.yml")).toContain(`${key}: \u0024{${key}:-}`);
+      expect(deploy).toContain(`DEPLOY_${key}: \u0024{{ ${key.includes("PRIVATE_KEY") ? "secrets" : "vars"}.${key} }}`);
+      expect(deploy).toContain(`,DEPLOY_${key}`);
+      expect(script).toContain(`export ${key}="\u0024{DEPLOY_${key}:-}"`);
+    }
+  });
+
   it("uses the supported Mastra Node runtime without changing the deployment pipeline", () => {
     const dockerfile = readRepoFile("shookie/Dockerfile");
     expect(dockerfile).toMatch(/^FROM node:22-slim/m);
