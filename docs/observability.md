@@ -67,7 +67,14 @@ object 전체는 `Object.keys`/`ownKeys` 자체도 무제한 임시 배열을 �
 
 기존 `[diagnostic]` finishReason/steps/textLen/token 로그, generation/delivery/status 로그, debug step 로그, DB tool/invocation 기록은 제거하지 않았다. 기존 Slack read redaction도 유지한다. 기존 내용 excerpt/debug/서드파티 framework error logging 전체를 content-free로 만드는 변경은 아니며, privacy 보장은 새 `observability` 레코드의 allowlisted scalar 필드에 대한 것이다. 새 verbose/debug payload 로깅은 없다.
 
-검증한 구현 SHA: `bba956fa35ae4d02cb9affa265af530126591009` (base `f8665b4349e133e6f5066157aa2a68627aed38e2`). 문서 후속 커밋은 런타임 코드를 변경하지 않는다.
+최신 main 호환성 검증 SHA: `9cb40cf4d70e1faf5326878bff900366f978560e`. A의 squash main `40b34673bcae9eae43b5b1c6a1363f193145e4fa`를 일반 merge로 통합했으며 충돌이 없었다. main 대비 diff는 B metrics/좁은 delivery hook/문서/전용 테스트에만 한정된다. A 파일은 수정하지 않았다.
+
+- 최신 SHA에서 `yarn workspace database build && yarn workspace shookie build`: pass.
+- 최신 SHA에서 `yarn workspace shookie test src/telemetry src/slack/delivery-metrics.test.ts src/slack/handlers.test.ts src/tools/code-explorer/github-read.test.ts src/tools/code-explorer/github-query-projection.test.ts`: pass, 181 tests / 7 files (6.81s).
+- 최신 SHA에서 아래 cancellation/delivery partition도 재실행: pass, 138 tests / 12 files (21.16s).
+- `telemetry/github-result.integration.test.ts`는 실제 최신 `readGithub`에 합성 HTTP 응답을 주입하여 최근 PR list/큰 Unicode detail의 `data:string` 결과를 기존 wrapper로 실행한다. own data JSON-string byte 측정이 정확하고 전체 envelope는 unknown이며, top-level truncated와 반환 객체 identity를 보존하고 본문/URL을 metrics에 담지 않는지 검증한다. live 측정이 아니다.
+
+초기 구현 검증 SHA: `bba956fa35ae4d02cb9affa265af530126591009` (당시 base `f8665b4349e133e6f5066157aa2a68627aed38e2`). 문서 후속 커밋은 런타임 코드를 변경하지 않는다. 초기 검증 기록:
 
 - `yarn workspace database build && yarn workspace shookie build`: pass. DB build는 TypeScript 산출물 생성만 하며 DB 접속/마이그레이션 실행이 아니다.
 - `yarn workspace shookie test src/telemetry src/slack/delivery-metrics.test.ts src/slack/handlers.test.ts`: pass, 89 tests / 4 files (6.00s).
@@ -75,4 +82,4 @@ object 전체는 `Object.keys`/`ownKeys` 자체도 무제한 임시 배열을 �
 - fake trusted monotonic clocks + gated ACK로 delta/preview 확인/finish 분리, fallback start ACK 뒤 stop 실패/ACK loss/unsupported/throwing hook/no replay, greeting missing ACK, correlated single terminal·duplicate suppression·generation/save/delivery/cancel 독립 상태, 실제 pinned DeepSeek→Mastra offline wire의 step/aggregate/optional usage 보존을 검증했다.
 - huge Unicode/JSON-string data/escaping/cap 경계/cycle/BigInt/class·array/Proxy·getter 무실행, tool async return/reject/RequestContext/drain/cancel/missing scope/중복 wrapper/throwing metrics/동기·비동기 sink 실패를 검증했다.
 - 초기 regression 실행에서 새 detached timer가 fake timer 잔여 개수 검사에 잡혔고, native scheduler reference + unref로 수정 후 위 cancellation partition 전체를 재검증했다. 다른 owner의 테스트는 수정하지 않았다.
-- 실제 Slack/DeepSeek 네트워크 E2E, 운영 배포/서버/DB 작업, 전체 repository test suite는 미실행. 실측 latency/비용 절감이나 응답 품질 개선 주장은 하지 않는다. main은 A PR을 먼저 병합한 뒤 최신 main 호환성을 별도 확인해야 한다.
+- 실제 Slack/DeepSeek 네트워크 E2E, 운영 배포/서버/DB 작업, 전체 repository test suite는 미실행. 실측 latency/비용 절감이나 응답 품질 개선 주장은 하지 않는다. A 선병합 후 최신 main 호환성은 위 검증으로 확인했으며 독립 리뷰/최종 병합 판단은 main 소유다.
