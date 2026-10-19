@@ -396,8 +396,8 @@ describe("actual Slack handler wiring", () => {
     const result = await h.stream();
     h.stream.mockClear();
     h.stream.mockResolvedValueOnce({ ...result, fullStream: new ReadableStream({ start(controller) {
-      controller.enqueue({ type: "tool-call", payload: { toolName: "posthog_agent", toolCallId: "task-1", args: { question: "synthetic" } } });
-      controller.enqueue({ type: "tool-result", payload: { toolName: "posthog_agent", toolCallId: "task-1", result: "synthetic result" } });
+      controller.enqueue({ type: "tool-call", payload: { toolName: "queryHogQL", toolCallId: "task-1", args: { query: "SELECT 'synthetic private query'" } } });
+      controller.enqueue({ type: "tool-result", payload: { toolName: "queryHogQL", toolCallId: "task-1", result: "synthetic result" } });
       controller.close();
     } }) });
 
@@ -407,7 +407,7 @@ describe("actual Slack handler wiring", () => {
     expect(h.repository.complete).toHaveBeenCalledTimes(1);
     expect(h.postMessage).toHaveBeenCalledTimes(1);
     expect(vi.mocked(h.repository.complete).mock.invocationCallOrder[0]).toBeLessThan(h.postMessage.mock.invocationCallOrder[0]);
-    expect(JSON.stringify(h.postMessage.mock.calls)).not.toMatch(/synthetic result|question|💰|💵|🔧/);
+    expect(JSON.stringify(h.postMessage.mock.calls)).not.toMatch(/synthetic result|synthetic private query|💰|💵|🔧/);
     expect(h.events.get("slack-event:stream-success")).toBe("completed");
   });
 

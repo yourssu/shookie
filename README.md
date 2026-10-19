@@ -9,7 +9,7 @@ Slack에서는 두 가지 방식으로 질문할 수 있어요:
 - **@멘션**: 채널에서 `@슈키 PostHog에 어떤 이벤트가 있어?`
 - **DM**: 봇과 1:1 대화
 
-메인이 일반 질문은 기존 서비스 도구로 직접 처리하고, 깊은 조사만 선택적 전문 에이전트에 맡긴 뒤 최종 답변해 드려요.
+하나의 메인 대화 에이전트가 일반 질문과 깊은 조사 모두 기존 서비스 도구로 직접 처리해요. 별도 전문 에이전트나 위임 도구는 없어요.
 
 실행은 대기열 시간을 제외하고 전체 **최대 3분**이며, 스레드의 초기 안내 메시지에 있는 **요청 취소** 버튼은 요청자만 사용할 수 있어요. 취소·시간초과 시 진행 중인 작업을 정리하고, 이미 저장한 성공 답변은 취소로 되돌리지 않아요. 실제 종료/잔여 작업과 검증 범위는 [대화 취소 정책](docs/conversation-cancellation.md)을 참고하세요.
 
@@ -20,10 +20,10 @@ Slack에서는 두 가지 방식으로 질문할 수 있어요:
     ↓
 slack/handlers.ts — 이벤트 감지, 스레드 단위 세션 관리
     ↓
-agent/main-shookie — 메인 에이전트 (직접 도구 + 선택적 전문 조사)
+agent/agents/main-shookie — 유일한 대화 에이전트 (직접 도구)
     ↓
 ┌─────────────────────┬──────────────────────┐
-│  PostHog Analyst     │  Code Explorer       │
+│  PostHog 도구        │  GitHub 도구         │
 │  (기존 서비스 도구)  │  (API/bare snapshot) │
 └─────────────────────┴──────────────────────┘
     ↓
@@ -32,23 +32,23 @@ slack/markdown-to-blocks.ts — LLM 응답을 Slack Block Kit으로 변환
 Slack 스레드에 답글 + 호출 기록 DB 저장
 ```
 
-- **직접 도구 중심**: 일반 조회는 메인, 맥락이 큰 조사만 선택적 전문 에이전트
+- **단일 대화 에이전트**: 서비스별 client/tool 모듈은 유지하고 메인만 실행. 실제 등록 기능에만 버전 고정 로컬 지침 제공
+- **보조 모델 호출**: 오래된 스레드 요약과 이미지 해석은 필요한 유틸리티로 유지 (별도 대화 에이전트 아님). 역사 DB AgentName/기록/마이그레이션도 유지
 - **Mastra**: 에이전트 프레임워크 (도구 정의, 프롬프트 관리)
 - **스레드 단위 대화**: Slack 스레드(`channel:thread_ts`) = 하나의 대화 컨텍스트 (최대 30메시지)
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
 - **Slack Block Kit 포맷팅**: LLM 응답 Markdown을 헤더, 구분선, 테이블, mrkdwn 등 Block Kit으로 자동 변환
 - **호출 로깅**: 모든 에이전트 호출(사용자, 질문, 응답, 토큰 사용량)을 PostgreSQL에 영구 저장
-- **시스템 프롬프트 로깅**: LLM 호출 직전 시스템 프롬프트를 debug 레벨로 덤프해 프롬프트 회귀 추적 가능 (`agent/log-system-prompt.ts`)
 
-## 직접 서비스 도구와 선택적 전문 에이전트
+## 직접 서비스 도구
 
-### PostHog Analyst
+### PostHog
 
 PostHog 분석 데이터 조회를 담당해요. **Radar에 현재 등록된 PostHog 프로젝트만** 조회해요.
 
 | 도구 | 설명 |
 |---|---|
-| `listProjects` | Radar 등록 프로젝트 목록 (메인 직접 및 선택적 전문 조사) |
+| `listProjects` | Radar 등록 프로젝트 목록 (메인 직접) |
 | `queryEvents` | 이벤트 목록 조회 |
 | `queryInsights` | 인사이트(분석 리포트) 조회 |
 | `listFeatureFlags` | 기능 플래그 목록 |
@@ -81,11 +81,8 @@ shookie/
 │   ├── src/
 │   │   ├── agent/
 │   │   │   ├── agents/
-│   │   │   │   ├── main-shookie/    # 메인 에이전트 (9섹션 프롬프트)
-│   │   │   │   ├── posthog/         # PostHog 분석 에이전트
-│   │   │   │   └── code-explorer/   # 코드 탐색 에이전트
-│   │   │   ├── processors/          # 응답 후처리 (Slack 변환 등)
-│   │   │   ├── log-system-prompt.ts # LLM 시스템 프롬프트 로깅 미들웨어
+│   │   │   │   └── main-shookie/    # 유일한 대화 에이전트
+│   │   │   ├── guidance/            # 코드 소유 버전 고정 도메인 운영 절차
 │   │   │   └── index.ts             # 에이전트 팩토리
 │   │   ├── tools/
 │   │   │   ├── posthog/             # Radar 등록 기반 PostHog 클라이언트 + listProjects + 9개 도구
@@ -113,16 +110,9 @@ shookie/
 └── tsconfig.base.json
 ```
 
-## 새 서브 에이전트 추가 방법
+## 새 직접 도구 추가 방법
 
-1. `shookie/src/tools/<서비스>/`에 client.ts, schemas.ts, tools.ts 생성
-2. `shookie/src/agent/agents/<도메인>/`에 index.ts, instructions.ts, description.ts, tools.ts 생성
-3. `shookie/src/config.ts`에 환경변수 추가 (선택적)
-4. `shookie/src/agent/index.ts`의 `createAgent()`에서 조건부 등록
-5. `shookie/src/agent/agents/main-shookie/tools.ts`에 위임 도구 추가
-6. 메인 에이전트 instructions.ts 섹션 7 도메인 카탈로그 업데이트
-7. `instructions.test.ts`에 서브 에이전트 등장 테스트 추가
-8. `.github/workflows/deploy.yml`에 새 환경변수 항목 추가
+`tools/<서비스>/` 모듈을 만들고 `agent/index.ts`에서 설정에 따라 메인에 직접 등록해요. Agent를 추가하지 않아요. 필수 안전 정책은 항상 적용하고, 운영 절차는 로컬 지침에 보존해요. 실제 등록 키 기준 기능·지침 및 both/one/none 설정 테스트, 필요한 배포 환경변수 계약을 함께 갱신해요. 현재 계약은 [단일 에이전트 구조](docs/single-agent-architecture.md)를 참고하세요.
 
 ## 로컬 개발
 

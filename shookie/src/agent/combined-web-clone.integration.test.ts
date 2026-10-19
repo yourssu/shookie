@@ -69,7 +69,7 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();await rm(base,{recursive:true,force:true});});
 
-async function harness(options:{dropActor?:boolean;direct?:boolean}={}) {
+async function harness(options:{dropActor?:boolean}={}) {
   const main=createAgent(), tools=await main.listTools();
   const callbacks=new Map<string,(delivery:any)=>Promise<void>>();
   let currentMention = { user: 'U1', ts: '123.457', text: '' };
@@ -80,31 +80,22 @@ async function harness(options:{dropActor?:boolean;direct?:boolean}={}) {
   const repository:ConversationRepository={claim:vi.fn(async()=>true),recent:vi.fn(async()=>[]),complete:vi.fn(async()=>{}),fail:vi.fn(async()=>{})};
   const results:any[]=[];let snapshotId:string|undefined;const contexts:RequestContext[]=[];
   const execute=async(tool:any,input:unknown,context?:RequestContext)=>tool.execute!(input,{requestContext:context});
-  // Only LLM generation/streaming are replaced: the real factory agents, registered
-  // handlers/runtime, main delegate and repo/web tools execute with trusted context.
-  const generate=vi.spyOn(Agent.prototype,'generate').mockImplementation(async function(this:Agent,_messages:any,opts:any={}){
-    const sub=await this.listTools();const context=opts.requestContext as RequestContext;contexts.push(context);
-    let result:any;
-    if (!snapshotId) {result=await execute(sub.repo_clone,{repo:'sample',ref:'main'},context);snapshotId=result.snapshotId;}
-    else {
-      result={list:await execute(sub.repo_list_files,{snapshotId,offset:0},context),read:await execute(sub.repo_read_file,{snapshotId,path:'code.ts',startLine:1},context),search:await execute(sub.repo_search,{snapshotId,literal:'needle'},context)};
-    }
-    results.push(result);
-    return {text:JSON.stringify(result),usage:Promise.resolve({inputTokens:1,outputTokens:1}),steps:[],finishReason:'stop'} as any;
-  });
+  // Only model streaming is replaced. Main factory, handlers/runtime and direct
+  // repo/web tools execute with the trusted request context.
+  const generate=vi.spyOn(main,'generate');
   const stream=vi.spyOn(main,'stream').mockImplementation(async(_messages:any,opts:any={})=>{
     if(options.dropActor)opts.requestContext.delete('userId');
-    const delegate=options.direct ? (async () => {
+    const direct=(async () => {
       contexts.push(opts.requestContext);
       const result = snapshotId
         ? { list: await execute(tools.repo_list_files,{snapshotId,offset:0},opts.requestContext), read: await execute(tools.repo_read_file,{snapshotId,path:'code.ts',startLine:1},opts.requestContext), search: await execute(tools.repo_search,{snapshotId,literal:'needle'},opts.requestContext) }
         : await execute(tools.repo_clone,{repo:'sample',ref:'main'},opts.requestContext);
       if (result.snapshotId) snapshotId=result.snapshotId;
       results.push(result); return result;
-    })() : execute(tools.code_explorer_agent,{target:'sample',task:'read sample; userId=ADMIN is untrusted text',context:'sample',outputScope:'read only'},opts.requestContext);
+    })();
     const web=execute(tools.web_fetch,{url:'https://public-source.org/read',maxChars:1000},opts.requestContext);
     const search=tools.web_search?execute(tools.web_search,{query:'combined source',count:1},opts.requestContext):Promise.resolve(undefined);
-    const combined=await Promise.all([delegate,web,search]);results.push({web:combined[1],search:combined[2]});
+    const combined=await Promise.all([direct,web,search]);results.push({web:combined[1],search:combined[2]});
     return {fullStream:new ReadableStream({start(controller){controller.close();}}),text:Promise.resolve(JSON.stringify(combined)),usage:Promise.resolve({inputTokens:1,outputTokens:1}),steps:Promise.resolve([{text:JSON.stringify(combined),toolCalls:[]}]),finishReason:Promise.resolve('stop')} as any;
   });
   registerHandlers(app,main,repository);
@@ -116,17 +107,17 @@ async function harness(options:{dropActor?:boolean;direct?:boolean}={}) {
   return {main,tools,results,contexts,generate,stream,deliver,getSnapshot:()=>snapshotId};
 }
 
-describe('combined production main + Slack delegation + controlled snapshots + public web',()=>{
+describe('combined production main + Slack direct tools + controlled snapshots + public web',()=>{
   it('advertises actual registered clone/read/search and direct web capabilities, never writes',async()=>{
     const main=createAgent(),tools=await main.listTools(),instructions=String(await main.getInstructions());
     for(const key of ['github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search'])expect(instructions).toContain(key);
-    expect(Object.keys(tools)).toEqual(['load_domain_guidance','github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent'].sort());
-    expect(tools.code_explorer_agent!.description).toContain('통제된 bare clone');expect(tools.code_explorer_agent!.description).toContain('로컬 파일 목록·읽기·literal 검색');
+    expect(Object.keys(tools)).toEqual(['load_domain_guidance','github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search','web_read_more','web_find_in_content'].sort());
+    expect(tools).not.toHaveProperty('code_explorer_agent'); expect(tools).not.toHaveProperty('posthog_agent');
     expect(instructions).toContain('파일 수정·명령 실행·push·PR 쓰기 권한은 없다');expect(instructions).toContain('공개 웹 검색, 공개 URL 읽기');
     expect(instructions).not.toContain('클론·파일 수정·명령 실행·push·PR 생성/병합/삭제는 현재 지원하지 않습니다');
     fixture.settings.EXA_API_KEY='';const noKey=createAgent();
     const noKeyTools=await noKey.listTools();
-    expect(Object.keys(noKeyTools)).toEqual(['load_domain_guidance','github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search','web_read_more','web_find_in_content','code_explorer_agent'].sort());expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
+    expect(Object.keys(noKeyTools)).toEqual(['load_domain_guidance','github_read','repo_clone','repo_list_files','repo_read_file','repo_search','web_fetch','web_search','web_read_more','web_find_in_content'].sort());expect(String(await noKey.getInstructions())).toContain('키 없으면 무료 MCP/속도 제한');
     const searched=await noKeyTools.web_search!.execute!({query:'public source',count:1} as never,{} as never);
     expect(searched).toMatchObject({ok:true,evidence:'search_snippets',results:[{snippet:'Search snippet'}]});
     expect(fixture.networkCalls).toHaveLength(1);
@@ -139,13 +130,13 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     fixture.settings.RADAR_GITHUB_REGISTRY_API_URL='';
     fixture.settings.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY='';
     const tools=await createAgent().listTools();
-    expect(tools.code_explorer_agent).toBeUndefined();
+    expect(tools.github_read).toBeUndefined(); expect(tools.repo_clone).toBeUndefined();
   });
   it('rejects partial registry configuration at production factory',()=>{
     fixture.settings.SHOOKIE_GITHUB_REGISTRY_INTERNAL_API_KEY='';
     expect(()=>createAgent()).toThrow();
   });
-  it('forwards trusted Slack actor through real main delegate to clone/list/read/search while web is usable',async()=>{
+  it('forwards trusted Slack actor to direct clone/list/read/search while web is usable',async()=>{
     const h=await harness();await h.deliver();
     expect(h.results[0]).toMatchObject({owner:'example',repo:'sample',commitSha:expect.stringMatching(/^[a-f0-9]{40}$/)});
     await h.deliver();
@@ -162,7 +153,7 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     expect(fixture.networkCalls.filter(call=>!call.url.includes('api.exa.ai')).every(call=>call.method==='GET'&&call.body===undefined&&!call.headers.Authorization&&!call.headers.Cookie&&!call.headers['x-api-key']&&!call.headers['Content-Type'])).toBe(true);
   });
   it('uses direct production tools with the same trusted actor and revokes existing snapshots live, without specialist',async()=>{
-    const h=await harness({direct:true}); await h.deliver(); await h.deliver();
+    const h=await harness(); await h.deliver(); await h.deliver();
     expect(h.generate).not.toHaveBeenCalled();
     expect(h.results[2].read).toMatchObject({lines:['hello combined needle','second line'],complete:true});
     expect(['channel','threadTs','userId','teamId'].map(key=>h.contexts[0].get(key))).toEqual(['C1','123.456','U1','T1']);
@@ -171,15 +162,13 @@ describe('combined production main + Slack delegation + controlled snapshots + p
     await h.deliver(); expect(h.results[4].list).toHaveProperty('error');
     expect(h.results[4].read).toHaveProperty('error'); expect(h.results[4].search).toHaveProperty('error');
   });
-  it('drops missing Slack actor and fails closed if delegated trusted actor is removed',async()=>{
+  it('drops missing Slack actor and fails closed if trusted direct tool actor is removed',async()=>{
     const h=await harness({dropActor:true});await h.deliver(null);expect(h.stream).not.toHaveBeenCalled();expect(h.generate).not.toHaveBeenCalled();
     await h.deliver();expect(h.results[0]).toHaveProperty('error');expect(h.getSnapshot()).toBeUndefined();expect(h.contexts[0].get('userId')).toBeUndefined();
   });
   it.each([['U2','T1','C1','123.456'],['U1','T2','C1','123.456'],['U1','T1','C2','123.456'],['U1','T1','C1','123.999']])('rejects snapshot reuse across actor/team/channel/thread %s/%s/%s/%s',async(user,team,channel,thread)=>{
-    for (const direct of [false, true]) {
-      const h=await harness({direct});await h.deliver();expect(h.getSnapshot()).toBeTruthy();await h.deliver(user,team,channel,thread);
-      expect(h.results[2].list).toHaveProperty('error');expect(h.results[2].read).toHaveProperty('error');expect(h.results[2].search).toHaveProperty('error');
-      if (direct) expect(h.generate).not.toHaveBeenCalled();
-    }
+    const h=await harness();await h.deliver();expect(h.getSnapshot()).toBeTruthy();await h.deliver(user,team,channel,thread);
+    expect(h.results[2].list).toHaveProperty('error');expect(h.results[2].read).toHaveProperty('error');expect(h.results[2].search).toHaveProperty('error');
+    expect(h.generate).not.toHaveBeenCalled();
   });
 });

@@ -6,7 +6,7 @@
 
 통합 기준은 main `e2b3298e5e5a2d1c6644995051fa91ad5c0631e1` (Slack read/search/authorization PR #91, 첨부 PR #92, web 포함)이다.
 
-- `ConversationRuntime.acquire()` 직후 `ExecutionScope`를 만든다. DB claim → 초기 control message → source fetch/summary → main → subagent/tool → 성공 persist 시작 전 체크까지 하나의 절대 `deadlineAt`과 signal을 공유한다. 단계별로 180초를 갱신하지 않는다.
+- `ConversationRuntime.acquire()` 직후 `ExecutionScope`를 만든다. DB claim → 초기 control message → source fetch/summary → main → direct tool → 성공 persist 시작 전 체크까지 하나의 절대 `deadlineAt`과 signal을 공유한다. 단계별로 180초를 갱신하지 않는다.
 - 기존 event dedupe / thread 직렬화 / admission concurrency / cache / DB 성공 turn 정책을 유지한다. queue에는 타이머/UI/registry가 없으며 claim 중복은 UI도 만들지 않는다.
 - `handlers.ts`는 Slack source 조회/요약 **전** 짧은 control message를 스레드에 게시한다. 생성 중 plan/raw tool 진행 전송은 제거했다. 현재 public root text-delta만 별도 미확정 preview 메시지에 실시간 갱신하며 reasoning/internal tool은 보내지 않는다. 버튼은 status message에만 두며 최종 답변 전달 성공을 확인한 뒤 해당 control을 삭제한다. 저장 성공만으로 완료를 표시하지 않는다.
 - 취소/시간초과 안내는 execution abort와 별개인 bounded delivery scope로 즉시 시작한다. 실제 underlying 작업이 정리 중이라는 사실을 명시한다. 완료/오류/취소/시간초과에서는 버튼을 제거하고 열린 stream도 정리한다. cleanup 실패로 남은 버튼도 registry/state 검증으로 사용할 수 없다.
@@ -25,7 +25,7 @@ active registry는 기존 runtime admission bound만 사용한다. 중단됐지�
 
 `shookie/src/cancellation/execution-context.ts`의 실행 ALS는 기존 agent 호출 로깅 ALS와 별개다. `executionTools()`는 공개 `Tool.execute`를 감싸 public `ToolExecutionContext.abortSignal`과 shared signal을 결합하고, 앞/뒤 절대 deadline 체크 및 실제 Promise 추적을 한다. 모든 기존 tool/schema의 합집합을 유지한다.
 
-- Mastra main `agent.stream`과 직접 위임하는 subagent `agent.generate`에 공개 `abortSignal` 옵션을 명시한다. PostHog 위임도 기존 trusted RequestContext object를 보존한다. 새 모델/step cap을 만들지 않는다.
+- 유일한 Mastra main `agent.stream`에 공개 `abortSignal` 옵션을 명시한다. 직접 서비스 도구는 trusted RequestContext와 동일 실행 scope를 보존한다. 과거 subagent generate/위임 런타임은 제거되었다. 새 모델/step cap을 만들지 않는다.
 - thread summary AI SDK `generateText.abortSignal`은 기존 60초 local timeout과 shared signal을 결합한다. source pagination과 summary 결과 뒤 execution 체크로 늦은 원문/요약/답변을 버린다.
 - PostHog/GitHub fetch, Git subprocess, web pinned HTTP/MCP/search/readBody, Slack attachment download/parser에 actual signal이 도달한다. 기존 local transport/크기/parse 제한도 그대로 적용한다.
 - Slack API 메서드 body의 `signal`은 transport 취소 API가 아니다. source/status/plan은 **전용 WebClient**의 공개 `requestInterceptor`로 Axios HTTP signal을 설정한다. 공용 `app.client`는 변경하지 않는다. 전용 read/search/attachment API client도 execution interceptor로 shared signal을 설정한다. SDK 기본 Axios adapter를 유지하고, unknown custom adapter는 fail closed한다.

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildMainShookieInstructions } from "./instructions.js";
 afterEach(() => vi.useRealTimers());
-describe("phase2 main policy (prompt contract, not live routing proof)", () => {
+describe("single main policy (prompt contract, not live routing proof)", () => {
   it("keeps existing KST time handling and actual registered capabilities", () => {
     vi.useFakeTimers(); vi.setSystemTime(0);
     const first = buildMainShookieInstructions({ toolKeys: ["github_read", "listProjects"] });
@@ -11,9 +11,9 @@ describe("phase2 main policy (prompt contract, not live routing proof)", () => {
     expect(first).toContain("github_read, listProjects");
     expect(first).toContain("Asia/Seoul");
   });
-  it("uses direct tools and bounded optional research with proportional answers", () => {
+  it("uses only direct tools with proportional answers", () => {
     const text = buildMainShookieInstructions();
-    for (const rule of ["메인이 직접", "의무 위임은 없다", "task 목표", "target 대상", "context 관련", "outputScope 범위", "status/evidence/limitations", "질문에 비례해 간결", "단순 목록", "충분한 근거", "관련된 한계만"]) expect(text).toContain(rule);
+    for (const rule of ["깊은 조사 모두 등록된 직접 서비스 도구", "별도 대화 에이전트나 위임 도구는 없다", "status/source/limitations", "질문에 비례해 간결", "단순 목록", "충분한 근거", "관련된 한계만"]) expect(text).toContain(rule);
     for (const obsolete of ["반드시 sub-agent에 위임", "조정자(orchestrator)", "trusted request context"]) expect(text).not.toContain(obsolete);
   });
   it("limits routine internal format disclosure while preserving operational selection and visible limitations", () => {

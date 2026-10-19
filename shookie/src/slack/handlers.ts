@@ -31,7 +31,6 @@ import {
   completeInvocation,
   logToolCall,
 } from "database";
-import { invocationStorage } from "../agent/invocation-context.js";
 import { budgetSlackThread, readSlackThread, SlackThreadContextError, THREAD_CONTEXT_ERROR_TEXT,
   type ThreadSummarizer } from "./slack-thread-source.js";
 import { summarizeThread } from "./thread-summarizer.js";
@@ -245,13 +244,7 @@ async function handleConversation(
       return { streamResult, responseText, usage, steps, finishReason, toolNamesSeen };
     };
 
-    const alsCtx = callCtx && mainInvocationId
-      ? { agentCallId: callCtx.agentCallId, parentInvocationId: mainInvocationId }
-      : undefined;
-
-    const conv = alsCtx
-      ? await invocationStorage.run(alsCtx, runConversation)
-      : await runConversation();
+    const conv = await runConversation();
 
     const { responseText, usage, steps, finishReason, toolNamesSeen } = conv;
     executionCheckpoint();

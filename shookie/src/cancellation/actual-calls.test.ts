@@ -8,11 +8,11 @@ import { z } from "zod";
 import { download, pinnedRequest } from "../tools/web/network.js";
 import { downloadAttachment } from "../tools/attachments/download.js";
 import { parseAttachment } from "../tools/attachments/parser.js";
-import { ExecutionScope, executionStorage, executionTools, executionOperation } from "./execution-context.js";
+import { ExecutionScope, executionStorage, executionTools, executionOperation, executionCheckpoint } from "./execution-context.js";
 const summaryConfig = vi.hoisted(() => ({ LLM_API_KEY: "synthetic-key", LLM_BASE_URL: "http://127.0.0.1", LLM_MODEL: "deepseek-flash" }));
 vi.mock("../config.js", () => ({ config: summaryConfig }));
 import { summarizeThread } from "../slack/thread-summarizer.js";
-import { createMainShookieTools } from "../agent/agents/main-shookie/tools.js";
+import { createMainShookieAgent } from "../agent/agents/main-shookie/index.js";
 import { RequestContext } from "@mastra/core/request-context";
 
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
@@ -82,7 +82,7 @@ describe("actual shared-signal calls (local transport/SDK, not Slack/LLM E2E)", 
     scope.control.finish();
   });
 
-  it("propagates main delegation into actual Mastra.generate's provider abortSignal and retains trusted RequestContext", async () => {
+  it("propagates main generate cancellation into the provider abortSignal and retains trusted RequestContext", async () => {
     const entered = deferred(); let providerSignal: AbortSignal | undefined;
     const model = { specificationVersion: "v2", provider: "local-test", modelId: "synthetic", supportedUrls: {},
       doGenerate: vi.fn((options: any) => {
@@ -92,12 +92,16 @@ describe("actual shared-signal calls (local transport/SDK, not Slack/LLM E2E)", 
         });
       }),
     };
-    const subagent = new Agent({ id: "posthog", name: "posthog", instructions: "test", model: model as any });
-    const generate = vi.spyOn(subagent, "generate");
-    const tools = createMainShookieTools({ posthog: subagent });
+    const main = createMainShookieAgent(model);
+    const generate = vi.spyOn(main, "generate");
     const requestContext = new RequestContext<unknown>([["requestId", "trusted-event"]]);
     const scope = new ExecutionScope();
-    const work = executionStorage.run(scope, () => tools.posthog_agent.execute!({ target: "fixture", task: "local delegate", context: "authenticated test", outputScope: "bounded research" }, { requestContext, observe: noopObserve }));
+    const work = executionStorage.run(scope, () => executionOperation(async () => {
+      const result = await main.generate("local direct request", { requestContext, abortSignal: scope.control.signal });
+      // Mastra may resolve an aborted generation as a tripwire; the host checkpoint
+      // must still reject cancellation rather than accept an empty final answer.
+      executionCheckpoint(); return result;
+    }));
     const assertion = expect(work).rejects.toMatchObject({ reason: "cancelled" });
     await entered.promise; scope.control.cancel();
     expect(providerSignal!.aborted).toBe(true);
