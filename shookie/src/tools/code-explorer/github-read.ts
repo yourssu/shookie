@@ -1,3 +1,4 @@
+import { projectGithub, budgetGithub } from "./github-projection.js";
 import type { GithubTokenProvider } from "./github-auth.js";
 import { createTool } from "@mastra/core/tools";
 import { executionSignal, trackExecution } from "../../cancellation/execution-context.js";
@@ -12,9 +13,29 @@ export const readInput = z.object({
   operation: z.enum(["repositories", "repository", "tree", "file", "history", "pull_requests", "pull_request", "issues", "issue"]),
   repo: name.optional(), ref: ref.optional(), path: path.optional(),
   number: z.number().int().min(1).max(2147483647).optional(),
+  state: z.enum(["open", "closed", "all"]).optional(),
+  sort: z.enum(["created", "updated", "popularity", "long-running"]).optional(),
+  direction: z.enum(["asc", "desc"]).optional(),
   page: z.number().int().min(1).max(1000).default(1),
   perPage: z.number().int().min(1).max(30).default(20),
-}).strict();
+}).strict().superRefine((input, ctx) => {
+  const op = input.operation;
+  const invalid = op !== "repositories" && (
+    !input.repo || input.page > 100 ||
+    (input.number !== undefined && !["pull_request", "issue"].includes(op)) ||
+    (input.ref !== undefined && !["tree", "file", "history"].includes(op)) ||
+    (input.path !== undefined && !["file", "history"].includes(op)) ||
+    (["pull_request", "issue"].includes(op) && !input.number) ||
+    (op === "tree" && !input.ref) || (op === "file" && !input.path)
+  );
+  if (invalid) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "invalid operation options" });
+  if (input.operation !== "pull_requests" && [input.state, input.sort, input.direction].some(v => v !== undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "PR list options require pull_requests" });
+  }
+  if (input.operation === "repositories" && (input.repo || input.ref || input.path !== undefined || input.number)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "invalid repository list options" });
+  }
+});
 export type ReadInput = z.infer<typeof readInput>;
 export interface ReadConfig { owner: string; gitHubToken: string; readOnlyToken?: string; tokenProvider?: GithubTokenProvider; repositories?: string[]; registry?: RegistryConfig }
 const MAX_BYTES = 256 * 1024;
@@ -22,6 +43,7 @@ const MAX_OUTPUT_BYTES = 32 * 1024;
 export const READ_TIMEOUT_MS = 10_000;
 
 export function buildReadUrl(config: ReadConfig, input: ReadInput): URL {
+  input = readInput.parse(input);
   name.parse(config.owner);
   if (config.repositories) config.repositories.forEach(r => name.parse(r));
   const url = new URL("https://api.github.com");
@@ -51,7 +73,12 @@ export function buildReadUrl(config: ReadConfig, input: ReadInput): URL {
         if (input.ref) url.searchParams.set("sha", input.ref);
         if (input.path) url.searchParams.set("path", input.path);
         break;
-      case "pull_requests": url.pathname = `${base}/pulls`; break;
+      case "pull_requests":
+        url.pathname = `${base}/pulls`;
+        url.searchParams.set("state", input.state ?? "all");
+        url.searchParams.set("sort", input.sort ?? "created");
+        url.searchParams.set("direction", input.direction ?? ((input.sort ?? "created") === "created" ? "desc" : "asc"));
+        break;
       case "issues": url.pathname = `${base}/issues`; break;
       case "pull_request": case "issue":
         if (!input.number) throw new Error("number required");
@@ -174,22 +201,24 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
       if (!Array.isArray(data)) throw new Error("invalid response");
       data = data.filter((r: { name?: string; owner?: { login?: string } }) => r.owner?.login?.toLowerCase() === config.owner.toLowerCase() && config.repositories!.some(n => n.toLowerCase() === r.name?.toLowerCase()));
     }
-    let text = JSON.stringify(data);
-    for (const secret of [config.gitHubToken, config.readOnlyToken].filter(Boolean) as string[]) {
-      for (const representation of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) text = text.split(representation).join("[REDACTED]");
-    }
-    text = config.tokenProvider?.redact(text) ?? text;
-    if (config.registry) text = redactRegistry(text, config.registry);
-    const outputTruncated = Buffer.byteLength(text) > MAX_OUTPUT_BYTES;
-    const truncated = outputTruncated || data.truncated === true;
-    // Preserve valid JSON, even when the model-facing budget requires a preview.
-    if (outputTruncated) text = JSON.stringify({ incomplete: true, reason: "model_output_byte_limit", preview: text.slice(0, 4096) });
+    const countTruncated = Array.isArray(data) && data.length > input.perPage;
+    const projection = projectGithub(input, Array.isArray(data) ? data.slice(0, input.perPage) : data);
+    const serialize = (value: unknown) => {
+      let text = redactGuidance(JSON.stringify(value));
+      if (config.registry) text = redactRegistry(text, config.registry);
+      return text;
+    };
+    const budget = budgetGithub(projection.data, serialize, MAX_OUTPUT_BYTES);
+    const text = budget.text;
+    const truncated = budget.truncated || projection.truncated || countTruncated || data.truncated === true;
     return {
       data: text, repositoryGuidance, truncated, complete: !truncated,
       source: url.toString(), owner: config.owner, repo: input.repo ?? null,
       ref: input.ref ?? null, path: input.path ?? null, page: input.page,
       // Advisory only: we never parse/follow Link URLs with credentials.
       hasNextPage: /rel="next"/.test(response.headers.get("link") ?? ""),
+      ...(input.operation === "pull_requests" ? { query: { state: url.searchParams.get("state"), sort: url.searchParams.get("sort"), direction: url.searchParams.get("direction"), perPage: input.perPage } } : {}),
+      ...(countTruncated ? { omittedItems: data.length - input.perPage } : {}),
       message: "GitHub API 읽기 전용 조회입니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. 파일 수정·push·PR 생성/병합/삭제는 지원하지 않습니다.",
     };
   };
@@ -201,7 +230,7 @@ export function createGithubReadTool(config: ReadConfig & { registry: RegistryCo
   if (!config.registry) throw new Error("GitHub registry required");
   return createTool({
     id: "github-read",
-    description: "Radar에 현재 등록된 조직/저장소의 목록·구조(tree)·파일·커밋 이력·PR·이슈를 읽기 전용으로 조회합니다. 이 API 도구는 명령 실행, 클론, 파일 수정, push, PR 생성/병합/삭제를 수행하지 않습니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. tree는 ref(브랜치 또는 commit SHA)가 필요합니다.",
+    description: "Radar에 현재 등록된 조직/저장소의 목록·구조(tree)·파일·커밋 이력·PR·이슈를 읽기 전용으로 조회합니다. 이 API 도구는 명령 실행, 클론, 파일 수정, push, PR 생성/병합/삭제를 수행하지 않습니다. 로컬 탐색은 별도 repo_clone 도구를 사용하세요. tree는 ref(브랜치 또는 commit SHA)가 필요합니다. 요청 개수는 perPage(1–30)로 지정하세요. 최근 PR은 기본 state=all, sort=created, direction=desc(생성순)이며 필요 시 명시하세요. closed는 merged를 뜻하지 않습니다.",
     inputSchema: readInput,
     execute: async (input, context) => {
       try { trustedActor(context?.requestContext); return await readGithub(config, input, fetch, executionSignal(context?.abortSignal)); }
