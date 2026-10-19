@@ -71,8 +71,8 @@ describe("fixed-host read boundary", () => {
   it("bounds response bytes and model output", async () => {
     await expect(readGithub(config, { operation: "repository", repo: "allowed" }, mock({ ...repo, x: "x".repeat(300000) }))).rejects.toThrow();
     const result = await readGithub(config, { operation: "repository", repo: "allowed" }, mock({ ...repo, x: "한".repeat(20000) }));
-    expect(Buffer.byteLength(result.data)).toBeLessThanOrEqual(32768); expect(result.truncated).toBe(true);
-    expect(result.complete).toBe(false); expect(JSON.parse(result.data).incomplete).toBe(true);
+    expect(Buffer.byteLength(result.data)).toBeLessThanOrEqual(32768); expect(result.truncated).toBe(false);
+    expect(result.complete).toBe(true); expect(JSON.parse(result.data)).not.toHaveProperty("x");
   });
   it("rejects redirect responses", async () => {
     await expect(readGithub(config, { operation: "repository", repo: "allowed" }, vi.fn().mockResolvedValue(new Response(null, { status: 302 })))).rejects.toThrow();
