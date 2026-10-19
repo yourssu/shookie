@@ -1,1 +1,0 @@
-export const codeExplorerDescription = "GitHub 읽기 전용 코드 탐색 전문가. 고정 조직 중 Radar에 현재 등록된 저장소만 허용하며 모든 동작에서 최신 등록을 검증합니다(기존 snapshot 포함). 빈 목록/설정 없음/조회 실패는 접근 거부입니다. Radar 저장소 지침 소비는 비활성화되어 있습니다. 저장소·구조·파일·커밋 이력·PR·이슈를 조회합니다. 통제된 bare clone 및 commit 고정 로컬 파일 목록·읽기·literal 검색을 지원합니다. 파일 수정, 임의 명령 실행, push 및 PR 생성/병합/삭제는 지원하지 않습니다.";

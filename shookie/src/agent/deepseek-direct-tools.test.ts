@@ -41,33 +41,27 @@ vi.mock('../config.js', () => ({ config: {
   SHOOKIE_POSTHOG_REGISTRY_INTERNAL_API_KEY: 'synthetic-registry-key',
   THREAD_WORKSPACE_BASE_PATH: '/unused-synthetic-workspace', THREAD_WORKSPACE_MAX_GB: 1,
 } }));
-// Persistence is outside this offline transport test. Agent, delegates, tools,
+// Persistence is outside this offline transport test. Main Agent, direct tools,
 // actor checks, registry parsing and provider serialization are production code.
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('database', () => ({ startInvocation: vi.fn(), completeInvocation: vi.fn(), logToolCall: vi.fn() }));
 import { createAgent } from './index.js';
 afterEach(() => { vi.unstubAllGlobals(); boundary.calls = []; });
 
-it.each([['generate', 'github-direct'], ['stream', 'github-direct'], ['generate', 'posthog-direct'], ['stream', 'posthog-direct'], ['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], ['stream', 'posthog'], ['generate', 'both'], ['stream', 'both'], ['generate', 'both-different-length'], ['stream', 'both-different-length']] as const)('factory %s executes %s and returns a final answer (scripted offline model, not live routing quality)', async (mode, domain) => {
+it.each([['generate', 'github'], ['stream', 'github'], ['generate', 'posthog'], ['stream', 'posthog'], ['generate', 'both'], ['stream', 'both']] as const)('factory %s executes %s and returns a final answer (scripted offline model, not live routing quality)', async (mode, domain) => {
   const wires: any[] = [];
   const reads: string[] = [];
   const githubScript = [
-    completion('', 'code_explorer_agent', { target: "fixture", task: 'List registered repositories', context: 'optional research fixture', outputScope: 'list' }),
     completion('', 'github_read', { operation: 'repositories' }),
-    completion('synthetic-repository-summary: example/sample'),
     completion('synthetic-final: example/sample'),
   ];
   const posthogScript = [
-    completion('', 'posthog_agent', { target: "fixture", task: 'List registered projects', context: 'optional research fixture', outputScope: 'list' }),
     completion('', 'listProjects', {}),
-    completion('synthetic-project-summary: Synthetic project'),
     completion('synthetic-final: Synthetic project'),
   ];
-  const script = domain === 'github-direct' ? [githubScript[1], githubScript[3]] : domain === 'posthog-direct' ? [posthogScript[1], posthogScript[3]] : domain === 'github' ? githubScript : domain === 'posthog' ? posthogScript : [
-    ...githubScript.slice(0, 3), ...posthogScript,
-  ];
+  const script = domain === 'github' ? githubScript : domain === 'posthog' ? posthogScript : [githubScript[0], ...posthogScript];
   script.forEach((item, index) => { item.id = `synthetic-response-${index}`;
-    item.choices[0].message.reasoning_content = `synthetic-reasoning-${index}${domain === 'both-different-length' ? '-x'.repeat(index) : ''}`;
+    item.choices[0].message.reasoning_content = `synthetic-reasoning-${index}${'-x'.repeat(index)}`;
   });
   vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
     const target = String(url);
@@ -96,7 +90,7 @@ it.each([['generate', 'github-direct'], ['stream', 'github-direct'], ['generate'
   expect(await result.text).toBe(`synthetic-final: ${expected}`);
   expect(script).toHaveLength(0);
   for (const wire of wires) {
-    // Actual serialized HTTP: includes main first/continuation and optional specialist turns.
+    // Actual serialized HTTP: main initial request and direct-tool continuations.
     expect(wire.reasoning_effort).toBe('high');
     expect(wire).not.toHaveProperty('thinking');
     expect(wire.model).toBe('deepseek-flash');
@@ -104,36 +98,25 @@ it.each([['generate', 'github-direct'], ['stream', 'github-direct'], ['generate'
   }
   expect(JSON.stringify(wires)).not.toContain('synthetic guidance');
   expect(JSON.stringify(wires)).not.toContain('RADAR_DESCRIPTION_SENTINEL');
-  if (domain.endsWith('-direct')) {
-    expect(wires).toHaveLength(2);
-    const calls = wires.flatMap(w => w.messages.flatMap((m: any) => m.tool_calls ?? []));
-    expect(calls.map((c: any) => c.function.name)).toEqual([domain === 'github-direct' ? 'github_read' : 'listProjects']);
-    expect(JSON.stringify(wires[1].messages)).toContain(domain === 'github-direct' ? 'sample' : 'Synthetic project');
-    return;
-  }
-  if (domain.startsWith('both')) {
-    expect(wires).toHaveLength(7);
-    expect(boundary.calls).toHaveLength(7);
-    const marker = `synthetic-reasoning-3${domain === 'both-different-length' ? '-x'.repeat(3) : ''}`;
-    expect(boundary.calls[3].output).toContain(marker);
-    expect(boundary.calls[6].input).toEqual(expect.arrayContaining(['synthetic-reasoning-0', marker]));
-    expect(wires[6].messages.find((m: any) => m.tool_calls?.[0]?.function.name === 'posthog_agent').reasoning_content).toBe(marker);
-    expect(reads).toEqual(expect.arrayContaining([
-      'https://radar.test/internal/v1/shookie/github/repositories',
-      'https://radar.test/internal/v1/shookie/posthog/projects',
-    ]));
-    return;
-  }
-  expect(reads).toContain(domain === 'github'
-    ? 'https://radar.test/internal/v1/shookie/github/repositories'
-    : 'https://radar.test/internal/v1/shookie/posthog/projects');
-  // Repository listing intentionally uses the registered catalog, not all org repos.
-  expect(wires[2].messages.some((m: any) => m.role === 'tool' && JSON.stringify(m).includes(domain === 'github' ? 'sample' : expected))).toBe(true);
-  for (const index of [2, 3]) {
+  expect(wires).toHaveLength(domain === 'both' ? 3 : 2);
+  expect(boundary.calls).toHaveLength(wires.length);
+  for (let index = 1; index < wires.length; index++) {
     const history = wires[index].messages.filter((m: any) => m.tool_calls?.length);
-    expect(history).toHaveLength(1);
-    expect(history[0].reasoning_content).toBe(`synthetic-reasoning-${index === 2 ? 1 : 0}`);
+    expect(history).toHaveLength(index);
+    history.forEach((message: any, previous: number) => {
+      const marker = `synthetic-reasoning-${previous}${'-x'.repeat(previous)}`;
+      expect(message.reasoning_content).toBe(marker);
+      expect(boundary.calls[index].input).toContain(marker);
+    });
+    expect(wires[index].messages.some((m: any) => m.role === 'tool')).toBe(true);
   }
+  for (const wire of wires) {
+    const keys = wire.tools.map((t: any) => t.function.name);
+    expect(keys).toContain('github_read'); expect(keys).toContain('listProjects');
+    expect(keys).not.toContain('code_explorer_agent'); expect(keys).not.toContain('posthog_agent');
+  }
+  if (domain !== 'posthog') expect(reads).toContain('https://radar.test/internal/v1/shookie/github/repositories');
+  if (domain !== 'github') expect(reads).toContain('https://radar.test/internal/v1/shookie/posthog/projects');
 });
 
 it.each(['github_read', 'listProjects'] as const)('cancels actual main direct %s registry transport without delegation (mock fetch)', async key => {

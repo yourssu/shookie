@@ -8,20 +8,19 @@ import { completion, response } from "../agent/deepseek-transport.test-helper.js
 import { LiveAnswer } from "./live-answer.js";
 import { canonicalAnswer } from "./canonical-answer.js";
 
-it.each([1, 3])("pinned real DeepSeek→Mastra separates root public payload.text with %i tool steps from reasoning and generate-delegated specialist", async toolSteps => {
-  const specialist = new Agent({ id: "specialist", name: "specialist", instructions: "synthetic", model: createDeepSeek({ apiKey: "synthetic", fetch: async () => response(completion("SPECIALIST_PRIVATE"), false) })("deepseek-flash") });
+it.each([1, 3])("pinned real DeepSeek→Mastra separates root public payload.text with %i tool steps from reasoning and private direct tool results", async toolSteps => {
   let calls = 0;
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; });
   const root = new Agent({ id: "root", name: "root", instructions: "synthetic", model: createDeepSeek({ apiKey: "synthetic", fetch: async () => {
     if (++calls <= toolSteps) {
-      const body = completion("", "delegate");
+      const body = completion("", "lookup");
       if (calls === 1) body.choices[0].message.content = "public before tool";
       return response(body, true);
     }
     await gate;
     return response(completion("public final"), true);
-  } })("deepseek-flash"), tools: { delegate: createTool({ id: "delegate", description: "synthetic", inputSchema: z.object({}), execute: async () => ({ internal: (await specialist.generate("synthetic")).text }) }) } });
+  } })("deepseek-flash"), tools: { lookup: createTool({ id: "lookup", description: "synthetic", inputSchema: z.object({}), execute: async () => ({ internal: "DIRECT_TOOL_PRIVATE" }) }) } });
   const postMessage = vi.fn(async () => ({ ok: true, ts: "known" }));
   const update = vi.fn(async () => ({ ok: true, ts: "known" }));
   const live = new LiveAnswer({ client: { chat: { postMessage, update } } } as unknown as App, { channel: "C1", threadTs: "1.0" }, new AbortController().signal);
@@ -38,8 +37,8 @@ it.each([1, 3])("pinned real DeepSeek→Mastra separates root public payload.tex
   await live.finalize(final, []);
   expect(events.some(e => e.type === "reasoning-delta")).toBe(true);
   expect(events.filter(e => e.type === "text-delta").every(e => e.runId === "root-run")).toBe(true);
-  expect(events.some(e => e.type === "tool-result" && JSON.stringify(e).includes("SPECIALIST_PRIVATE"))).toBe(true);
-  expect(JSON.stringify([postMessage.mock.calls, update.mock.calls])).not.toMatch(/SPECIALIST_PRIVATE|synthetic-reasoning/);
+  expect(events.some(e => e.type === "tool-result" && JSON.stringify(e).includes("DIRECT_TOOL_PRIVATE"))).toBe(true);
+  expect(JSON.stringify([postMessage.mock.calls, update.mock.calls])).not.toMatch(/DIRECT_TOOL_PRIVATE|synthetic-reasoning/);
 });
 
 it.each(["empty", "tool+text", "length"])("real provider last %s is never promoted from aggregate text/reasoning", async kind => {
