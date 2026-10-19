@@ -33,7 +33,7 @@ export class LiveAnswer {
   private saved = false;
   markSaved() { this.saved = true; }
   markLimited() { this.limited = true; }
-  constructor(private app: App, private input: { channel: string; threadTs: string }, private signal: AbortSignal, private cooldown = new SlackCooldown()) {}
+  constructor(private app: App, private input: { channel: string; threadTs: string }, private signal: AbortSignal, private cooldown = new SlackCooldown(), private onConfirmedText: () => void = () => {}) {}
 
   event(value: { type: string; from: string; runId: string; payload?: unknown }, rootRunId: string) {
     if (this.phase !== "preview" || this.signal.aborted || this.previewFrozen || value.from !== "AGENT" || value.runId !== rootRunId) return;
@@ -75,6 +75,7 @@ export class LiveAnswer {
         // Retain a known identity even when metadata warnings make visibility unsafe.
         if (res.ok && res.ts) this.ts = res.ts;
         if (!confirmed(res) || !this.ts) throw new Error("Preview delivery unconfirmed");
+        try { this.onConfirmedText(); } catch { /* telemetry cannot freeze a preview */ }
       } catch (error) {
         this.cooldown.observe(error);
         const e = error as { code?: string; data?: { error?: string } } | null;

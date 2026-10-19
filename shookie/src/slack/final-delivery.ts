@@ -15,12 +15,14 @@ function rejection(error: unknown): string | undefined {
 export async function deliverFinalAnswer(client: WebClient, input: {
   channel: string; threadTs: string; teamId?: string; userId: string;
   markdown: string; fallbackText: string; blocks: ShookieBlock[];
-}, signal: AbortSignal): Promise<void> {
+}, signal: AbortSignal, onConfirmedText: () => void = () => {}): Promise<void> {
   const { channel, threadTs, teamId, userId, markdown, fallbackText, blocks } = input;
+  const observed = () => { try { onConfirmedText(); } catch { /* telemetry cannot change delivery or trigger replay */ } };
   const post = async () => {
     signal.throwIfAborted();
     const res = await client.chat.postMessage({ channel, thread_ts: threadTs, text: fallbackText, blocks: blocks as KnownBlock[] });
     if (!res.ok || !res.ts) throw new Error("Final delivery not confirmed");
+    if (fallbackText.length) observed();
   };
   // Keep long output and unsupported recipient contexts on the existing bounded renderer.
   if (!teamId || markdown.length > CHUNK_CHARS * MAX_CHUNKS) return post();
@@ -40,6 +42,7 @@ export async function deliverFinalAnswer(client: WebClient, input: {
     }
     ts = res.ts;
     if (!ts) throw new Error("Stream identity missing");
+    if (chunks[0]?.length) observed();
   } catch (error) {
     if (SAFE_START_REJECTIONS.has(rejection(error) ?? "")) return post();
     throw error; // Ambiguous creation must never trigger a second message.

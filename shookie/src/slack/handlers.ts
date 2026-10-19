@@ -19,6 +19,7 @@ import { getCurrentChannel } from "./assistant.js";
 import type { ShookieBlock } from "../types/block.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { createRequestMetrics, monotonicNow, type RequestMetrics } from "../telemetry/metrics.js";
 import { ensureThreadCapacity } from "../tools/code-explorer/workspace-manager.js";
 import {
   conversationRepository,
@@ -53,12 +54,13 @@ async function postToThread(
   text: string,
   blocks?: ShookieBlock[],
 ): Promise<void> {
-  await slackDelivery(app, client => client.chat.postMessage({
+  const res = await slackDelivery(app, client => client.chat.postMessage({
     channel,
     thread_ts: threadTs,
     text,
     ...(blocks ? { blocks: blocks as KnownBlock[] } : {}),
   }));
+  if (!res.ok || !res.ts) throw new Error("Thread delivery unconfirmed");
 }
 
 export function registerHandlers(
@@ -71,6 +73,9 @@ export function registerHandlers(
   const registry = new CancellationRegistry();
   registerCancellationAction(app, registry);
   const receive = async (kind: "app_mention" | "message", raw: unknown, body: unknown, context: unknown) => {
+    const receivedAt = monotonicNow();
+    let metrics: RequestMetrics | undefined;
+    let executionScope: ExecutionScope | undefined;
     const event = raw as { channel?: string; channel_type?: string; ts?: string; thread_ts?: string;
       user?: string; team?: string; text?: string; bot_id?: string; subtype?: string; action_token?: unknown; files?: unknown };
     // Only original human messages. Edits/deletes and bot/system subtypes cannot trigger runs.
@@ -109,15 +114,26 @@ export function registerHandlers(
       await runtime.run(identity, text, async (messages, commit, scope) => {
         if (!text && !isThreadReply) {
           const greeting = "네, 무엇을 도와드릴까요?";
+          if (metrics) metrics.save = "running";
           await commit(greeting);
-          await postToThread(app, identity.channel, threadTs, greeting);
+          if (metrics) metrics.save = "success";
+          metrics?.startDelivery();
+          try {
+            await postToThread(app, identity.channel, threadTs, greeting);
+            metrics?.endDelivery(true);
+          } catch (error) { metrics?.endDelivery(false); throw error; }
           controls.markDelivered();
           return;
         }
         // Keep the original event-only selection and its single read; never supply a fallback.
         const actionToken = event.action_token;
         await handleConversation(app, agent, text, identity, messages, commit, scope, actionToken, attachments, () => controls.markDelivered(), stage => controls.markFailure(stage), controls.cooldown);
-      }, slackContext, scope => controls.start(scope));
+      }, slackContext, scope => {
+        executionScope = scope;
+        metrics = createRequestMetrics(receivedAt);
+        scope.metrics = metrics;
+        return controls.start(scope);
+      });
     } catch (error) {
       logger.error("대화 처리 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });
       const errorText = error instanceof ConversationStoppedError ? STOP_TEXT[error.reason]
@@ -133,7 +149,16 @@ export function registerHandlers(
       if (!controls.stopNotified) {
         try { await postToThread(app, identity.channel, threadTs, errorText); } catch { /* bounded delivery, no duplicate error */ }
       }
-    } finally { await controls.finish(); }
+    } finally {
+      try { await controls.finish(); } finally {
+        if (metrics) {
+          const reason: unknown = executionScope?.control.signal.reason;
+          if (reason instanceof ConversationStoppedError) metrics.stop = reason.reason === "timed_out" ? "timeout" : "cancelled";
+          if (metrics.save === "running") metrics.save = "error";
+          metrics.finish();
+        }
+      }
+    }
   };
   app.event("app_mention", async ({ event, body, context }) => receive("app_mention", event, body, context));
   app.event("message", async ({ event, body, context }) => receive("message", event, body, context));
@@ -155,7 +180,8 @@ async function handleConversation(
 ): Promise<void> {
   const { channel, threadTs, userId, teamId, requestId } = identity;
   let mainInvocationId: number | null = null;
-  const preview = new LiveAnswer(app, { channel, threadTs }, scope.control.signal, cooldown);
+  const metrics = scope.metrics;
+  const preview = new LiveAnswer(app, { channel, threadTs }, scope.control.signal, cooldown, () => metrics?.confirmedText());
   let saving = false;
 
   try {
@@ -200,11 +226,17 @@ async function handleConversation(
       const withAttachments = attachments?.files.length
         ? [...modelMessages, { role: "user" as const, content: JSON.stringify(attachments) }]
         : modelMessages;
+      metrics?.startGeneration();
+      let modelStepsRecorded = 0;
       const streamResult = await agent.stream([...withAttachments, ...requestClockMessages(requestContext)], {
         maxSteps: config.MAX_TOOL_ITERATIONS,
         runId: requestId,
         requestContext,
         abortSignal: scope.control.signal,
+        onStepFinish: step => {
+          const index = modelStepsRecorded++;
+          try { metrics?.model(index, step.usage); } catch { /* callback must never fail generation */ }
+        },
       });
 
       const toolNamesSeen: string[] = [];
@@ -217,6 +249,8 @@ async function handleConversation(
           executionCheckpoint();
           if (done) break;
 
+          if (value.type === "text-delta" && value.from === "AGENT" && value.runId === requestId &&
+            typeof (value.payload as { text?: unknown })?.text === "string" && (value.payload as { text: string }).text.length) metrics?.firstDelta();
           preview.event(value, requestId);
           if (value.type === "error" || value.type === "abort") throw new Error("Agent stream failed");
           if (value.type === "tool-call") {
@@ -239,7 +273,10 @@ async function handleConversation(
       const steps = await streamResult.steps;
       const finishReason = await streamResult.finishReason;
       executionCheckpoint();
+      // Fallback for adapters without callbacks; never add aggregate usage to step usage.
+      if (!modelStepsRecorded) for (const [index, step] of steps.entries()) metrics?.model(index, step.usage);
       const responseText = canonicalAnswer(steps, finishReason);
+      metrics?.endGeneration("success");
 
       return { streamResult, responseText, usage, steps, finishReason, toolNamesSeen };
     };
@@ -253,21 +290,26 @@ async function handleConversation(
     await preview.seal();
     executionCheckpoint();
     saving = true;
+    if (metrics) metrics.save = "running";
     await commit(responseText);
+    if (metrics) metrics.save = "success";
     preview.markSaved();
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const { blocks, fallbackText } = convertMarkdownToBlocks(responseText, "", { withFeedback: true });
     // Deliver before ancillary DB logging, but delivery failure must not skip success logging.
     let delivered = false;
+    metrics?.startDelivery();
     try {
       const reconciled = await preview.finalize(fallbackText, blocks);
       if (!reconciled) await slackDelivery(app, (deliveryClient, signal) => deliverFinalAnswer(deliveryClient, {
         channel, threadTs, teamId, userId, markdown: responseText, fallbackText, blocks,
-      }, signal));
+      }, signal, () => metrics?.confirmedText()));
       delivered = true;
+      metrics?.endDelivery(true);
       onDelivered();
     } catch {
+      metrics?.endDelivery(false);
       logger.warn("성공 대화 저장 이후 최종 응답 전송 실패", { requestId });
       // No misleading failure reply or state reversal; persist-success logging continues below.
     }
@@ -356,6 +398,8 @@ async function handleConversation(
       return;
     }
     const limited = error instanceof IncompleteAnswerError && error.limited;
+    if (metrics?.generation === "running") metrics.endGeneration(limited ? "limited" : error instanceof ConversationStoppedError ? "cancelled" : "error");
+    if (metrics?.save === "running") metrics.save = "error";
     if (limited) preview.markLimited();
     onFailure(limited ? "limit" : saving ? "save" : "generation");
     logger.error("대화 실행 실패", { requestId, kind: error instanceof Error ? error.name : "unknown" });

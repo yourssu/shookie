@@ -72,6 +72,57 @@ function harness(summarize?: ThreadSummarizer) {
   return { deliver, postMessage, repository, turns, events, stream, replies, client: app.client };
 }
 
+describe("structured request observability", () => {
+  beforeEach(async () => {
+    // Detached bounded metrics queue may still contain earlier tests' records.
+    for (let i = 0; i < 256; i++) await new Promise(r => setImmediate(r));
+    vi.mocked(logger.info).mockClear();
+  });
+  const records = () => vi.mocked(logger.info).mock.calls.filter(([name]) => name === "observability").map(([, record]) => record as Record<string, unknown>);
+  const settledMetrics = async () => { for (let i = 0; i < 16; i++) await new Promise(r => setImmediate(r)); return records(); };
+  it("one correlated request/model/tool record set; duplicate event emits no second terminal, missing optional usage remains null", async () => {
+    const { executionTools } = await import("../cancellation/execution-context.js");
+    const { createTool } = await import("@mastra/core/tools"); const { z } = await import("zod");
+    const tool = executionTools({ github_read: createTool({ id: "x", description: "x", inputSchema: z.object({}), execute: async () => ({ partial: true, secret: "METRIC_PRIVATE_SECRET" }) }) });
+    const h = harness(); const original = h.stream.getMockImplementation()!;
+    h.stream.mockImplementation(async (messages, options) => {
+      await tool.github_read.execute!({}, {} as never);
+      const result = await original(messages, options);
+      return { ...result, steps: Promise.resolve([{ text: "answer", toolCalls: [], usage: { inputTokens: 5, outputTokens: 7 } }]) };
+    });
+    await h.deliver("metric-correlated"); await h.deliver("metric-correlated");
+    const data = await settledMetrics();
+    expect(data.map(r => r.kind).sort()).toEqual(["model_call", "request", "tool"]);
+    expect(new Set(data.map(r => r.correlationId)).size).toBe(1);
+    expect(data.find(r => r.kind === "request")).toMatchObject({ generationStatus: "success", saveStatus: "success", deliveryStatus: "success", firstModelDeltaMs: null, firstConfirmedTextMs: expect.any(Number) });
+    expect(data.find(r => r.kind === "model_call")).toMatchObject({ inputTokens: 5, outputTokens: 7, cachedInputTokens: null, reasoningTokens: null });
+    expect(JSON.stringify(data)).not.toMatch(/METRIC_PRIVATE|C1|U1|T1|metric-correlated|hello|https/);
+  });
+  it.each(["generation", "save", "delivery", "cancelled"])("terminal retains independent failure state for %s", async stage => {
+    const h = harness();
+    if (stage === "generation") h.stream.mockRejectedValueOnce(new Error("PRIVATE_ERROR"));
+    if (stage === "cancelled") h.stream.mockImplementationOnce(async () => {
+      const { executionStorage, executionCheckpoint } = await import("../cancellation/execution-context.js");
+      executionStorage.getStore()!.control.cancel(); executionCheckpoint(); throw new Error("unreachable");
+    });
+    if (stage === "save") vi.mocked(h.repository.complete).mockRejectedValueOnce(new Error("PRIVATE_ERROR"));
+    if (stage === "delivery") h.postMessage.mockResolvedValueOnce({ ok: false, ts: "" });
+    await h.deliver(`metric-${stage}`);
+    const data = await settledMetrics(); const terminal = data.filter(r => r.kind === "request"); expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toMatchObject(stage === "cancelled" ? { generationStatus: "cancelled", saveStatus: "not_started", deliveryStatus: "not_started", stopStatus: "cancelled", requestStatus: "stopped" } : stage === "generation" ? { generationStatus: "error", saveStatus: "not_started", deliveryStatus: "not_started", firstConfirmedTextMs: null }
+      : stage === "save" ? { generationStatus: "success", saveStatus: "error", deliveryStatus: "not_started", firstConfirmedTextMs: null }
+      : { generationStatus: "success", saveStatus: "success", deliveryStatus: "uncertain", firstConfirmedTextMs: null });
+    expect(JSON.stringify(data)).not.toContain("PRIVATE_ERROR");
+  });
+  it("greeting with missing acknowledgement stays saved but delivery uncertain", async () => {
+    const h = harness(); h.postMessage.mockResolvedValueOnce({ ok: true, ts: "" });
+    await h.deliver("metric-greeting", { event: { channel: "C1", ts: "greeting", user: "U1", text: "<@BOT>" } }, "app_mention");
+    const data = await settledMetrics(); expect(data.find(r => r.kind === "request")).toMatchObject({ generationStatus: "not_started", saveStatus: "success", deliveryStatus: "uncertain", firstConfirmedTextMs: null });
+    expect(h.repository.complete).toHaveBeenCalledOnce(); expect(h.postMessage).toHaveBeenCalledOnce(); // durable success suppresses error reply/replay
+    expect(h.client.chat.delete).not.toHaveBeenCalled();
+  });
+});
+
 describe("actual Slack handler wiring", () => {
   it.each([0, 1, 3])("delivers actual public text before model finishes (%i tools), then persists/reconciles once", async tools => {
     const h = harness();
