@@ -39,7 +39,6 @@ Slack 스레드에 답글 + 호출 기록 DB 저장
 - **Socket Mode**: 공개 URL 불필요, 봇이 Slack에 WebSocket 연결
 - **Slack Block Kit 포맷팅**: LLM 응답 Markdown을 헤더, 구분선, 테이블, mrkdwn 등 Block Kit으로 자동 변환
 - **호출 로깅**: 모든 에이전트 호출(사용자, 질문, 응답, 토큰 사용량)을 PostgreSQL에 영구 저장
-- **시스템 프롬프트 로깅**: LLM 호출 직전 시스템 프롬프트를 debug 레벨로 덤프해 프롬프트 회귀 추적 가능 (`agent/log-system-prompt.ts`)
 
 ## 직접 서비스 도구
 
@@ -84,7 +83,6 @@ shookie/
 │   │   │   ├── agents/
 │   │   │   │   └── main-shookie/    # 유일한 대화 에이전트
 │   │   │   ├── guidance/            # 코드 소유 버전 고정 도메인 운영 절차
-│   │   │   ├── log-system-prompt.ts # LLM 시스템 프롬프트 로깅 미들웨어
 │   │   │   └── index.ts             # 에이전트 팩토리
 │   │   ├── tools/
 │   │   │   ├── posthog/             # Radar 등록 기반 PostHog 클라이언트 + listProjects + 9개 도구
