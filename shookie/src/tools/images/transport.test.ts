@@ -36,7 +36,7 @@ describe('isolated tool-free image transport', () => {
       const call = deps.calls[0]; const payload = JSON.parse(call.body);
       expect(call.url.href).toBe('https://api.deepseek.com/chat/completions');
       expect(call.options.headers).toMatchObject({ Authorization: 'Bearer test-llm-secret', 'Accept-Encoding': 'identity' });
-      expect(payload).toEqual({ model: config.model, stream: false, max_tokens: L.maxTokens,
+      expect(payload).toEqual({ model: config.model, stream: false, max_tokens: L.maxTokens, reasoning_effort: 'high',
         messages: [{ role: 'system', content: IMAGE_SYSTEM }, { role: 'user', content: [
           { type: 'text', text: input.question }, { type: 'image_url', image_url: { url: `data:${mime};base64,${bytes.toString('base64')}` } },
         ] }] });

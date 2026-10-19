@@ -1,3 +1,4 @@
+import { DEEPSEEK_AGENT_DEFAULTS } from "../../../llm/policy.js";
 import { Agent } from "@mastra/core/agent";
 import { buildMainShookieInstructions } from "./instructions.js";
 import { mainShookieDescription } from "./description.js";
@@ -12,6 +13,7 @@ export function createMainShookieAgent(subAgents: { posthog?: AgentType; codeExp
   const tools = createMainShookieTools(subAgents, webOptions, slackClient, attachments, images, directTools);
 
   return new Agent({
+    defaultOptions: DEEPSEEK_AGENT_DEFAULTS,
     id: "main-shookie",
     name: "슈키(shookie)",
     instructions: async () => {

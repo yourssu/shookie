@@ -7,6 +7,15 @@
 - `deepseek-flash`, API 엔드포인트, thinking 기본값, 위임 `generate()` 사용은 불변. 수동 빈 추론 주입, 이력 재작성, 400 재시도, thinking 비활성화, dependency monkeypatch는 없다.
 - Mastra 1.32.1도 이미 Node >=22.13.0을 요구했는데 Docker는 Node 20이었다. **기존 runtime 불일치**를 `node:22-slim` + build 시 최소 버전 검사 및 package engines >=22.13.0으로 정렬했다. 이미지 빌드/ARM64/기존 bot 교체 파이프라인은 유지한다. 호스트·서버 Node를 변경하지 않는다.
 
+## 명시적 high 요청 정책
+
+기존에 문서화된 서버 기본 high에 암묵적으로 의존하는 대신 `src/llm/policy.ts`의 공통 상수로 high를 명시한다. 모델·엔드포인트·서버 thinking 기본값·토큰/시간 예산은 바꾸지 않는다. 품질 향상이나 지연 개선을 입증한 변경은 아니다.
+
+- Mastra 1.49.0의 `Agent.defaultOptions.providerOptions.deepseek.reasoningEffort`를 사용한다(`modelSettings`가 아님). 실제 generate/stream은 실행 옵션과 defaults를 병합하며 모든 loop turn으로 전달한다. 선택적 Code Explorer/PostHog도 같은 defaults를 사용한다.
+- AI SDK 요약은 `providerOptions.deepseek.reasoningEffort`, 기존 직접 이미지 HTTP 요청은 `reasoning_effort`로 같은 high 상수를 전달한다. 이미지 지원 범위나 payload/예산 정책은 그대로다.
+- 고정 SDK 2.0.76의 docs/types/serializer와 mock HTTP wire를 검증했다. `deepseek-delegation.test.ts`는 실제 팩토리 main 첫 요청·도구 후속·specialist의 모든 요청에서 `reasoning_effort: high`와 기존 추론 이력을 검사한다. `thread-summarizer-wire.test.ts`, 이미지 transport 테스트도 실제 직렬화 body를 검사한다. live 서버 적용/답변 품질/지연은 미검증이다.
+- 공통 답변 규칙은 불필요한 내부 입력 형식/선택 제약 안내만 줄인다. 필요한 확인·정정·해석과 접근 거부/부분·잘림/불확실성/실패 고지는 유지하고, 등록 프로젝트 이름 선택·권한·Radar 비활성화 규칙은 바꾸지 않는다. prompt 계약 테스트는 실제 답변의 간결함을 입증하지 않는다.
+
 ## 장애 증거와 주장 범위
 
 2026-10-18 09:17Z 저장소 목록 질문에서 Code Explorer 위임 두 번이 upstream 400 `reasoning_content in thinking mode must be passed back`으로 실패했다. 당시 SDK 2.0.35/Mastra 1.32.1, registry 200/등록 저장소 3개가 별도 확인됐다. 실패 upstream 응답/다음 요청 원문은 보존하지 않았으므로 정확히 어떤 응답 형태가 해당 장애를 일으켰는지는 입증하지 않았다.

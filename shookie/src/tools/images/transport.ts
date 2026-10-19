@@ -1,5 +1,6 @@
 import { executionSignal, executionCheckpoint, trackExecution } from '../../cancellation/execution-context.js';
 import https from 'node:https';
+import { DEEPSEEK_REASONING_EFFORT } from '../../llm/policy.js';
 import { lookup } from 'node:dns/promises';
 import type { IncomingMessage } from 'node:http';
 import { publicAddress, type DownloadDependencies } from '../attachments/download.js';
@@ -44,6 +45,7 @@ export async function interpretImage(input: { bytes: Buffer; mime: ImageMime; qu
   if (input.question.includes(config.apiKey) || forbiddenText.test(input.question) ||
       input.question.replace(/\s+/gu, '').includes(encodedImage)) throw new ImageError('INVALID_INPUT');
   const body = JSON.stringify({ model: config.model, stream: false, max_tokens: L.maxTokens,
+    reasoning_effort: DEEPSEEK_REASONING_EFFORT,
     messages: [{ role: 'system', content: IMAGE_SYSTEM }, { role: 'user', content: [
       { type: 'text', text: input.question },
       { type: 'image_url', image_url: { url: `data:${input.mime};base64,${encodedImage}` } },

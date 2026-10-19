@@ -96,6 +96,10 @@ it.each([['generate', 'github-direct'], ['stream', 'github-direct'], ['generate'
   expect(await result.text).toBe(`synthetic-final: ${expected}`);
   expect(script).toHaveLength(0);
   for (const wire of wires) {
+    // Actual serialized HTTP: includes main first/continuation and optional specialist turns.
+    expect(wire.reasoning_effort).toBe('high');
+    expect(wire).not.toHaveProperty('thinking');
+    expect(wire.model).toBe('deepseek-flash');
     expect(wire.messages.filter((message: any) => message.role === 'system').map((message: any) => message.content).join('\n')).toContain('2026-01-02 01:00:00 +09:00');
   }
   expect(JSON.stringify(wires)).not.toContain('synthetic guidance');
