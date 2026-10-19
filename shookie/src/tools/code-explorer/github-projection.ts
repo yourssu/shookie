@@ -7,7 +7,11 @@ function pick(row: Row, keys: string[]): Row {
 }
 const dates = ["created_at", "updated_at", "closed_at"];
 const identity = ["number", "title", "state", "html_url", ...dates];
-export function projectGithub(input: ReadInput, raw: any): { data: any; truncated: boolean } {
+export function projectGithub(input: ReadInput, raw: any, redact: (text: string) => string = text => text): { data: any; truncated: boolean } {
+  // Called only after raw validation. Redact selected strings before any lossy transform.
+  const select = (row: Row, keys: string[]) => Object.fromEntries(
+    Object.entries(pick(row, keys)).map(([key, value]) => [key, typeof value === "string" ? redact(value) : value]),
+  );
   let truncated = false;
   const text = (value: string, bytes: number) => {
     if (Buffer.byteLength(value) <= bytes) return value;
@@ -20,20 +24,20 @@ export function projectGithub(input: ReadInput, raw: any): { data: any; truncate
     if (typeof row[key] === "string") { const original = row[key]; row[key] = text(original, bytes); if (original !== row[key]) row[`${key}Truncated`] = true; }
     return row;
   };
-  const repository = (row: Row) => bounded(pick(row, ["name", "full_name", "html_url", "description", "private", "archived", "default_branch", "language", ...dates, "pushed_at"]), "description", 2048);
+  const repository = (row: Row) => bounded(select(row, ["name", "full_name", "html_url", "description", "private", "archived", "default_branch", "language", ...dates, "pushed_at"]), "description", 2048);
   const entry = (row: Row, detail: boolean) => {
-    const out = bounded(pick(row, [...identity, ...(input.operation.startsWith("pull_request") ? ["merged_at"] : [])]), "title", 1024);
+    const out = bounded(select(row, [...identity, ...(input.operation.startsWith("pull_request") ? ["merged_at"] : [])]), "title", 1024);
     // GitHub's issues endpoint also returns PRs; retain the discriminator.
     if (["issues", "issue"].includes(input.operation) && row.pull_request && typeof row.pull_request === "object") {
-      out.pull_request = pick(row.pull_request, ["html_url", "merged_at"]);
+      out.pull_request = select(row.pull_request, ["html_url", "merged_at"]);
     }
     if (detail) {
-      Object.assign(out, pick(row, ["body", "draft", "comments", "locked", ...(input.operation === "pull_request" ? ["merged", "merge_commit_sha", "mergeable", "mergeable_state", "commits", "additions", "deletions", "changed_files", "review_comments"] : [])]));
+      Object.assign(out, select(row, ["body", "draft", "comments", "locked", ...(input.operation === "pull_request" ? ["merged", "merge_commit_sha", "mergeable", "mergeable_state", "commits", "additions", "deletions", "changed_files", "review_comments"] : [])]));
       bounded(out, "body", 8192);
       if (input.operation === "pull_request") for (const key of ["base", "head"]) {
         if (row[key] && typeof row[key] === "object") {
-          out[key] = pick(row[key], ["label", "ref", "sha"]);
-          if (row[key].repo && typeof row[key].repo === "object") out[key].repo = pick(row[key].repo, ["full_name", "html_url"]);
+          out[key] = select(row[key], ["label", "ref", "sha"]);
+          if (row[key].repo && typeof row[key].repo === "object") out[key].repo = select(row[key].repo, ["full_name", "html_url"]);
         }
       }
     }
@@ -46,14 +50,15 @@ export function projectGithub(input: ReadInput, raw: any): { data: any; truncate
     case "pull_requests": case "issues": data = raw.map((row: Row) => entry(row, false)); break;
     case "pull_request": case "issue": data = entry(raw, true); break;
     case "history": data = raw.map((row: Row) => {
-      const out = pick(row, ["sha", "html_url"]);
-      out.subject = text(row.commit.message.split(/\r?\n/, 1)[0], 1024);
+      const out = select(row, ["sha", "html_url"]);
+      out.subject = redact(row.commit.message).split(/\r?\n/, 1)[0];
+      bounded(out, "subject", 1024);
       const date = row.commit.committer?.date ?? row.commit.author?.date;
-      if (typeof date === "string") out.date = date;
+      if (typeof date === "string") out.date = redact(date);
       return out;
     }); break;
-    case "tree": data = { ...pick(raw, ["sha", "truncated"]), tree: raw.tree.map((row: Row) => pick(row, ["path", "mode", "type", "sha", "size"])) }; break;
-    case "file": data = pick(raw, ["type", "encoding", "content", "size", "sha", "path", "html_url"]); break;
+    case "tree": data = { ...select(raw, ["sha", "truncated"]), tree: raw.tree.map((row: Row) => select(row, ["path", "mode", "type", "sha", "size"])) }; break;
+    case "file": data = select(raw, ["type", "encoding", "content", "size", "sha", "path", "html_url"]); break;
   }
   return { data, truncated };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readGithub, readInput, buildReadUrl } from "./github-read.js";
 import { projectGithub } from "./github-projection.js";
-import { registryFixture } from "./registry-fixture.test-helper.js";
+import { registryFixture, registryResponse } from "./registry-fixture.test-helper.js";
 const config = { owner: "yourssu", gitHubToken: "dummy-secret", repositories: ["allowed"] };
 const sha = "a".repeat(40);
 const pr = { number: 1, title: "증거", state: "closed", html_url: "https://github.com/yourssu/allowed/pull/1", created_at: "2026-01-01T00:00:00Z" };
@@ -68,16 +68,59 @@ describe("PR query and operation-specific projection", () => {
     const tree = await readGithub(config, { operation: "tree", repo: "allowed", ref: "main" }, fetcher({ sha, truncated: false, tree: Array.from({ length: 300 }, (_, i) => ({ path: `${i}${"한".repeat(60)}`, mode: "100644", type: "blob", sha })) }));
     expect(Buffer.byteLength(tree.data)).toBeLessThanOrEqual(32768); expect(JSON.parse(tree.data).omittedItems).toBeGreaterThan(0); expect(tree.complete).toBe(false);
   });
+  it.each([
+    ["title", 1024, "pull_request"], ["body", 8192, "pull_request"],
+    ["description", 2048, "repository"], ["subject", 1024, "history"],
+  ] as const)("redacts %s before byte truncation including multibyte boundaries", async (field, limit, operation) => {
+    const secret = 'credential-sensitive/"tail';
+    for (const representation of [secret, encodeURIComponent(secret), Buffer.from(secret).toString("base64"), JSON.stringify(secret).slice(1, -1)]) {
+      // Old truncate-then-redact would expose the first bytes of this representation.
+      const prefix = "한".repeat(Math.floor((limit - 9) / 3));
+      const value = prefix + representation + "😀".repeat(20);
+      const raw = operation === "repository" ? { name: "allowed", full_name: "yourssu/allowed", owner: { login: "yourssu" }, description: value }
+        : operation === "history" ? [{ sha, commit: { message: value } }] : { ...pr, [field]: value };
+      const out = await readGithub({ ...config, gitHubToken: secret }, { operation, repo: "allowed", ...(operation === "pull_request" ? { number: 1 } : {}) }, fetcher(raw));
+      const data = JSON.parse(out.data); const row = Array.isArray(data) ? data[0] : data;
+      expect(row[field]).not.toContain(representation.slice(0, 9));
+      expect(row[field]).not.toContain("�"); expect(row[`${field}Truncated`]).toBe(true);
+      expect(Buffer.byteLength(row[field])).toBeLessThanOrEqual(limit); expect(out.truncated).toBe(true);
+    }
+  });
+  it("redacts multiline credentials before history first-line extraction", async () => {
+    const out = await readGithub({ ...config, gitHubToken: "credential-prefix\ncredential-tail", readOnlyToken: "valid-token" }, { operation: "history", repo: "allowed" }, fetcher([{ sha, commit: { message: "credential-prefix\ncredential-tail\nnext line" } }]));
+    expect(JSON.parse(out.data)[0].subject).toBe("[REDACTED]");
+    expect(out.data).not.toContain("credential-prefix");
+  });
+  it("runs provider and registry masking before field truncation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => registryResponse()));
+    const providerSecret = "provider-sensitive-token";
+    const body = "x".repeat(8183) + providerSecret + " after";
+    const title = "x".repeat(1015) + registryFixture.apiKey + " after";
+    try {
+      const out = await readGithub({ ...config, registry: registryFixture, tokenProvider: { getToken: async () => providerSecret, redact: text => text.replaceAll(providerSecret, "[REDACTED]") } }, { operation: "pull_request", repo: "allowed", number: 1 }, fetcher({ ...pr, body, title }));
+      expect(out.data).not.toContain("provider-"); expect(out.data).not.toContain(registryFixture.apiKey.slice(0, 9));
+      expect(out.truncated).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it("requires raw history commit.message before projection or masking", async () => {
+    const redact = vi.fn((text: string) => text);
+    await expect(readGithub({ ...config, tokenProvider: { getToken: async () => "valid-token", redact } }, { operation: "history", repo: "allowed" }, fetcher([{ sha, commit: {} }]))).rejects.toThrow();
+    // Provider URL secret check may run, but invalid response is never projected as history.
+    expect(redact.mock.calls.every(([text]) => text.startsWith("https://"))).toBe(true);
+    await expect(readGithub(config, { operation: "history", repo: "allowed" }, fetcher([{ sha, commit: { message: 42 } }]))).rejects.toThrow();
+  });
   it("measures synthetic serialized PR/history fixtures, not live savings", () => {
     for (const count of [3, 30]) {
       const rows = Array.from({ length: count }, (_, i) => ({ ...pr, number: i + 1, body: "detail evidence not requested ".repeat(100), user: { email: "example@test.invalid", avatar_url: "https://example.invalid/avatar" } }));
       const input = readInput.parse({ operation: "pull_requests", repo: "allowed", perPage: count });
       const projected = projectGithub(input, rows).data;
       expect(projected).toEqual(rows.map(({ body, user, ...evidence }) => evidence));
+      expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThan(Buffer.byteLength(JSON.stringify(rows)));
       console.log(`synthetic PR ${count}: ${Buffer.byteLength(JSON.stringify(rows))} -> ${Buffer.byteLength(JSON.stringify(projected))}`);
       const commits = rows.map(() => ({ sha, html_url: "https://github.com/yourssu/allowed/commit/" + sha, commit: { message: "subject\n\nlong detail ".repeat(50), committer: { date: "2026-01-01T00:00:00Z", email: "example@test.invalid" } } }));
       const history = projectGithub(readInput.parse({ operation: "history", repo: "allowed", perPage: count }), commits).data;
       expect(history.every((row: any) => row.sha === sha && row.subject === "subject" && row.date === "2026-01-01T00:00:00Z")).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThan(Buffer.byteLength(JSON.stringify(commits)));
       console.log(`synthetic history ${count}: ${Buffer.byteLength(JSON.stringify(commits))} -> ${Buffer.byteLength(JSON.stringify(history))}`);
     }
   });

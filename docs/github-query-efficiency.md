@@ -6,6 +6,8 @@
 최근 PR 3개는 `{ operation: "pull_requests", repo: "…", perPage: 3 }`로 조회한다.
 커밋 이력으로 PR을 추정하거나 우회할 필요가 없다. 결과의 `source`와 `query`에 실제 범위를 명시한다.
 `perPage`는 기존 1–30 제한을 유지하고 별도 count alias는 없다.
+GitHub 조회의 기존 page 최대 100과 Radar 목록의 기존 최대 1000을 유지한다.
+GitHub page>100 거절은 새 제한이 아니라 buildReadUrl의 기존 검사를 schema preflight에도 옮긴 것이다.
 
 PR 목록만 다음 옵션을 허용한다. 다른 작업(특히 Radar 목록 early return)에 사용하면 네트워크 전에 거절한다.
 
@@ -26,11 +28,15 @@ GitHub per_page 최대는 100이나 도구는 기존 안전 제한 30을 유지�
 
 원본 응답 크기 제한(256 KiB), scope/번호/path/sha/배열/base64/UTF-8 검증 후 작업별 allowlist로 투영한다.
 응답의 임의 중첩 객체, author 이메일, avatar/URL 그래프는 전달하지 않는다.
+검증된 응답에서 선택한 문자열은 credential/registry/tokenProvider 마스킹을 먼저 적용한 뒤
+byte truncation 및 history 첫 줄 추출을 수행한다. 최종 직렬화 마스킹도 별도로 유지한다.
+이 순서는 경계에서 잘린 credential 조각이 exact-match 마스킹을 빠져나가지 않도록 한다.
+raw history의 commit.message는 계속 필수 string이며 누락/숫자 응답은 마스킹 전에 거절한다.
 
 - 저장소: 이름/full_name, 설명(2 KiB), 기본 브랜치, 언어, 공개/보관 여부, 날짜, html_url.
 - PR/이슈 목록: 번호, 제목(1 KiB), 상태, html_url, 생성/수정/종료 날짜. PR의 실제 merged_at은 null/부재를 구별한다. 본문은 목록에서 제외한다.
 - 이력: 전체 SHA, 첫 줄 subject(1 KiB), committer 날짜(없으면 author 날짜), html_url. 전체 메시지와 저자 객체는 제외한다.
-- 상세: 위 식별 정보, 본문(8 KiB), 댓글/상태, PR의 병합 정보와 diff 통계 및 base/head ref/SHA/repo identity. 자른 텍스트에 `bodyTruncated`/`titleTruncated` 등을 표시한다.
+- 상세: 위 식별 정보, 본문(8 KiB), 댓글/상태, PR의 병합 정보와 diff 통계 및 base/head ref/SHA/repo identity. 자른 텍스트에 `bodyTruncated`/`titleTruncated` 등을 표시한다. history의 byte 제한으로 자른 subject도 `subjectTruncated`를 표시한다.
 - tree/file: 경로/모드/type/SHA/size 및 실제 검증된 파일 내용/인코딩을 유지한다. 파일 크기/내용 무결성 검증은 투영 전에 수행한다.
 
 `source`, owner/repo/ref/path, page, hasNextPage, complete/truncated, repositoryGuidance는 기존 위치를 유지한다.
@@ -60,7 +66,7 @@ HTTP 전체/모델 토큰/실제 사용량 측정이 아니며 합성 데이터�
 
 - `yarn workspace database build && yarn workspace shookie build` (각 작업 60초 제한 내)
 - `yarn workspace shookie test src/tools/code-explorer/github-read.test.ts src/tools/code-explorer/github-query-projection.test.ts src/tools/code-explorer/registry.test.ts`
-- 위 read/query/registry partition: 102 tests pass (약 1.2초).
+- 위 read/query/registry partition: 109 tests pass (수정 후 약 3.7초). title/body/description/subject byte 경계, multibyte 및 first-line 경계 credential 마스킹과 실제 합성 바이트 감소를 assertion으로 검증한다.
 - `yarn workspace shookie test src/tools/code-explorer/github-auth.test.ts src/tools/code-explorer/repository-snapshots.test.ts`: 37 tests pass (약 13.9초, 별도 60초 partition).
 - 최종 shookie build 및 `git diff --check`: pass.
 

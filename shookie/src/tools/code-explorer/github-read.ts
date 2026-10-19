@@ -202,12 +202,13 @@ export async function readGithub(config: ReadConfig, raw: unknown, fetcher: type
       data = data.filter((r: { name?: string; owner?: { login?: string } }) => r.owner?.login?.toLowerCase() === config.owner.toLowerCase() && config.repositories!.some(n => n.toLowerCase() === r.name?.toLowerCase()));
     }
     const countTruncated = Array.isArray(data) && data.length > input.perPage;
-    const projection = projectGithub(input, Array.isArray(data) ? data.slice(0, input.perPage) : data);
-    const serialize = (value: unknown) => {
-      let text = redactGuidance(JSON.stringify(value));
-      if (config.registry) text = redactRegistry(text, config.registry);
-      return text;
+    const redact = (value: string) => {
+      const text = redactGuidance(value);
+      return config.registry ? redactRegistry(text, config.registry) : text;
     };
+    const projection = projectGithub(input, Array.isArray(data) ? data.slice(0, input.perPage) : data, redact);
+    // Defense in depth after pre-transform field redaction.
+    const serialize = (value: unknown) => redact(JSON.stringify(value));
     const budget = budgetGithub(projection.data, serialize, MAX_OUTPUT_BYTES);
     const text = budget.text;
     const truncated = budget.truncated || projection.truncated || countTruncated || data.truncated === true;
