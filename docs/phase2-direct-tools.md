@@ -1,5 +1,7 @@
 # P1 2단계: 직접 도구와 Radar 지침 소비 중단
 
+> 역사적 구현/검증 기록이다. 선택적 specialist·위임·보고서 경로는 이후 제거되었다. 현재 계약은 [단일 에이전트 구조](single-agent-architecture.md)를 따른다. 아래 당시 증거는 수정하지 않는다.
+
 기준 main: `644fc2e4d98705c7262e9b8baba8c40bea6d7076` (1단계 merge 및 cleanup 완료).
 Mastra 및 기존 모델/provider 설정을 유지한다. 역사 커밋 `4db5500`의 adapter 차단과 `38ddcc1`의 직접 도구/선택적 조사 부분만 diff를 검토해 재사용했다. blanket cherry-pick/reset은 하지 않았다.
 

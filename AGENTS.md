@@ -13,9 +13,10 @@
 
 ## 아키텍처
 
-- **직접 도구 중심**: 메인이 일반 GitHub/PostHog 조회를 수행하고 깊은 조사만 선택적으로 전문 에이전트에 위임
+- **단일 대화 에이전트**: 메인 Mastra Agent 하나가 일반 조회와 깊은 조사를 모두 직접 도구로 수행 (위임 런타임 없음)
 - **메인 에이전트** (`shookie/src/agent/agents/main-shookie/`): 질문에 비례한 간결한 최종 답변 책임자
-- **서브 에이전트** (`shookie/src/agent/agents/<도메인>/`): 도메인별 전문 에이전트
+- **로컬 지침** (`shookie/src/agent/guidance/`): 실제 등록된 직접 서비스 기능에만 운영 절차 제공. 공통 안전 정책은 항상 적용
+- 스레드 요약/이미지 해석의 보조 모델 호출은 유지하며 별도 대화 에이전트가 아니다. 역사 DB AgentName/기록/마이그레이션은 유지한다.
 - **도구** (`shookie/src/tools/<서비스>/`): Mastra `createTool` 기반
 - **대화 단위**: Slack 스레드 (`channel:thread_ts`)
 
@@ -28,16 +29,13 @@ shookie/
 └── package.json      ← workspace root
 ```
 
-## 새 서브 에이전트 추가 시
+## 새 직접 서비스 도구 추가 시
 
 1. `shookie/src/tools/<서비스>/`에 client.ts, schemas.ts, tools.ts 생성
-2. `shookie/src/agent/agents/<도메인>/`에 index.ts, instructions.ts, description.ts, tools.ts 생성
-3. `shookie/src/config.ts`에 환경변수 추가 (선택적)
-4. `shookie/src/agent/index.ts`의 `createAgent()`에서 조건부 등록
-5. `shookie/src/agent/agents/main-shookie/tools.ts`에 위임 도구 추가
-6. 메인 에이전트 instructions.ts 실제 등록 기능 업데이트
-7. `instructions.test.ts`에 서브 에이전트 등장 테스트 추가
-8. `.github/workflows/deploy.yml`에 새 환경변수 항목 추가
+2. `shookie/src/agent/index.ts`에서 설정에 따라 직접 도구 등록 (Agent 추가 금지)
+3. 실제 등록 키 기준 기능 설명/로컬 지침 허용 범위 및 both/one/none 테스트 갱신
+4. 필수 안전·인가 정책은 항상-on 정책에, 운영 절차는 버전 고정 로컬 지침에 보존
+5. 새 설정이 필요하면 config/배포 환경변수 계약도 함께 갱신
 
 ## 명령어
 

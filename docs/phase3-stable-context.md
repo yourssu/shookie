@@ -1,5 +1,7 @@
 # P1 3단계: 로컬 지침과 안정적 요청 맥락
 
+> 역사적 구현/검증 기록이다. specialist 및 위임 시각 전파는 이후 제거되었고, 지침 허용 범위는 실제 직접 도구 등록만 따른다. 현재 계약은 [단일 에이전트 구조](single-agent-architecture.md)를 참고한다. 아래 당시 증거는 유지한다.
+
 기준 main `bd3ebaeb1a9368475c50124648443e4b080fb703` (PR #123). Mastra/모델/provider/예산 및 P0 final-only buffered 전달은 유지한다. 역사 혼합 커밋을 cherry-pick하지 않았다.
 
 ## 코드 소유 로컬 지침

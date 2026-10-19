@@ -13,7 +13,7 @@
 
 - Mastra 1.49.0의 `Agent.defaultOptions.providerOptions.deepseek.reasoningEffort`를 사용한다(`modelSettings`가 아님). 실제 generate/stream은 실행 옵션과 defaults를 병합하며 모든 loop turn으로 전달한다. 선택적 Code Explorer/PostHog도 같은 defaults를 사용한다.
 - AI SDK 요약은 `providerOptions.deepseek.reasoningEffort`, 기존 직접 이미지 HTTP 요청은 `reasoning_effort`로 같은 high 상수를 전달한다. 이미지 지원 범위나 payload/예산 정책은 그대로다.
-- 고정 SDK 2.0.76의 docs/types/serializer와 mock HTTP wire를 검증했다. `deepseek-delegation.test.ts`는 실제 팩토리 main 첫 요청·도구 후속·specialist의 모든 요청에서 `reasoning_effort: high`와 기존 추론 이력을 검사한다. `thread-summarizer-wire.test.ts`, 이미지 transport 테스트도 실제 직렬화 body를 검사한다. live 서버 적용/답변 품질/지연은 미검증이다.
+- 고정 SDK 2.0.76의 docs/types/serializer와 mock HTTP wire를 검증했다. `deepseek-direct-tools.test.ts`는 실제 팩토리 main 첫 요청·GitHub/PostHog 직접 도구 후속 요청에서 `reasoning_effort: high`와 기존 추론 이력을 검사한다. specialist 런타임은 제거되었다. `thread-summarizer-wire.test.ts`, 이미지 transport 테스트도 실제 직렬화 body를 검사한다. live 서버 적용/답변 품질/지연은 미검증이다.
 - 공통 답변 규칙은 불필요한 내부 입력 형식/선택 제약 안내만 줄인다. 필요한 확인·정정·해석과 접근 거부/부분·잘림/불확실성/실패 고지는 유지하고, 등록 프로젝트 이름 선택·권한·Radar 비활성화 규칙은 바꾸지 않는다. prompt 계약 테스트는 실제 답변의 간결함을 입증하지 않는다.
 
 ## 장애 증거와 주장 범위
@@ -71,7 +71,8 @@ SDK 2.0.76은 image file→image_url 직렬화도 지원하므로 기존 '설치
 ## 저장소의 결정론적 회귀
 
 - `deepseek-compatibility.test.ts`: 실제 provider doGenerate JSON, doStream SSE, 실제 Mastra generate/stream 2-step loop. 구버전 provider 2.0.35에서는 직접 호환성 2테스트 실패/일반 2-step 2테스트 통과.
-- `deepseek-delegation.test.ts`: 실제 `createAgent()` main/subagent/tools wiring. GitHub/PostHog 각각의 위임과 연속 2위임을 generate/stream 양쪽에서 검증. 동일 길이/다른 길이 marker 모두 포함. 실제 doGenerate/doStream 경계를 통과하며 합성 reasoning marker만 계측하고 다음 provider prompt와 outbound wire까지 검사한다. 1.32.1의 동일 길이 연속 위임은 실패, 1.49.0은 통과.
+- 현재 `deepseek-direct-tools.test.ts`: 실제 `createAgent()` main/direct-tools wiring. GitHub/PostHog 각각 및 연속 직접 조회를 generate/stream 양쪽에서 검증하고 doGenerate/doStream 경계 및 outbound wire의 reasoning marker/high/clock을 검사한다.
+- 역사적 `deepseek-delegation.test.ts`(현재 대체됨): 당시 main/subagent 연속 위임의 동일 길이/다른 길이 marker를 검증했다. 1.32.1의 동일 길이 연속 위임은 실패, 1.49.0은 통과했다. 이는 당시 SDK 호환성 증거이며 현재 specialist 실행 계약은 아니다.
 - fake LLM/registry fetch와 DB seam만 사용한다. 저장소 목록은 운영 정책대로 등록 카탈로그에서 반환하며 GitHub org 전체 API를 호출하지 않는다. PostHog 최소 동작도 카탈로그 읽기이지 분석 API 호출 증거가 아니다.
 - trusted RequestContext를 실제 하위 도구까지 전달한다. Slack 쓰기/live API/DB mutation은 없고 로거는 차단한다. 실제 추론/프롬프트/키를 수집하지 않는다.
 
