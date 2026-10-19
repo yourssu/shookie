@@ -5,7 +5,7 @@
 ## 상관관계와 수명
 
 - DB claim 성공 이후 실행의 `ExecutionScope.metrics`에 collector를 붙인다. 기존 execution ALS를 사용하되 RequestContext/인증 정보는 변경하지 않는다. 모든 main/tool 레코드는 동일한 **무작위 UUID `correlationId`**를 쓴다. 원래 Slack request/session/event/actor/team/channel/thread ID는 metrics에 복사하지 않는다.
-- `kind`는 `request`, `model_call`, `tool`. tool 이름은 코드에 고정한 등록 이름 allowlist만 허용하며 나머지는 `other`, model은 고정 label `main`이다. 인자/본문/원시 결과/출처 URL/오류 message·stack/secret은 metrics 필드가 아니다.
+- `kind`는 `request`, `model_call`, `tool`. tool 이름은 코드에 고정한 등록 이름 allowlist만 허용하며 나머지는 `other`, model은 고정 label `main`이다. 현재 PostHog 10개와 web/Slack/repo/GitHub/guidance 등록 이름을 확인했다. 향후 새 도구가 등록되더라도 이 allowlist에 추가되기 전에는 `other`로 기록된다. 인자/본문/원시 결과/출처 URL/오류 message·stack/secret은 metrics 필드가 아니다.
 - claimed 실행은 source/생성/저장/전달 실패·취소에도 handler finally에서 **terminal request 객체를 한 번만 생성**한다. duplicate claim/동일 pending event, admission/input 거절, claim 전 DB 실패에는 실행 metrics를 만들지 않는다. 프로세스 crash/종료의 terminal 기록은 보장하지 않는다.
 - sink는 최대 256개의 scalar-only 객체 큐다. 한 번의 detached `setImmediate`에 하나씩 기존 logger로 넘기고 unref한다. 실행은 sink/log를 await하지 않으며, full이면 신규 레코드를 버린다. logger/sink의 동기 throw와 sink Promise rejection은 격리한다. 따라서 overload/종료 시 **실제 로그에 terminal이 반드시 남는다는 보장은 없다**. 로그 전송 실패를 비즈니스 실패로 바꾸거나 재실행하지 않는다.
 - 기존 동기 console logger를 별도 thread로 옮기지는 않았다. 느린 console은 detached flush 시 이벤트 루프를 지연시킬 수 있다. hot path에는 로그 I/O await/새 payload serialization이 없지만 무영향/측정 성능 개선을 주장하지 않는다.
@@ -46,7 +46,7 @@
 
 기존 `executionTools` wrapper 한 곳에만 결합했다. WeakSet을 유지해 중복 wrapper/측정을 만들지 않는다. 동일 execute receiver/input/RequestContext와 원래 반환 객체/rejection을 보존한다. 기존 shared/explicit abort 체크·추적·실제 drain을 유지한다. ALS 없는 실행은 metrics 없이 동작한다.
 
-`elapsedMs`는 public execute 진입 → 기존 cancellation operation의 실제 반환/실패까지다. underlying 작업이 cancellation을 무시하면 실제 settlement까지 포함하며, 도구 내부에서 race 후 조기 반환한 잔여 작업 전체 시간이라고 주장하지 않는다. `status`는 실행 경계의 `success`/`error`/`cancelled`. 반환 envelope의 allowlisted own data-property `status`는 별도 `resultStatus`(`success`/`error`/`partial`/`cancelled`/`unknown`)다. 도구가 실패 envelope를 반환해도 JS 실행 자체는 success일 수 있다. `partial`/`truncated`는 top-level own boolean data-property가 있을 때만 기록하며 없으면 `null`이다.
+`elapsedMs`는 public execute 진입 → 기존 cancellation operation의 실제 반환/실패까지다. underlying 작업이 cancellation을 무시하면 실제 settlement까지 포함하며, 도구 내부에서 race 후 조기 반환한 잔여 작업 전체 시간이라고 주장하지 않는다. `status`는 실행 경계의 `success`/`error`/`cancelled`. `cancelled`는 catch 시점에 shared 또는 explicit abort signal이 중단된 실행 상태라는 뜻이며, 원래 예외가 반드시 취소 때문에 발생했다는 인과관계 증명이 아니다. telemetry는 원래 예외를 검사·교체하거나 cancellation 정책을 바꾸지 않는다. 반환 envelope의 allowlisted own data-property `status`는 별도 `resultStatus`(`success`/`error`/`partial`/`cancelled`/`unknown`)다. 도구가 실패 envelope를 반환해도 JS 실행 자체는 success일 수 있다. `partial`/`truncated`는 top-level own boolean data-property가 있을 때만 기록하며 없으면 `null`이다.
 
 | 크기 필드 | scope |
 | --- | --- |
