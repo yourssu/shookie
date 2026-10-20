@@ -1,10 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { createTool } from "@mastra/core/tools";
 import { ConversationControl } from "./conversation-control.js";
+import { monotonicNow, type RequestMetrics } from "../telemetry/metrics.js";
 
 /** Runtime ownership survives Mastra stream abort while nested tools are still settling. */
 export class ExecutionScope {
   readonly control = new ConversationControl();
+  /** Request-only telemetry; never used as identity or authorization. */
+  metrics?: RequestMetrics;
   private readonly pending = new Set<Promise<unknown>>();
   track<T>(work: Promise<T>): Promise<T> {
     this.pending.add(work);
@@ -45,13 +48,22 @@ export async function executionOperation<T>(work: () => Promise<T>, explicit?: A
 const wrappedTools = new WeakSet<object>();
 /** Wrap the public Tool.execute API once; preserve every tool/schema and RequestContext identity. */
 export function executionTools<T extends Record<string, ReturnType<typeof createTool>>>(tools: T): T {
-  for (const tool of Object.values(tools)) {
+  for (const [name, tool] of Object.entries(tools)) {
     if (wrappedTools.has(tool)) continue;
     wrappedTools.add(tool);
     const execute = tool.execute;
-    if (execute) tool.execute = (input, context) => executionOperation(
-      async () => execute.call(tool, input, context), context?.abortSignal,
-    );
+    if (execute) tool.execute = async (input, context) => {
+      const scope = executionStorage.getStore();
+      const start = monotonicNow();
+      try {
+        const result = await executionOperation(async () => execute.call(tool, input, context), context?.abortSignal);
+        try { scope?.metrics?.tool(name, start, "success", result); } catch { /* best effort */ }
+        return result;
+      } catch (error) {
+        try { scope?.metrics?.tool(name, start, scope.control.signal.aborted || context?.abortSignal?.aborted ? "cancelled" : "error"); } catch { /* original rejection wins */ }
+        throw error;
+      }
+    };
   }
   return tools;
 }
