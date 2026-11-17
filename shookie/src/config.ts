@@ -38,6 +38,7 @@ const envSchema = z.object({
     .transform((v) => v === "true"),
   SLACK_EVENT_ATTENDING_EMOJI: z.string().default("shookie_attend"),
   SLACK_EVENT_ABSENT_EMOJI: z.string().default("shookie_absent"),
+  SLACK_EVENT_LATE_EMOJI: z.string().default("shookie_late"),
   SLACK_EVENT_AFTERPARTY_EMOJI: z.string().default("shookie_afterparty"),
 
   // Radar event attendance (optional)
@@ -388,6 +389,7 @@ export function getSlackEventAttendanceConfig() {
   const emojiNames = [
     config.SLACK_EVENT_ATTENDING_EMOJI,
     config.SLACK_EVENT_ABSENT_EMOJI,
+    config.SLACK_EVENT_LATE_EMOJI,
     config.SLACK_EVENT_AFTERPARTY_EMOJI,
   ];
   if (
@@ -402,8 +404,9 @@ export function getSlackEventAttendanceConfig() {
   const reactionKinds = {
     [config.SLACK_EVENT_ATTENDING_EMOJI]: "attending",
     [config.SLACK_EVENT_ABSENT_EMOJI]: "absent",
+    [config.SLACK_EVENT_LATE_EMOJI]: "late",
     [config.SLACK_EVENT_AFTERPARTY_EMOJI]: "afterparty",
-  } as Record<string, "attending" | "absent" | "afterparty">;
+  } as Record<string, "attending" | "absent" | "late" | "afterparty">;
 
   return {
     apiUrl: apiUrl.toString().replace(/\/$/u, ""),
