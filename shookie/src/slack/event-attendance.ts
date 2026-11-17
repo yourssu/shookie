@@ -1,7 +1,7 @@
 import type { App } from "@slack/bolt";
 import { logger } from "../logger.js";
 
-type SlackEventReactionKind = "attending" | "absent" | "afterparty";
+type SlackEventReactionKind = "attending" | "absent" | "late" | "afterparty";
 type SlackEventReactionAction = "added" | "removed";
 
 const TEAM_ID_PATTERN = /^T[A-Z0-9]{2,}$/u;
